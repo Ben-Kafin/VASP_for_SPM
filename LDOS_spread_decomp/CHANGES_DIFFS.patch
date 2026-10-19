@@ -1,0 +1,1014 @@
+ .../MOPmatcher_mem}/matcher/vacupot_plotter.py     | 43 +++++-----------------
+ 1 file changed, 10 insertions(+), 33 deletions(-)
+diff --git a/MOPmatcher_mem/matcher/vacupot_plotter.py b/LDOS_spread_decomp/MOPmatcher_mem/matcher/vacupot_plotter.py
+index 95a1853..c3a33c1 100644
+--- a/MOPmatcher_mem/matcher/vacupot_plotter.py
++++ b/LDOS_spread_decomp/MOPmatcher_mem/matcher/vacupot_plotter.py
+@@ -23,9 +23,11 @@ except Exception:
+ try:
+     from .classifier import StateBehaviorClassifier
+     from .builder import detect_ncl_from_incar
++    from .kramers import pair_entities
+ except ImportError:
+     from classifier import StateBehaviorClassifier
+     from builder import detect_ncl_from_incar
++    from kramers import pair_entities
+ 
+ 
+ def _read_rect_txt_delimited(path: str) -> Dict[str, Any]:
+@@ -254,41 +256,16 @@ class RectAEPAWColorPlotter:
+                                        is_soc: bool, thresh: float) -> Dict[int, Tuple]:
+         if not is_soc or not pairs:
+             return self._build_colors_rank_pivot(pairs, cmap_name, center_idx, power_neg, power_pos)
+-        ordered = sorted(pairs, key=lambda t: t[1])
+-        n = len(ordered)
+ 
+-        # Resolve pivot energy: center_idx's energy in ordered, else middle state
+-        pivot_E: Optional[float] = None
+-        if center_idx is not None:
+-            for idx, E in ordered:
+-                if idx == center_idx:
+-                    pivot_E = E
+-                    break
+-        if pivot_E is None:
+-            pivot_E = ordered[n // 2][1]
+-
+-        # Walk sorted list; assign reps so each pair adopts the closer-to-pivot member's slot
++        # The pairing walk lives in kramers.pair_entities (extracted verbatim
++        # from here), so colors and weight combining can never disagree. Each
++        # pair adopts its rep member's slot — the closer-to-pivot rule — via
++        # the same center_idx argument both call sites share.
++        entities = pair_entities(pairs, is_soc, thresh, center_idx=center_idx)
+         idx_to_rep: Dict[int, int] = {}
+-        i = 0
+-        while i < n:
+-            idx_i, E_i = ordered[i]
+-            if i + 1 < n and (ordered[i + 1][1] - E_i) < thresh:
+-                idx_j, E_j = ordered[i + 1]
+-                if center_idx is not None and center_idx in (idx_i, idx_j):
+-                    rep = center_idx
+-                elif E_j <= pivot_E:
+-                    rep = idx_j  # both below pivot; upper member is closer
+-                elif E_i >= pivot_E:
+-                    rep = idx_i  # both above pivot; lower member is closer
+-                else:
+-                    # pair straddles pivot without containing center_idx
+-                    rep = idx_i if abs(E_i - pivot_E) <= abs(E_j - pivot_E) else idx_j
+-                idx_to_rep[idx_i] = rep
+-                idx_to_rep[idx_j] = rep
+-                i += 2
+-            else:
+-                idx_to_rep[idx_i] = idx_i
+-                i += 1
++        for ent in entities:
++            for orig_idx in ent.indices:
++                idx_to_rep[orig_idx] = ent.rep
+ 
+         # Color the FULL original distribution; pair members look up their rep's color
+         base_colors = self._build_colors_rank_pivot(pairs, cmap_name, center_idx, power_neg, power_pos)
+ .../MOPmatcher_mem}/matcher/matcher_vacupot.py     | 216 +++++++++++++++++++++
+ 1 file changed, 216 insertions(+)
+diff --git a/MOPmatcher_mem/matcher/matcher_vacupot.py b/LDOS_spread_decomp/MOPmatcher_mem/matcher/matcher_vacupot.py
+index a634c1a..3f28b2f 100644
+--- a/MOPmatcher_mem/matcher/matcher_vacupot.py
++++ b/LDOS_spread_decomp/MOPmatcher_mem/matcher/matcher_vacupot.py
+@@ -529,6 +529,20 @@ class RectangularTrueBlochMatcher:
+                 compression="lzf", shuffle=True, fletcher32=True,
+             )
+ 
++        # Per-component complex S-metric amplitude datasets (nb x n_full),
++        # complex128, chunked/filtered consistently with 'grid'. Z below is
++        # formed from S, so grid/{label} equals |grid_amp/{label}|^2 by
++        # construction. Every component label is stored, including 'metal'.
++        amp_group = hf.create_group("grid_amp")
++        amp_ds = {}
++        for label in comp_labels:
++            nb = label_nb[label]
++            amp_ds[label] = amp_group.create_dataset(
++                label, shape=(nb, n_full), dtype="complex128",
++                chunks=(nb, min(full_tile, n_full)),
++                compression="lzf", shuffle=True, fletcher32=True,
++            )
++
+         # Metal overlap matrix for the classifier (assembled as tiles complete).
+         n_metal = label_nb[metal_label]
+         S_mf_metal = np.empty((n_metal, n_full), dtype=np.complex128)
+@@ -576,6 +590,22 @@ class RectangularTrueBlochMatcher:
+                     if label == metal_label:
+                         S_mf_metal[local_pos, f0:f1] = S[srow - c0, :]
+ 
++                # Persist this tile's complex amplitude rows into
++                # grid_amp/{label} as contiguous label runs (the stack is
++                # grouped by label with ascending local_pos), written straight
++                # from S so no full-column amplitude buffer is ever resident
++                # and the planner's peak-RAM accounting is unchanged.
++                r0 = c0
++                while r0 < c1:
++                    run_label = stack[r0][0]
++                    r1 = r0 + 1
++                    while r1 < c1 and stack[r1][0] == run_label:
++                        r1 += 1
++                    lp0 = stack[r0][1]
++                    lp1 = stack[r1 - 1][1]
++                    amp_ds[run_label][lp0:lp1 + 1, f0:f1] = S[r0 - c0:r1 - c0, :]
++                    r0 = r1
++
+                 # When not caching (L4), release this comp tile's large arrays
+                 # BEFORE the next iteration reads the next tile, so only one comp
+                 # tile is ever resident -- matching the single-buffered peak the
+@@ -641,6 +671,177 @@ class RectangularTrueBlochMatcher:
+         B_stack = np.vstack(B_parts) if len(B_parts) > 1 else B_parts[0]
+         return C_stack, B_stack
+ 
++    def _write_cross_amplitudes(self, hf, comp_readers, comp_windows,
++                                comp_labels, metal_label, ncoeff, northo,
++                                log=print):
++        """
++        Cross-component amplitude passes over the same stored blochstates the
++        main overlap pass reads (same PAW S-metric block-sum identity
++        <psi_i | psi_j> = C_i . C_j^H + B_i . B_ortho_j^H, same streaming
++        reads), with the new operand pairings:
++
++          cross/B      (n_metal, n_MO_total) complex128: <m_n | a>, the metal
++                       window bands vs the concatenated molecule-MO set.
++          cross/S_MO   (n_MO_total, n_MO_total) complex128: <a | a'>, the
++                       Gram matrix of the concatenated molecule-MO set
++                       (within-component blocks are ~ identity).
++          cross/S_mm   (n_metal, n_metal) complex128: <m_n | m_n'>, the
++                       metal-window Gram matrix (approved amendment: the
++                       injected metal states are NOT mutually orthonormal in
++                       the full-cell S-metric, so the exact-projector
++                       decomposition needs the true metal Gram).
++          cross/mo_axis_json  JSON list defining the MO-total axis ordering:
++                       molecule components in comp_labels order (metal
++                       excluded), bands ascending within each; each entry
++                       [component_label, band_index_1based] with the
++                       window-local 1-based index that matches grid/{label}
++                       rows and the txt comp_idx convention.
++          cross/diagnostics/  scalars: S_MO_dev_max = max |S_MO - I|,
++                       S_MO_dev_fro = ||S_MO - I||_F, S_mm_dev_max and
++                       S_mm_dev_fro (same measures for the metal Gram), and
++                       min_eig_S_mt = min eigenvalue of the exact
++                       S_mt = S_mm - B S_MO^-1 B^dagger (the
++                       linear-dependence guard; reduces to the original
++                       I - B S_MO^-1 B^dagger form when S_mm = I).
++
++        The MO set spans the same molecule band windows the matcher already
++        uses (band_windows); the metal set spans the same metal bands the
++        matcher already matches (comp_windows[metal_label]). Reading the same
++        stored blochstates files is what guarantees phase-gauge consistency
++        with grid_amp; wavefunctions are never recomputed. Returns the
++        diagnostics dict so run() can echo it at the end of the matcher run.
++        """
++        import json
++
++        mol_labels = [lbl for lbl in comp_labels if lbl != metal_label]
++
++        # Molecule-MO stack over the SAME band windows the matcher matches;
++        # mo_axis records the axis ordering with window-local 1-based indices.
++        mo_stack = []
++        mo_axis = []
++        for label in mol_labels:
++            win = comp_windows[label]
++            if win is None:
++                bands = range(int(comp_readers[label][3]))
++            else:
++                bands = list(win)
++            for local_pos, src in enumerate(bands):
++                mo_stack.append((label, local_pos, int(src)))
++                mo_axis.append([label, local_pos + 1])
++        n_mo = len(mo_stack)
++
++        metal_bands = np.asarray(comp_windows[metal_label])
++        n_metal = int(len(metal_bands))
++
++        # Metal-axis tile size by the same accounting convention as
++        # _plan_overlap_tiling: 2/3 of true available RAM as the budget,
++        # 16*(2*ncoeff + northo) bytes per resident band (operand + its GEMM
++        # conj transient), with the molecule stack resident, the
++        # (n_metal x n_mo) B output and the (n_metal x n_metal) S_mm output
++        # reserved, and TWO metal tiles resident at once (the S_mm pair loop
++        # holds tile i while streaming tiles j > i).
++        try:
++            import psutil
++            avail_bytes = int(psutil.virtual_memory().available)
++        except Exception:
++            avail_bytes = 2 * 1024 ** 3
++        budget = (2.0 / 3.0) * avail_bytes
++        per_band = 16 * (2 * int(ncoeff) + int(northo))
++        b_out_bytes = 16 * n_metal * max(n_mo, 1)
++        s_mm_bytes = 16 * n_metal * n_metal
++        remaining = budget - n_mo * per_band - b_out_bytes - s_mm_bytes
++        metal_tile = int(max(1, min(n_metal, remaining // max(2 * per_band, 1))))
++        log(f"[MATCHER]   cross passes: n_MO_total={n_mo}, n_metal={n_metal}, "
++            f"metal_tile={metal_tile} of {n_metal}")
++
++        # Molecule stack resident once (the molecule band windows keep it
++        # small); read through the same streaming reader machinery.
++        C_mo, B_mo = self._read_stack_tile(comp_readers, mo_stack, 0, n_mo)
++
++        # S_MO: molecule-MO Gram matrix, one stacked GEMM.
++        S_MO = C_mo @ C_mo.conj().T + B_mo @ B_mo.conj().T
++
++        cross = hf.create_group("cross")
++        ds_b = cross.create_dataset(
++            "B", shape=(n_metal, n_mo), dtype="complex128",
++            chunks=(min(metal_tile, n_metal), max(n_mo, 1)),
++            compression="lzf", shuffle=True, fletcher32=True,
++        )
++        cross.create_dataset(
++            "S_MO", data=S_MO, chunks=True,
++            compression="lzf", shuffle=True, fletcher32=True,
++        )
++        cross.create_dataset("mo_axis_json", data=json.dumps(mo_axis))
++
++        # B and S_mm, streamed over metal band tiles. B rows come from the
++        # resident tile vs the molecule stack; S_mm blocks come from the
++        # resident tile vs itself (diagonal) and vs every later tile
++        # (off-diagonal, mirrored via Hermitian symmetry). B is kept in RAM
++        # as well (n_metal x n_mo is small) for the exact-S_mt diagnostic.
++        B_arr = np.empty((n_metal, n_mo), dtype=np.complex128)
++        S_mm = np.empty((n_metal, n_metal), dtype=np.complex128)
++        metal_reader = comp_readers[metal_label][0]
++        for m0 in range(0, n_metal, metal_tile):
++            m1 = min(m0 + metal_tile, n_metal)
++            C_i, B_i = self._read_bloch_bands(metal_reader, metal_bands[m0:m1])
++            B_blk = C_i @ C_mo.conj().T + B_i @ B_mo.conj().T
++            ds_b[m0:m1, :] = B_blk
++            B_arr[m0:m1, :] = B_blk
++            del B_blk
++            S_mm[m0:m1, m0:m1] = C_i @ C_i.conj().T + B_i @ B_i.conj().T
++            for k0 in range(m1, n_metal, metal_tile):
++                k1 = min(k0 + metal_tile, n_metal)
++                C_j, B_j = self._read_bloch_bands(metal_reader,
++                                                  metal_bands[k0:k1])
++                S_blk = C_i @ C_j.conj().T + B_i @ B_j.conj().T
++                S_mm[m0:m1, k0:k1] = S_blk
++                S_mm[k0:k1, m0:m1] = S_blk.conj().T
++                del C_j, B_j, S_blk
++            del C_i, B_i
++        del C_mo, B_mo
++
++        cross.create_dataset(
++            "S_mm", data=S_mm, chunks=True,
++            compression="lzf", shuffle=True, fletcher32=True,
++        )
++
++        # Diagnostics. min_eig_S_mt is the minimum eigenvalue of the EXACT
++        # S_mt = S_mm - B S_MO^-1 B^dagger (approved amendment: the injected
++        # metal states are not mutually orthonormal in the full-cell
++        # S-metric, so the identity-Gram form would understate the guard);
++        # it reduces to the original I - B S_MO^-1 B^dagger when S_mm = I.
++        dev = S_MO - np.eye(n_mo, dtype=np.complex128)
++        s_mo_dev_max = float(np.max(np.abs(dev))) if n_mo else 0.0
++        s_mo_dev_fro = float(np.linalg.norm(dev)) if n_mo else 0.0
++        dev_mm = S_mm - np.eye(n_metal, dtype=np.complex128)
++        s_mm_dev_max = float(np.max(np.abs(dev_mm))) if n_metal else 0.0
++        s_mm_dev_fro = float(np.linalg.norm(dev_mm)) if n_metal else 0.0
++        del dev_mm
++        S_mm_h = 0.5 * (S_mm + S_mm.conj().T)
++        if n_mo:
++            S_MO_h = 0.5 * (S_MO + S_MO.conj().T)
++            S_mt = S_mm_h - B_arr @ np.linalg.solve(S_MO_h, B_arr.conj().T)
++        else:
++            S_mt = S_mm_h
++        S_mt = 0.5 * (S_mt + S_mt.conj().T)
++        min_eig_s_mt = (float(np.min(np.linalg.eigvalsh(S_mt)))
++                        if n_metal else 1.0)
++
++        diag_group = cross.create_group("diagnostics")
++        diag_group.create_dataset("S_MO_dev_max", data=np.float64(s_mo_dev_max))
++        diag_group.create_dataset("S_MO_dev_fro", data=np.float64(s_mo_dev_fro))
++        diag_group.create_dataset("S_mm_dev_max", data=np.float64(s_mm_dev_max))
++        diag_group.create_dataset("S_mm_dev_fro", data=np.float64(s_mm_dev_fro))
++        diag_group.create_dataset("min_eig_S_mt", data=np.float64(min_eig_s_mt))
++
++        return {
++            "S_MO_dev_max": s_mo_dev_max,
++            "S_MO_dev_fro": s_mo_dev_fro,
++            "S_mm_dev_max": s_mm_dev_max,
++            "S_mm_dev_fro": s_mm_dev_fro,
++            "min_eig_S_mt": min_eig_s_mt,
++        }
++
+     @staticmethod
+     def get_fermi_energy(directory):
+         """
+@@ -963,6 +1164,15 @@ class RectangularTrueBlochMatcher:
+                     e_raw_full, e_raw_metal,
+                     classifier, group_recs, n_full=n_full,
+                 )
++
++                # 6. Cross-component amplitude passes (grid_amp was written
++                # tile-wise in section 5): metal-vs-molecule and molecule-vs-
++                # molecule amplitude matrices, the MO-axis ordering, and the
++                # linear-dependence diagnostics, over the same open readers.
++                cross_diag = self._write_cross_amplitudes(
++                    hf, comp_readers, comp_windows, comp_labels,
++                    metal_label="metal", ncoeff=ncoeff, northo=northo,
++                )
+         finally:
+             for r in comp_readers.values():
+                 try:
+@@ -1011,6 +1221,12 @@ class RectangularTrueBlochMatcher:
+ 
+         print(f"[MATCHER] Wrote vacuum-aligned analysis to '{main_out}'")
+         print(f"[MATCHER] Wrote complete run record to '{results_path}'")
++        print("[MATCHER] Cross-pass diagnostics: "
++              f"S_MO_dev_max={cross_diag['S_MO_dev_max']:.3e}; "
++              f"S_MO_dev_fro={cross_diag['S_MO_dev_fro']:.3e}; "
++              f"S_mm_dev_max={cross_diag['S_mm_dev_max']:.3e}; "
++              f"S_mm_dev_fro={cross_diag['S_mm_dev_fro']:.3e}; "
++              f"min_eig_S_mt={cross_diag['min_eig_S_mt']:.6f}")
+ 
+     def _write_results_metadata(self, hf, comp_labels, comp_energies, e_f, e_m,
+                                 v_vac_metal, v_vac_full, v_aligned, global_shift,
+ .../MOPmatcher_mem}/matcher/spread_plot.py         | 119 ++++++++++++++++-----
+ 1 file changed, 93 insertions(+), 26 deletions(-)
+diff --git a/MOPmatcher_mem/matcher/spread_plot.py b/LDOS_spread_decomp/MOPmatcher_mem/matcher/spread_plot.py
+index 59f3542..4fabe36 100644
+--- a/MOPmatcher_mem/matcher/spread_plot.py
++++ b/LDOS_spread_decomp/MOPmatcher_mem/matcher/spread_plot.py
+@@ -5,9 +5,19 @@ Created on Tue Mar 25 2026
+ @author: Benjamin Kafin
+ 
+ Standalone spread plotter.
+-For a given component label and list of band indices, produces a vertically-stacked
+-figure showing how each component MO distributes its squared overlap across the
+-full-system Bloch states.
++For a given component label and list of HOMO-relative entity offsets, produces a
++vertically-stacked figure showing how each combined Kramers entity distributes
++its squared overlap across the full-system Bloch states.
++
++Kramers combining is always on. It is gated only by detect_ncl_from_incar
++exactly like the color pairing (non-SOC runs: entities are singles, behavior
++otherwise unchanged), and it is a data-level transform applied at weight
++assembly, strictly upstream of the curve pipeline below: stick mode draws
++summed stick heights per full state, curve mode broadens the combined weights.
++
++comp_indices are combined-entity offsets: 0 = the HOMO entity, -1 = HOMO-1,
+++1 = LUMO, etc. (kramers.homo_entity_offsets). Absolute band indices are no
++longer accepted.
+ 
+ A Curve CheckButton (lower-left) replaces the per-state sticks with a
+ Gaussian-broadened curve: each matched full state becomes a Gaussian centered
+@@ -58,11 +68,31 @@ if __name__ != "__main__":
+         PlotConfig,
+         _read_ov_all,
+     )
++    from .kramers import pair_entities, homo_entity_offsets
+ 
+ # Curve-mode smearing slider range (eV), VASP SIGMA convention
+ SIGMA_MIN = 0.01
+ SIGMA_MAX = 1.0
+ 
++
++def _offset_name(offset: int) -> str:
++    """Display name of a HOMO-relative entity offset: 0 = HOMO, -1 = HOMO-1,
++    +1 = LUMO, +2 = LUMO+1, ... (unicode minus, matching the marker labels)."""
++    if offset == 0:
++        return "HOMO"
++    if offset < 0:
++        return f"HOMO−{-offset}"
++    if offset == 1:
++        return "LUMO"
++    return f"LUMO+{offset - 1}"
++
++
++def _entity_label(offset: int, ent) -> str:
++    """Label showing both forms, e.g. 'HOMO−1 (74+75)'."""
++    if ent is None:
++        return _offset_name(offset)
++    return f"{_offset_name(offset)} ({'+'.join(str(i) for i in ent.indices)})"
++
+ # np.trapz was renamed np.trapezoid in NumPy 2.0
+ _TRAPZ = getattr(np, "trapezoid", None) or np.trapz
+ 
+@@ -158,7 +188,10 @@ def plot_spread(
+     comp_label : str
+         Component label (e.g. a molecule folder name or "metal").
+     comp_indices : list of int
+-        1-based band indices within that component. Each gets its own subplot.
++        Combined-entity HOMO-relative offsets within that component: 0 = the
++        HOMO entity, -1 = HOMO-1, +1 = LUMO (kramers.homo_entity_offsets,
++        computed with that component's own HOMO index). Each gets its own
++        subplot. Absolute band indices are no longer accepted.
+     darken_factor : float
+         Fraction to blend the MO marker bar toward black (0 = base color, 1 = black).
+     cfg : PlotConfig or None
+@@ -219,43 +252,73 @@ def plot_spread(
+         shared_e_min = None
+ 
+     # ------------------------------------------------------------------
+-    # 3. Retrieve component-state energies from comp_pairs
++    # 3. Component-state energies from comp_pairs, and the always-on
++    #    Kramers entities (SOC-gated like the colors) with their
++    #    HOMO-relative offset map for this component.
+     # ------------------------------------------------------------------
+     comp_energy_map: Dict[int, float] = {}
+     for idx, E in comp_pairs.get(comp_label, []):
+         comp_energy_map[idx] = E
+ 
++    entities = pair_entities(
++        comp_pairs.get(comp_label, []), P.is_soc, cfg.soc_pair_thresh_eV,
++        center_idx=P.known_homos.get(comp_label),
++    )
++    try:
++        offset_map = homo_entity_offsets(entities, P.known_homos.get(comp_label))
++    except ValueError:
++        offset_map = {}
++
+     # ------------------------------------------------------------------
+-    # 4. Per-panel static data (colors, MO energy, match bars) — computed
+-    #    once; the draw closure below re-renders from this on every toggle.
++    # 4. Per-panel static data (colors, entity energy, combined match
++    #    bars) — computed once; the draw closure below re-renders from
++    #    this on every toggle. Kramers combining happens HERE, at weight
++    #    assembly: one bar per full state carrying the pair-summed weight,
++    #    strictly upstream of the curve pipeline.
+     # ------------------------------------------------------------------
+     panel_data: List[Dict[str, Any]] = []
+-    for comp_idx in comp_indices:
++    for offset in comp_indices:
++        ent = offset_map.get(offset)
+         base_color = component_colors.get(comp_label, {}).get(
+-            comp_idx, (0.4, 0.4, 0.4, 1.0)
++            ent.rep if ent is not None else -1, (0.4, 0.4, 0.4, 1.0)
+         )
+         base_rgb = np.array(base_color[:3])
+         half = darken_factor / 2.0
+         light_rgb = base_rgb + (1.0 - base_rgb) * half   # toward white
+         dark_rgb = base_rgb * (1.0 - half)                # toward black
+ 
+-        E_comp_raw = comp_energy_map.get(comp_idx)
+-        E_comp = None if E_comp_raw is None else E_comp_raw + fermi_shift
++        E_comp = None if ent is None else ent.E_mean + fermi_shift
+ 
+         match_bars: List[Dict[str, Any]] = []
+-        if E_comp is not None:
++        if ent is not None:
++            members = set(ent.indices)
+             for full_idx, comps in by_full.items():
++                bar = None
+                 for rec in comps.get(comp_label, []):
+-                    if rec["comp_idx"] == comp_idx:
+-                        match_bars.append({
+-                            "E_full": rec["E"] + rec["dE"] + fermi_shift,
+-                            "ov": rec["ov"],
+-                            "full_idx": full_idx,
+-                        })
++                    if rec["comp_idx"] in members:
++                        if bar is None:
++                            bar = {
++                                "E_full": rec["E"] + rec["dE"] + fermi_shift,
++                                "ov": rec["ov"],
++                                "full_idx": full_idx,
++                            }
++                        else:
++                            bar["ov"] += rec["ov"]
++                if bar is not None:
++                    match_bars.append(bar)
++
++        member_energy_lines = ""
++        if ent is not None:
++            member_energy_lines = "".join(
++                f"\nband {i}: E = {comp_energy_map[i] + fermi_shift:+.4f} eV"
++                for i in ent.indices if i in comp_energy_map
++            )
+ 
+         panel_data.append(dict(
+-            comp_idx=comp_idx, light_rgb=light_rgb, dark_rgb=dark_rgb,
++            offset=offset, ent=ent, label=_entity_label(offset, ent),
++            light_rgb=light_rgb, dark_rgb=dark_rgb,
+             E_comp=E_comp, match_bars=match_bars,
++            member_energy_lines=member_energy_lines,
+         ))
+ 
+     # ------------------------------------------------------------------
+@@ -339,10 +402,10 @@ def plot_spread(
+ 
+         for pd, ax in zip(panel_data, axes):
+             ax.clear()
+-            comp_idx = pd["comp_idx"]
++            offset = pd["offset"]
+ 
+             if pd["E_comp"] is None:
+-                ax.set_title(f"{comp_label} band {comp_idx} — not found")
++                ax.set_title(f"{comp_label} {_offset_name(offset)} — not found")
+                 continue
+             E_comp = pd["E_comp"]
+             match_bars = pd["match_bars"]
+@@ -367,7 +430,7 @@ def plot_spread(
+                     artists.append(line)
+                     total = sum(p for _, p in sts)
+                     hover_map[line] = (
+-                        f"{comp_label} band {comp_idx}\n"
++                        f"{comp_label} {pd['label']}\n"
+                         f"Gaussian-broadened spread\n"
+                         f"total ov {total:.5f} over {len(sts)} states\n"
+                         f"normalized to unit area"
+@@ -403,8 +466,9 @@ def plot_spread(
+             )
+             artists.append(mo_line)
+             hover_map[mo_line] = (
+-                f"{comp_label} band {comp_idx}\n"
++                f"{comp_label} {pd['label']}\n"
+                 f"E {E_comp:+.4f} eV"
++                + pd["member_energy_lines"]
+             )
+             if state["curve"]:
+                 marker_entries.append(dict(ax=ax, line=mo_line, E=E_comp))
+@@ -436,7 +500,7 @@ def plot_spread(
+                     ax.set_xlim(right=v_shifted)
+             ax.set_ylabel(_ylabel())
+             ax.set_title(
+-                f"{comp_label} band {comp_idx},  E = {E_comp:+.4f} eV"
++                f"{comp_label} {pd['label']},  E = {E_comp:+.4f} eV"
+             )
+ 
+             # --- Hover annotations ---
+@@ -550,13 +614,16 @@ if __name__ == "__main__":
+         PlotConfig,
+         _read_ov_all,
+     )
++    from matcher.kramers import pair_entities, homo_entity_offsets
+ 
+     # ---- Directory containing matcher output files ----
+     output_dir = r'dir/run'
+ 
+-    # ---- Which component and which bands to plot ----
++    # ---- Which component and which entities to plot ----
+     comp_label = "clean_kp551"
+-    comp_indices = [76,78,80,81]          # 1-based band indices
++    comp_indices = [-2, -1, 0, 1]        # HOMO-relative entity offsets:
++                                         # 0 = HOMO entity, -1 = HOMO-1,
++                                         # +1 = LUMO
+ 
+     # ---- Visual tuning ----
+     darken_factor = 0.4                  # 0 = base color, 1 = black
+ .../MOPmatcher_mem}/matcher/spread_collapse.py     | 260 ++++++++++++++++-----
+ 1 file changed, 203 insertions(+), 57 deletions(-)
+diff --git a/MOPmatcher_mem/matcher/spread_collapse.py b/LDOS_spread_decomp/MOPmatcher_mem/matcher/spread_collapse.py
+index d9858ab..9f9299d 100644
+--- a/MOPmatcher_mem/matcher/spread_collapse.py
++++ b/LDOS_spread_decomp/MOPmatcher_mem/matcher/spread_collapse.py
+@@ -5,26 +5,39 @@ Created on Tue Mar 25 2026
+ @author: Benjamin Kafin
+ 
+ Standalone spread plotter.
+-For a list of component labels and a shared list of band indices, produces a
+-figure showing how each component MO distributes its squared overlap across the
+-full-system Bloch states.
++For a list of component labels and a shared list of HOMO-relative entity
++offsets, produces a figure showing how each combined Kramers entity
++distributes its squared overlap across the full-system Bloch states.
++
++Kramers combining is always on. It is gated only by detect_ncl_from_incar
++exactly like the color pairing (non-SOC runs: entities are singles, behavior
++otherwise unchanged), and it is a data-level transform applied at weight
++assembly, strictly upstream of the curve pipeline below: stick mode draws
++summed stick heights per full state, curve mode broadens the combined
++weights. In Horizontal mode the order is: pair-sum within component ->
++component-sum -> combine -> normalize -> amplitude.
++
++comp_indices are combined-entity offsets: 0 = the HOMO entity, -1 = HOMO-1,
+++1 = LUMO, etc. (kramers.homo_entity_offsets, computed per component
++including "metal" via its own HOMO index). Absolute band indices are no
++longer accepted.
+ 
+ Two CheckButtons in the figure (lower-left) toggle the layout live:
+ 
+   Vertical OFF, Horizontal OFF (base grid):
+-      one subplot per (band index row x component column).
++      one subplot per (entity-offset row x component column).
+ 
+   Vertical ON only:
+-      one column per component; that component's band-index spreads are
++      one column per component; that component's entity spreads are
+       overlaid onto a single axis.
+ 
+   Horizontal ON only:
+-      one axis per band index; every component's spread of that state is
++      one axis per entity offset; every component's spread of that entity is
+       overlaid onto the single axis, with each component offset in lightness
+       (same hue) so they remain distinguishable.
+ 
+   both ON:
+-      a single axis holds every component's spread of every band index.
++      a single axis holds every component's spread of every entity offset.
+ 
+ A further Curve toggle replaces the per-state sticks with Gaussian-broadened
+ curves: each matched full state becomes a Gaussian centered at its energy
+@@ -186,6 +199,19 @@ if __name__ != "__main__":
+         PlotConfig,
+         _read_ov_all,
+     )
++    from .kramers import pair_entities, homo_entity_offsets
++
++
++def _offset_name(offset: int) -> str:
++    """Display name of a HOMO-relative entity offset: 0 = HOMO, -1 = HOMO-1,
++    +1 = LUMO, +2 = LUMO+1, ... (unicode minus, matching the marker labels)."""
++    if offset == 0:
++        return "HOMO"
++    if offset < 0:
++        return f"HOMO−{-offset}"
++    if offset == 1:
++        return "LUMO"
++    return f"LUMO+{offset - 1}"
+ 
+ 
+ class SpreadPlotter:
+@@ -273,6 +299,29 @@ class SpreadPlotter:
+                 m[idx] = E
+             self.comp_energy_map[component] = m
+ 
++        # --------------------------------------------------------------
++        # Always-on Kramers entities (SOC-gated like the colors, via
++        # P.is_soc from detect_ncl_from_incar) and the HOMO-relative
++        # offset map per component ("metal" anchors on its own HOMO).
++        # comp_indices are combined-entity offsets from here on.
++        # --------------------------------------------------------------
++        self.is_soc = P.is_soc
++        self.known_homos = P.known_homos
++        self.entities: Dict[str, List[Any]] = {}
++        self.entity_offsets: Dict[str, Dict[int, Any]] = {}
++        for component in self.components:
++            ents = pair_entities(
++                self.comp_pairs.get(component, []), self.is_soc,
++                self.cfg.soc_pair_thresh_eV,
++                center_idx=self.known_homos.get(component),
++            )
++            self.entities[component] = ents
++            try:
++                self.entity_offsets[component] = homo_entity_offsets(
++                    ents, self.known_homos.get(component))
++            except ValueError:
++                self.entity_offsets[component] = {}
++
+         # --------------------------------------------------------------
+         # Band-index ranking (marker z-order and figure sizing)
+         # --------------------------------------------------------------
+@@ -363,6 +412,50 @@ class SpreadPlotter:
+             return self.darken_factor / 2.0
+         return self.darken_factor * j / (n - 1)
+ 
++    # ==================================================================
++    # Kramers-entity helpers (comp_indices are HOMO-relative offsets)
++    # ==================================================================
++    def _entity_for(self, component: str, offset: int):
++        """The component's combined entity at the given HOMO-relative
++        offset, or None when that offset does not exist ("not found")."""
++        return self.entity_offsets.get(component, {}).get(offset)
++
++    def _entity_label(self, component: str, offset: int) -> str:
++        """Label showing both forms, e.g. 'HOMO−1 (74+75)'."""
++        ent = self._entity_for(component, offset)
++        if ent is None:
++            return _offset_name(offset)
++        return (f"{_offset_name(offset)} "
++                f"({'+'.join(str(i) for i in ent.indices)})")
++
++    def _entity_member_lines(self, component: str, offset: int) -> str:
++        """Hover suffix listing both member energies of the entity."""
++        ent = self._entity_for(component, offset)
++        if ent is None:
++            return ""
++        emap = self.comp_energy_map.get(component, {})
++        return "".join(
++            f"\nband {i}: E = {emap[i] + self.fermi_shift:+.4f} eV"
++            for i in ent.indices if i in emap
++        )
++
++    def _lead_component(self, comps: List[str], offset: int) -> Optional[str]:
++        """First component that has an entity at this offset (label and rep
++        color source for axes holding several components' curves)."""
++        for c in comps:
++            if self._entity_for(c, offset) is not None:
++                return c
++        return None
++
++    def _entity_rgb(self, component: Optional[str], offset: int) -> np.ndarray:
++        """Base color of the entity's rep member (the member the color walk
++        assigned the pair's slot to)."""
++        if component is not None:
++            ent = self._entity_for(component, offset)
++            if ent is not None:
++                return self._base_rgb_for(component, ent.rep)
++        return np.array([0.4, 0.4, 0.4])
++
+     # ==================================================================
+     # Energy / fermi averaging helpers (components are identical molecules)
+     # ==================================================================
+@@ -373,12 +466,12 @@ class SpreadPlotter:
+         vals = [self.known_fermis.get(c, 0.0) for c in comps]
+         return (sum(vals) / len(vals) + self.fermi_shift) if vals else self.fermi_shift
+ 
+-    def _avg_marker_E(self, comps: List[str], comp_idx: int) -> Optional[float]:
++    def _avg_marker_E(self, comps: List[str], offset: int) -> Optional[float]:
+         es = []
+         for c in comps:
+-            e = self.comp_energy_map.get(c, {}).get(comp_idx)
+-            if e is not None:
+-                es.append(e)
++            ent = self._entity_for(c, offset)
++            if ent is not None:
++                es.append(ent.E_mean)
+         if not es:
+             return None
+         return sum(es) / len(es) + self.fermi_shift
+@@ -670,18 +763,20 @@ class SpreadPlotter:
+         curves = []
+         for comp_idx, states in groups.items():
+             if horizontal_on:
+-                base = (self._base_rgb_for(cell_components[0], comp_idx)
+-                        if cell_components else np.array([0.4, 0.4, 0.4]))
++                lead = self._lead_component(cell_components, comp_idx)
++                base = self._entity_rgb(lead, comp_idx)
+                 col = (tuple(base) if plain_color
+                        else tuple(self._light_rgb_from(
+                            base, self.darken_factor / 2.0)))
+-                name = f"band {comp_idx} (Σ components)"
++                name = (f"{self._entity_label(lead, comp_idx)} (Σ components)"
++                        if lead is not None
++                        else f"{_offset_name(comp_idx)} (Σ components)")
+             else:
+                 component = cell_components[0]
+-                base = self._base_rgb_for(component, comp_idx)
++                base = self._entity_rgb(component, comp_idx)
+                 col = tuple(self._light_rgb_from(
+                     base, 0.0 if plain_color else self.darken_factor / 2.0))
+-                name = f"{component} band {comp_idx}"
++                name = f"{component} {self._entity_label(component, comp_idx)}"
+             # full pipeline: combine, per-curve unit-area normalization,
+             # then the final amplitude sqrt
+             y = _curve_values(x, states, self.sigma, self.amplitude)
+@@ -732,21 +827,37 @@ class SpreadPlotter:
+         # bars_by_x[x] = [dict(comp_idx, full_idx, E_full, h, parts), ...]
+         bars_by_x: Dict[float, List[Dict[str, Any]]] = {}
+ 
++        # Kramers combining happens HERE, at weight assembly (data-level,
++        # strictly upstream of the curve pipeline): per full state, each
++        # component contributes the PAIR-SUMMED weight of its entity at this
++        # offset. In Horizontal mode the order is: pair-sum within component
++        # -> component-sum -> (curve pipeline: combine -> normalize ->
++        # amplitude). The bar dicts keep the key name 'comp_idx' but carry
++        # the entity OFFSET from here on.
+         for comp_idx in cell_band_indices:
+             if horizontal_on:
+                 # ---- sum components mapping to the same full_idx ----
+-                # contrib[full_idx] = (E_full, [(j, component, ov), ...])
++                # contrib[full_idx] = (E_full, [(j, component, ov), ...]);
++                # each ov is that component's pair-summed entity weight.
+                 contrib: Dict[int, Tuple[float, List[Tuple[int, str, float]]]] = {}
+                 for full_idx, comps in self.by_full.items():
+                     for j, component in enumerate(cell_components):
++                        ent = self._entity_for(component, comp_idx)
++                        if ent is None:
++                            continue
++                        ov_c = None
++                        E_full = None
+                         for rec in comps.get(component, []):
+-                            if rec["comp_idx"] != comp_idx:
+-                                continue
+-                            E_full = rec["E"] + rec["dE"] + self.fermi_shift
+-                            ov = rec["ov"]
+-                            if full_idx not in contrib:
+-                                contrib[full_idx] = (E_full, [])
+-                            contrib[full_idx][1].append((j, component, ov))
++                            if rec["comp_idx"] in ent.indices:
++                                if ov_c is None:
++                                    ov_c = 0.0
++                                    E_full = rec["E"] + rec["dE"] + self.fermi_shift
++                                ov_c += rec["ov"]
++                        if ov_c is None:
++                            continue
++                        if full_idx not in contrib:
++                            contrib[full_idx] = (E_full, [])
++                        contrib[full_idx][1].append((j, component, ov_c))
+ 
+                 for full_idx, (E_full, parts) in contrib.items():
+                     total = sum(ov for _, _, ov in parts)
+@@ -759,17 +870,26 @@ class SpreadPlotter:
+             else:
+                 # ---- horizontal off: cell holds exactly one component ----
+                 component = cell_components[0]
++                ent = self._entity_for(component, comp_idx)
++                if ent is None:
++                    continue
+                 for full_idx, comps in self.by_full.items():
++                    ov_c = None
++                    E_full = None
+                     for rec in comps.get(component, []):
+-                        if rec["comp_idx"] != comp_idx:
+-                            continue
+-                        E_full = rec["E"] + rec["dE"] + self.fermi_shift
+-                        h = self._yval(rec["ov"])
+-                        bars_by_x.setdefault(round(E_full, 6), []).append(dict(
+-                            comp_idx=comp_idx, full_idx=full_idx,
+-                            E_full=E_full, h=h, p=rec["ov"], parts=None))
+-                        if h > axis_max:
+-                            axis_max = h
++                        if rec["comp_idx"] in ent.indices:
++                            if ov_c is None:
++                                ov_c = 0.0
++                                E_full = rec["E"] + rec["dE"] + self.fermi_shift
++                            ov_c += rec["ov"]
++                    if ov_c is None:
++                        continue
++                    h = self._yval(ov_c)
++                    bars_by_x.setdefault(round(E_full, 6), []).append(dict(
++                        comp_idx=comp_idx, full_idx=full_idx,
++                        E_full=E_full, h=h, p=ov_c, parts=None))
++                    if h > axis_max:
++                        axis_max = h
+ 
+         # ---- pass 2: draw ----
+         if self.curve_mode:
+@@ -805,7 +925,7 @@ class SpreadPlotter:
+                         y_bot = 0.0
+                         for j, component, ov in parts_sorted:
+                             y_top = y_bot + ov
+-                            base = self._base_rgb_for(component, comp_idx)
++                            base = self._entity_rgb(component, comp_idx)
+                             col = tuple(self._light_rgb_from(
+                                 base, self._light_f_for(j, C)))
+                             line = ax.vlines(
+@@ -816,7 +936,8 @@ class SpreadPlotter:
+                             )
+                             artists.append(line)
+                             hover[line] = (
+-                                f"{component} band {comp_idx}\n"
++                                f"{component} "
++                                f"{self._entity_label(component, comp_idx)}\n"
+                                 f"full_idx {rec['full_idx']}\n"
+                                 f"E_full {rec['E_full']:+.4f} eV\n"
+                                 f"{self._mag_name()} "
+@@ -824,7 +945,9 @@ class SpreadPlotter:
+                             )
+                             y_bot = y_top
+                     elif horizontal_on:
+-                        base = self._base_rgb_for(cell_components[0], comp_idx) if cell_components else np.array([0.4, 0.4, 0.4])
++                        base = self._entity_rgb(
++                            self._lead_component(cell_components, comp_idx),
++                            comp_idx)
+                         col = (tuple(base) if plain_color
+                                else tuple(self._light_rgb_from(
+                                    base, self.darken_factor / 2.0)))
+@@ -840,7 +963,7 @@ class SpreadPlotter:
+                         )
+                     else:
+                         component = cell_components[0]
+-                        base = self._base_rgb_for(component, comp_idx)
++                        base = self._entity_rgb(component, comp_idx)
+                         col = tuple(self._light_rgb_from(
+                             base, 0.0 if plain_color else self.darken_factor / 2.0))
+                         line = ax.vlines(
+@@ -854,19 +977,28 @@ class SpreadPlotter:
+                             f"{self._mag_name()} {rec['h']:.5f}"
+                         )
+ 
+-        # ---- markers (one per band index, behind all bars) ----
++        # ---- markers (one per entity, at E_mean, behind all bars) ----
+         for comp_idx in cell_band_indices:
+             if not draw_markers:
+                 break
+             if horizontal_on:
+                 E_m = self._avg_marker_E(cell_components, comp_idx)
+-                base = self._base_rgb_for(cell_components[0], comp_idx) if cell_components else np.array([0.4, 0.4, 0.4])
+-                marker_label = f"band {comp_idx}\nE {E_m:+.4f} eV (mean of {C})" if E_m is not None else None
++                lead = self._lead_component(cell_components, comp_idx)
++                base = self._entity_rgb(lead, comp_idx)
++                marker_label = (
++                    f"{self._entity_label(lead, comp_idx)}\n"
++                    f"E {E_m:+.4f} eV (mean of {C})"
++                    + self._entity_member_lines(lead, comp_idx)
++                    if E_m is not None and lead is not None else None)
+             else:
+                 component = cell_components[0]
+                 E_m = self._avg_marker_E([component], comp_idx)
+-                base = self._base_rgb_for(component, comp_idx)
+-                marker_label = f"{component} band {comp_idx}\nE {E_m:+.4f} eV" if E_m is not None else None
++                base = self._entity_rgb(component, comp_idx)
++                marker_label = (
++                    f"{component} {self._entity_label(component, comp_idx)}\n"
++                    f"E {E_m:+.4f} eV"
++                    + self._entity_member_lines(component, comp_idx)
++                    if E_m is not None else None)
+             if E_m is not None:
+                 # curve mode: marker spans the full axis height (the ylim is
+                 # the tallest curve peak, which the sigma slider rescales)
+@@ -897,21 +1029,24 @@ class SpreadPlotter:
+ 
+         # ---- title: reproduce the exact text for this collapse combination ----
+         if vertical_on and horizontal_on:
+-            title = "Spread \u2014 all components, all bands"
++            title = "Spread \u2014 all components, all entities"
+         elif horizontal_on:
+             comp_idx = cell_band_indices[0]
+             E_m = self._avg_marker_E(cell_components, comp_idx)
+-            title = (f"band {comp_idx}, E = {E_m:+.4f} eV" if E_m is not None
+-                     else f"band {comp_idx} \u2014 not found")
++            lead = self._lead_component(cell_components, comp_idx)
++            title = (f"{self._entity_label(lead, comp_idx)}, E = {E_m:+.4f} eV"
++                     if E_m is not None and lead is not None
++                     else f"{_offset_name(comp_idx)} \u2014 not found")
+         elif vertical_on:
+             title = f"{cell_components[0]}"
+         else:
+             component = cell_components[0]
+             comp_idx = cell_band_indices[0]
+             E_m = self._avg_marker_E([component], comp_idx)
+-            title = (f"{component} band {comp_idx}, E = {E_m:+.4f} eV"
++            title = (f"{component} {self._entity_label(component, comp_idx)}, "
++                     f"E = {E_m:+.4f} eV"
+                      if E_m is not None
+-                     else f"{component} band {comp_idx} \u2014 not found")
++                     else f"{component} {_offset_name(comp_idx)} \u2014 not found")
+ 
+         self._finalize_axis(
+             ax, axis_max, title,
+@@ -1039,14 +1174,17 @@ class MultiSpreadPlotter:
+             for k in range(self.max_C)]
+ 
+         def _avg_mo(sources):
++            # b is a HOMO-relative entity offset; each source contributes
++            # its entity's E_mean (one stick per entity, existing averaging
++            # rules otherwise unchanged).
+             vals: Dict[int, List[float]] = {b: [] for b in self.comp_indices}
+             fvals: List[float] = []
+             for sp, c in sources:
+                 fvals.append(sp.known_fermis.get(c, 0.0) + sp.fermi_shift)
+                 for b in self.comp_indices:
+-                    e = sp.comp_energy_map.get(c, {}).get(b)
+-                    if e is not None:
+-                        vals[b].append(e + sp.fermi_shift)
++                    ent = sp._entity_for(c, b)
++                    if ent is not None:
++                        vals[b].append(ent.E_mean + sp.fermi_shift)
+             energies = {b: sum(v) / len(v) for b, v in vals.items() if v}
+             fermi = (sum(fvals) / len(fvals)) if fvals else 0.0
+             return energies, fermi, len(fvals)
+@@ -1234,15 +1372,16 @@ class MultiSpreadPlotter:
+             E_m = mo_energies.get(comp_idx)
+             if E_m is None:
+                 continue
+-            col = tuple(sp0._base_rgb_for(comp0, comp_idx))
++            col = tuple(sp0._entity_rgb(comp0, comp_idx))
+             line = ax.vlines(
+                 E_m, 0, 1.0, color=col,
+                 linewidth=self.cfg.lw_stick + 1.0,
+                 zorder=sp0._marker_z(comp_idx))
+             artists.append(line)
+             hover[line] = (
+-                f"band {comp_idx}\n"
+-                f"E {E_m:+.4f} eV (mean of {n_sources})")
++                f"{sp0._entity_label(comp0, comp_idx)}\n"
++                f"E {E_m:+.4f} eV (mean of {n_sources})"
++                + sp0._entity_member_lines(comp0, comp_idx))
+         # own system Fermi of the molecule row IS the molecule Fermi, so the
+         # dotted black line lands on the red dashed line here by design
+         self._draw_reflines(ax, mol_fermi, mol_fermi)
+@@ -1323,7 +1462,10 @@ def plot_spread(
+     components : list of str
+         Component labels. The same comp_indices are used for every component.
+     comp_indices : list of int
+-        1-based band indices, shared across all components.
++        Combined-entity HOMO-relative offsets, shared across all components
++        and computed per component (0 = HOMO entity, -1 = HOMO-1,
++        +1 = LUMO; "metal" anchors on its own HOMO index). Absolute band
++        indices are no longer accepted.
+     collapse_vertical, collapse_horizontal : bool
+         Initial state of the in-figure toggles.
+     darken_factor : float
+@@ -1385,7 +1527,9 @@ def plot_spread_multi(
+         potentials, the whole stack is shifted so that run's full-system
+         Fermi sits at 0 eV.
+     comp_indices : list of int
+-        1-based band indices, shared across all runs and components.
++        Combined-entity HOMO-relative offsets, shared across all runs and
++        components and computed per component (0 = HOMO entity, -1 = HOMO-1,
++        +1 = LUMO). Absolute band indices are no longer accepted.
+     darken_factor : float
+         As in plot_spread.
+     cfg : PlotConfig or None
+@@ -1435,6 +1579,7 @@ if __name__ == "__main__":
+         PlotConfig,
+         _read_ov_all,
+     )
++    from matcher.kramers import pair_entities, homo_entity_offsets
+ 
+     # ---- Runs: (full_dir, [component labels]), in top-to-bottom order ----
+     # One entry  -> the interactive single-run figure with layout toggles.
+@@ -1470,8 +1615,9 @@ if __name__ == "__main__":
+         (r'dir/run',['NHC_c1m1', 'NHC_c2m1', 'NHC_c3m1', 'NHC_c4m1'])
+         ]
+     #'''
+-    # ---- Which bands to plot (1-based, shared by all runs/components) ----
+-    comp_indices = [76, 78, 80, 81]
++    # ---- Which entities to plot: HOMO-relative offsets, shared by all
++    # runs/components (0 = HOMO entity, -1 = HOMO-1, +1 = LUMO) ----
++    comp_indices = [-2, -1, 0, 1]
+ 
+     # ---- Initial toggle state (flip live with the in-figure checkboxes) ----
+     collapse_vertical = True
