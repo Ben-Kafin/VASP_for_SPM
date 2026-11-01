@@ -1,7 +1,13 @@
+"""
+The rectangular MOPMatcher colour plot (RectAEPAWColorPlotter) and the readers of the matcher's
+outputs.  The figure is a qtgui window (the shared Qt layer at the repository root): one row of
+panels per component and the full system (automatic layout: the layer's grid of cells), the
+sticks as line collections, and the hover labels of widgets.HoverLabels on every panel (a left
+click on a panel arms them, a right click clears and disarms them).
+"""
 from __future__ import annotations
 import os
 import json
-import textwrap
 import h5py
 from types import SimpleNamespace
 from collections import defaultdict
@@ -9,13 +15,16 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple#, Union
 
 import numpy as np
-import matplotlib.pyplot as plt
 
-try:
-    import mplcursors
-    HAS_MPLCURSORS = True
-except Exception:
-    HAS_MPLCURSORS = False
+# The shared Qt layer (qtgui at the repository root): found by walking up from this file.
+import os as _os, sys as _sys
+_root = _os.path.dirname(_os.path.abspath(__file__))
+while not _os.path.isdir(_os.path.join(_root, 'qtgui')) and _os.path.dirname(_root) != _root:
+    _root = _os.path.dirname(_root)
+if _root not in _sys.path:
+    _sys.path.insert(0, _root)
+from qtgui import qtplot as plt
+from qtgui import widgets
 
 # Relative imports when loaded as the 'matcher' package; absolute fallbacks when
 # the package is run directly as a standalone script (e.g. %runfile on
@@ -231,15 +240,23 @@ class PlotConfig:
 
 
 class RectAEPAWColorPlotter:
+    """
+    The rectangular colour plot: per component one panel of sticks (one per component state, its
+    canonical colour), and the full-system panel of segments coloured by the matched components.
+    Every panel's hover labels are a widgets.HoverLabels (_hover_by_comp, _hover_f, _hover_by_axes),
+    armed by a left click on the panel and cleared by a right click, with the texts the stick
+    builders write.
+    """
+
     def __init__(self, config: Optional[PlotConfig] = None):
         self.cfg = config or PlotConfig()
         self._artists_by_comp: Dict[str, List[Any]] = {}
         self._hover_map_comp: Dict[str, Dict[Any, str]] = {} 
-        self._cursor_by_comp: Dict[str, Any] = {}
+        self._hover_by_comp: Dict[str, Any] = {}
         self._artists_f: List[Any] = []
         self._hover_map_f: Dict[Any, str] = {}
-        self._cursor_f = None
-        self._cursor_by_axes: Dict[Any, Any] = {}
+        self._hover_f = None
+        self._hover_by_axes: Dict[Any, Any] = {}
 
     def _get_cmap(self, name: str):
         try: return plt.get_cmap(name)
@@ -297,13 +314,21 @@ class RectAEPAWColorPlotter:
         return _read_rect_txt_delimited(path)
 
     def plot(self, path: str, ax: Optional[plt.Axes] = None, bonding: bool = False):
-        self._cursor_by_axes.clear()
+        """
+        The window: one panel per component (the metal first) and the full-system panel below
+        them, one column, sharing the energy axis.  DESIGN (inches) is the window's design size,
+        the text zoom's reference: cfg.figsize[0] wide, 1.5 inches per row (at least 3).
+        Returns (fig, axes).
+        """
+        self._hover_by_axes.clear()
         P = self._prepare(path, bonding, write_summaries=True)
 
         n_comp_axes = len(P.mol_labels) + (1 if P.metal_present else 0)
         total_rows = max(1, n_comp_axes) + 1
-        figsize = (self.cfg.figsize[0], max(3, 1.5 * total_rows))
-        fig, axes = plt.subplots(total_rows, 1, sharex=True, figsize=figsize)
+        DESIGN = (self.cfg.figsize[0], max(3, 1.5 * total_rows))
+        # automatic layout: the one rule for every window (nothing placed by hand): plt.subplots
+        # fills the window's grid of cells.
+        fig, axes = plt.subplots(total_rows, 1, sharex=True, figsize=DESIGN)
         axes = [axes] if total_rows == 1 else list(axes)
         comp_axes, ax_f = axes[:n_comp_axes], axes[-1]
 
@@ -319,9 +344,35 @@ class RectAEPAWColorPlotter:
             ax_f, P.rows, P.by_full, P.comp_iter_order, P.component_colors,
             P.classifier, P.mol_labels, P.known_fermis, P.v_aligned)
 
-        self._wire_global_click(fig)
-        fig.tight_layout()
+        if not self.cfg.energy_range:
+            win = self._energy_window(P)
+            if win is not None:
+                vertical = getattr(self.cfg, "orientation", "horizontal") == "vertical"
+                for a in axes:
+                    (a.set_ylim if vertical else a.set_xlim)(*win)
         return fig, axes
+
+    def _energy_window(self, P, shift: float = 0.0):
+        """
+        The energy range of a plot without an energy_range: what matplotlib's autoscale gave the
+        old figure (axvline / axhline and vlines / hlines all enter it), the union over the
+        panels of every stick's and reference line's energy (the component states, the full
+        states, the Fermi level at 0, the local Fermis, the vacuum), widened by 5 % of its span
+        at each end (axes.xmargin / ymargin).  None without any energy.
+        """
+        es = [float(E) + shift for pairs in P.comp_pairs.values() for _, E in pairs]
+        es += [float(r["E_full"]) + shift for r in P.rows]
+        if self.cfg.show_fermi_line:
+            es.append(0.0)
+        if self.cfg.show_local_fermi:
+            es += [float(v) + shift for v in P.known_fermis.values()]
+        if self.cfg.show_vacuum_line and P.v_aligned is not None:
+            es.append(float(P.v_aligned) + shift)
+        if not es:
+            return None
+        lo, hi = min(es), max(es)
+        span = (hi - lo) or 1.0
+        return lo - 0.05 * span, hi + 0.05 * span
 
     def _prepare(self, path: str, bonding: bool, write_summaries: bool = True):
         """
@@ -507,19 +558,16 @@ class RectAEPAWColorPlotter:
         if vertical:
             axc.set_xlabel(self.cfg.ylabel)
             if energy_ylabel: axc.set_ylabel(self.cfg.xlabel)
-            t = textwrap.fill(t, 14)  # narrow columns: wrap long titles
         else:
             axc.set_ylabel(self.cfg.ylabel)
+        # The title as given (the layer shows the part before the first ': ' or ', ' and sends the
+        # rest to the information panel); a narrow column no longer wraps it.
         axc.set_title(t)
-        if self.cfg.annotate_on_hover and HAS_MPLCURSORS and artists:
-            cur = mplcursors.cursor(artists, hover=True); cur.enabled = False
-            self._cursor_by_comp[k] = cur; self._cursor_by_axes[axc] = cur
-            _mono = dual is not None
-            @cur.connect("add")
-            def _on_add_comp(sel, hmap=hover_map, mono=_mono):
-                if (txt := hmap.get(sel.artist)):
-                    sel.annotation.set_text(txt)
-                    if mono: sel.annotation.set_fontfamily("monospace")
+        if self.cfg.annotate_on_hover and artists:
+            # The hover labels of this panel: armed by a left click, cleared by a right click; the
+            # two-column (dual) text in a monospace label so its columns line up.
+            hl = widgets.HoverLabels(axc, artists, hover_map, mono=dual is not None)
+            self._hover_by_comp[k] = hl; self._hover_by_axes[axc] = hl
 
     def _draw_full_axis(self, ax_f, rows, by_full, comp_iter_order, component_colors,
                         classifier, mol_labels, known_fermis, v_aligned,
@@ -548,9 +596,9 @@ class RectAEPAWColorPlotter:
         become horizontal, and the energy axis is y.
 
         Uses local artist/hover dictionaries (mirrored onto self._artists_f /
-        self._hover_map_f at the end for backward compatibility) so the hover
-        closure captures a per-call map; this lets a stack contain more than
-        one full-system axis with independent hovers.
+        self._hover_map_f at the end for backward compatibility) so each call's
+        HoverLabels holds its own map; this lets a stack contain more than one
+        full-system axis with independent hovers.
         """
         vertical = getattr(self.cfg, "orientation", "horizontal") == "vertical"
         eline = ax_f.axhline if vertical else ax_f.axvline
@@ -696,7 +744,7 @@ class RectAEPAWColorPlotter:
 
         t = title if title is not None else self.cfg.title_full
         if vertical:
-            ax_f.set_title(textwrap.fill(t, 14))  # narrow columns: wrap long titles
+            ax_f.set_title(t)
             ax_f.set_xlabel(self.cfg.ylabel)
             if energy_ylabel: ax_f.set_ylabel(self.cfg.xlabel)
             if e_lim: ax_f.set_ylim(e_lim)
@@ -707,29 +755,8 @@ class RectAEPAWColorPlotter:
             if e_lim: ax_f.set_xlim(e_lim)
 
         self._artists_f, self._hover_map_f = artists_f, hover_map_f
-        if self.cfg.annotate_on_hover and HAS_MPLCURSORS and artists_f:
-            self._cursor_f = mplcursors.cursor(artists_f, hover=True); self._cursor_f.enabled = False
-            self._cursor_by_axes[ax_f] = self._cursor_f
-            @self._cursor_f.connect("add")
-            def _on_add_f(sel, hmap=hover_map_f):
-                if (txt := hmap.get(sel.artist)): sel.annotation.set_text(txt)
-
-    def _wire_global_click(self, fig):
-        """
-        Attach the figure-level click handler (extracted verbatim from the
-        original plot()): left-click enables an axis' hover cursor, right-click
-        clears and disables it.
-        """
-        if HAS_MPLCURSORS:
-            def _on_click(event, _map=self._cursor_by_axes):
-                if event.inaxes is None: return
-                cur = _map.get(event.inaxes)
-                if cur is None: return
-                if event.button == 1:
-                    if not cur.enabled:
-                        cur.enabled = True
-                elif event.button == 3:
-                    for sel in list(cur.selections):
-                        cur.remove_selection(sel)
-                    cur.enabled = False
-            fig.canvas.mpl_connect("button_press_event", _on_click)
+        if self.cfg.annotate_on_hover and artists_f:
+            # The hover labels of the full-system panel (left click arms, right click clears): one
+            # HoverLabels per call, so a stack with several full-system panels hovers each on its own.
+            self._hover_f = widgets.HoverLabels(ax_f, artists_f, hover_map_f)
+            self._hover_by_axes[ax_f] = self._hover_f

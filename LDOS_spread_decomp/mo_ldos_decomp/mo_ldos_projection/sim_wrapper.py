@@ -1,21 +1,23 @@
 # -*- coding: utf-8 -*-
 """
-sim_wrapper.py — launcher around the UNMODIFIED stm_from_dft simulator
-(Module B, §8.3).
+sim_wrapper.py — launcher around the stm_from_dft simulator (Module B, §8.3).
 
-Instantiates the existing Interactive_STM_Simulator against the current
-σ-tagged working directory (synthetic DOSCAR + provisioned inputs). Same
-figures, same controls, identical behavior — plus two wrapper-added
-widgets placed clear of the existing ones (left column, below the
-broadening block):
+Instantiates the Interactive_STM_Simulator against the current σ-tagged
+working directory (synthetic DOSCAR + provisioned inputs). Same window,
+same controls, identical behavior — plus two control boxes the wrapper
+adds to the simulator window's left column (Interactive_STM_Simulator.
+add_control_box, under the broadening box; the window's automatic layout
+places them, nothing is placed by hand):
 
-1. σ slider (0.01–1.0, default 0.2) with a paired two-way-synced textbox.
-   σ COMMIT = slider mouse-release or textbox Enter (no continuous-drag
-   recompute). On commit: re-smear → write the new σ-tagged dir → capture
-   UI state → tear down the simulator instance → re-instantiate on the
-   new dir → restore UI state (energy-range values, LDOS height, bias
-   sign, every toggle/checkbox state, γ and the other slider values,
-   colormap, and all marker positions).
+1. The σ box (controls.SigmaBox, 0.01–1.0, default 0.2): a number box
+   whose digits step with the arrow keys.  σ COMMIT = a value applied by
+   the box (Enter, leaving the box after an edit, a digit step) that
+   differs from the current σ.  On commit: re-smear → write the new
+   σ-tagged dir → capture UI state → tear down the simulator instance →
+   re-instantiate on the new dir → restore UI state (energy-range values,
+   LDOS height, bias sign, every toggle state, γ and the other box
+   values, colormap, and all marker positions).  The commit runs on the
+   next turn of the event loop, after the box's own signal has returned.
 
 DOSCAR source option (session INPUT, decided at launch — deliberately not
 a toggle on the figure): use_synthetic_doscar=True (default) is the
@@ -29,8 +31,8 @@ smearing (ISMEAR/SIGMA), so the one-σ consistency between the site DOS
 and the spread curves that the synthetic route guarantees does not hold
 in this mode; that trade-off is the point of the option.
 
-2. A boxed "Send to decomp" widget group (below the σ widgets, boxed like
-   the broadening checkbox cluster) holding TWO buttons:
+2. A boxed "Send to decomp" control group (below the σ box, a box frame
+   like the broadening box) holding TWO buttons:
 
    "ldos" — the original send-to-decomposition behavior, unchanged. If
    the Decay toggle is ON: prints a clear warning ("projection LDOS
@@ -56,19 +58,32 @@ in this mode; that trade-off is the point of the option.
    map showing that MO's per-point projection probability/amplitude in
    place of tip height.
 
-simulator.py itself is NEVER modified: the wrapper re-attaches its
-widgets after every simulator _build_ui() (mode switches clf() the
-figure) by wrapping the INSTANCE attribute only.
+The wrapper's boxes are made once per simulator instance (_attach_widgets)
+and live in the simulator window's left column, which the window keeps
+across view changes; a σ commit makes a new simulator instance (a new
+window) and attaches new boxes to it.
 """
 from __future__ import annotations
+
+import os as _os
+import sys as _sys
+
+# The shared Qt layer (qtgui at the repository root): found by walking up from this file.
+_root = _os.path.dirname(_os.path.abspath(__file__))
+while not _os.path.isdir(_os.path.join(_root, 'qtgui')) and _os.path.dirname(_root) != _root:
+    _root = _os.path.dirname(_root)
+if _root not in _sys.path:
+    _sys.path.insert(0, _root)
 
 import os
 from typing import Any, Dict, Optional
 
 import numpy as np
-import matplotlib.pyplot as plt
-from matplotlib.widgets import Button, Slider, TextBox
 from scipy.integrate import simpson
+
+from qtgui import qtplot as plt
+from qtgui import controls
+from qtgui.qtplot import QtCore
 
 if __name__ != "__main__":
     from ._imports import PlotConfig, resolve_stm
@@ -80,20 +95,6 @@ if __name__ != "__main__":
 SIGMA_MIN = 0.01
 SIGMA_MAX = 1.0
 SIGMA_DEFAULT = 0.2
-
-# Wrapper-widget rects (figure coords): left column below the broadening
-# block, above the RUN/checkbox cluster — clear of every simulator widget
-# in every mode (rects enumerated from simulator._build_ui). The two send
-# buttons sit INSIDE the titled "Send to decomp" box. The box/button
-# rects also stay LEFT of x = 0.125 (the default gridspec left margin):
-# an axes overlapping a plot axes steals canvas.inaxes in the overlap, so
-# markers there become unpickable and clicks can misfire a send (the
-# Line/Path tip-height profile panel reaches down to y ≈ 0.23).
-_RECT_SIGMA_SLIDER = [0.035, 0.62, 0.10, 0.018]
-_RECT_SIGMA_TEXT = [0.035, 0.575, 0.055, 0.028]
-_RECT_DECOMP_BOX = [0.022, 0.435, 0.101, 0.095]
-_RECT_SEND_TOPO = [0.030, 0.462, 0.042, 0.042]
-_RECT_SEND_LDOS = [0.078, 0.462, 0.042, 0.042]
 
 
 class StmDecompSession:
@@ -137,8 +138,7 @@ class StmDecompSession:
         self.topo_decomp_offsets = [int(o) for o in topo_decomp_offsets]
 
         if cmap_topo is None:
-            from matplotlib.colors import LinearSegmentedColormap
-            cmap_topo = LinearSegmentedColormap.from_list(
+            cmap_topo = plt.LinearSegmentedColormap.from_list(
                 "t", ["black", "firebrick", "yellow"])
         self._ctor_kwargs = dict(
             erange=list(erange), ldos_height=float(ldos_height),
@@ -173,7 +173,6 @@ class StmDecompSession:
         self.topo_window: Optional[TopoDecompWindow] = None
         self._widgets: Dict[str, Any] = {}
         self._sigma_pending = self.sigma
-        self._orig_build_ui = None
         self._pending_prerun_state: Dict[str, Any] = {}
         self._pending_postrun_state: Dict[str, Any] = {}
 
@@ -189,8 +188,8 @@ class StmDecompSession:
 
     def launch(self):
         """Prepare the working directory and start the simulator
-        (non-blocking: interactive mode; call matplotlib's event loop /
-        plt.show() from the run script to hold the process)."""
+        (non-blocking: interactive mode, qtplot.ion; the run script holds
+        the process with plt.ioff() and plt.show())."""
         plt.ion()
         self._instantiate(self._prepare_workdir())
         return self.sim
@@ -221,100 +220,43 @@ class StmDecompSession:
         self._pending_prerun_state = {}
         self._pending_postrun_state = {}
 
-        # Re-attach the wrapper widgets after EVERY simulator _build_ui
-        # (mode switches clf() the whole figure). Instance-attribute wrap
-        # only — simulator.py itself is never modified.
-        self._orig_build_ui = sim._build_ui
-
-        def _wrapped_build_ui(*a, **k):
-            self._orig_build_ui(*a, **k)
-            self._attach_widgets()
-        sim._build_ui = _wrapped_build_ui
-
+        # The wrapper's boxes in the simulator window's left column, kept by
+        # the window across its view changes (add_control_box).
         self._attach_widgets()
 
     # ------------------------------------------------------------------
     def _attach_widgets(self):
+        """
+        The wrapper's controls on the current simulator window: the σ box
+        (controls.SigmaBox) and the 'Send to decomp' box with its 'topo' and
+        'ldos' buttons, placed by the window (add_control_box; automatic
+        layout: the one rule for every window, nothing placed by hand).
+        """
         sim = self.sim
-        for w in self._widgets.values():
-            try:
-                w.disconnect_events()
-            except Exception:
-                pass
-        self._widgets = {}
-        if getattr(self, "_release_cid", None) is not None:
-            try:
-                sim.fig.canvas.mpl_disconnect(self._release_cid)
-            except Exception:
-                pass
-            self._release_cid = None
+        fig = sim.fig
+        sigma_box = controls.SigmaBox(fig, self.sigma, SIGMA_MIN, SIGMA_MAX)
+        btn_topo = controls.make(fig, 'topo')
+        btn = controls.make(fig, 'ldos')
 
-        ax_sld = sim.fig.add_axes(_RECT_SIGMA_SLIDER)
-        sld = Slider(ax_sld, "σ", SIGMA_MIN, SIGMA_MAX,
-                     valinit=self.sigma, valfmt="%.3f")
-        ax_tb = sim.fig.add_axes(_RECT_SIGMA_TEXT)
-        tb = TextBox(ax_tb, "", initial=f"{self.sigma:.3f}")
-        # Titled "Send to decomp" box (boxed like the broadening checkbox
-        # cluster) under the σ widgets, holding the two send buttons.
-        ax_box = sim.fig.add_axes(_RECT_DECOMP_BOX)
-        ax_box.set_xticks([])
-        ax_box.set_yticks([])
-        ax_box.set_facecolor("none")
-        ax_box.set_navigate(False)
-        ax_box.set_title("Send to decomp", fontsize=9)
-        btn_topo = Button(sim.fig.add_axes(_RECT_SEND_TOPO), "topo",
-                          color="lightsteelblue", hovercolor="lightblue")
-        btn = Button(sim.fig.add_axes(_RECT_SEND_LDOS), "ldos",
-                     color="lightsteelblue", hovercolor="lightblue")
-
-        guard = {"busy": False}
-
-        def _on_slider(val):
-            # Drag: track + mirror into the textbox only. Commit happens
-            # on mouse RELEASE (no continuous-drag recompute).
-            if guard["busy"]:
-                return
-            guard["busy"] = True
-            try:
-                self._sigma_pending = float(val)
-                tb.set_val(f"{self._sigma_pending:.3f}")
-            finally:
-                guard["busy"] = False
-
-        def _on_release(event):
-            if event.inaxes is ax_sld and \
-                    abs(self._sigma_pending - self.sigma) > 1e-12:
-                self.commit_sigma(self._sigma_pending)
-
-        def _on_text(text):
-            if guard["busy"]:
-                return
-            try:
-                v = float(text)
-            except ValueError:
-                tb.set_val(f"{self.sigma:.3f}")
-                return
-            v = min(max(v, SIGMA_MIN), SIGMA_MAX)
-            guard["busy"] = True
-            try:
-                sld.set_val(v)
-                tb.set_val(f"{v:.3f}")
-            finally:
-                guard["busy"] = False
+        def _on_sigma(v):
+            # A value the box applied (Enter, leaving after an edit, a digit
+            # step): committed when it differs from the current σ.  The
+            # commit tears the window down, so it runs after the box's own
+            # signal has returned (the next turn of the event loop).
+            v = float(min(max(v, SIGMA_MIN), SIGMA_MAX))
             self._sigma_pending = v
             if abs(v - self.sigma) > 1e-12:
-                self.commit_sigma(v)
+                QtCore.QTimer.singleShot(0, lambda v=v: self.commit_sigma(v))
 
-        sld.on_changed(_on_slider)
-        tb.on_submit(_on_text)
-        btn.on_clicked(lambda _e: self.send_to_decomposition())
-        btn_topo.on_clicked(lambda _e: self.send_topo_to_decomposition())
-        cid = sim.fig.canvas.mpl_connect("button_release_event", _on_release)
+        sigma_box.on_change(_on_sigma)
+        btn.on_change(self.send_to_decomposition)
+        btn_topo.on_change(self.send_topo_to_decomposition)
+        sim.add_control_box(controls.box(sigma_box))
+        sim.add_control_box(controls.box(btn_topo, btn, title='Send to decomp'))
 
-        self._widgets = dict(sigma_slider=sld, sigma_text=tb,
-                             send_ldos_btn=btn, send_topo_btn=btn_topo)
-        self._release_cid = cid
-        sim.fig.canvas.draw_idle()
+        self._widgets = dict(sigma_box=sigma_box, send_ldos_btn=btn,
+                             send_topo_btn=btn_topo)
+        fig.canvas.draw_idle()
 
     # ------------------------------------------------------------------
     # σ commit: re-smear → new σ-tagged dir → capture → tear down →
@@ -330,20 +272,20 @@ class StmDecompSession:
         state["show_unit_cell"] = sim.show_unit_cell
         state["t2_clamp"] = sim.t2_clamp
         state["display_cells"] = int(sim.s_cell.val)
-        state["ldos_gamma"] = float(sim.s_ldos_gamma.val)
+        state["ldos_gamma"] = float(sim.s_ldos_gamma.value)
         state["active_marker_idx"] = sim.active_marker_idx
         state["plot_level"] = sim.plot_level
         state["is_running"] = bool(sim.is_running)
         state["marker_ratios"] = list(sim.marker_ratios)
+        # The E Pts box is the Map view's (the window keeps it in every view, shown in Map).
         state["cached_nepts"] = (int(sim.s_nepts.val)
-                                 if hasattr(sim, "s_nepts")
+                                 if sim.mode == "Map"
                                  else sim.cached_nepts)
         # run_interactive kwargs for the next instance:
         kw = dict(self.sim_kwargs)
         kw["use_decay"] = bool(sim.use_decay)
         kw["ldos_bias_sign"] = sim.ldos_bias_sign
-        kw["topo_height"] = float(sim.s_topo_h.val) \
-            if hasattr(sim, "s_topo_h") else sim.topo_height
+        kw["topo_height"] = float(sim.s_topo_h.val)
         kw["topo_bias"] = sim.global_topo_bias
         kw["marker_positions"] = [list(pt) for pt in sim.marker_coords]
         kw["line_endpoints"] = ([list(sim.p1), list(sim.p2)]
@@ -358,8 +300,9 @@ class StmDecompSession:
         # constructor kwargs:
         ctor = dict(self._ctor_kwargs)
         ctor["erange"] = [float(sim.s_emin.val), float(sim.s_emax.val)]
+        # The LDOS h box is shown in the Line / Path / Map views; in Single Point it holds the height as set.
         ctor["ldos_height"] = (float(sim.s_ldos_h.val)
-                               if hasattr(sim, "s_ldos_h")
+                               if sim.mode != "Single Point"
                                else float(sim.ldos_height))
         state["ctor_kwargs"] = ctor
         return state

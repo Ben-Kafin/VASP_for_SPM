@@ -174,8 +174,12 @@ class HoverLabels:
     new one); remove() takes it off.  The figure holds one motion and one click handler for all
     its panels (_install), so a window never wires a hover itself.
 
-    The label is a qtplot Text in data coordinates (a pale box, offset from the hit point), the
-    same item moved and retexted on every hit (created once, then updated).
+    The label is a qtplot Text in axes coordinates at the hit point (a pale box offset from it,
+    anchored toward the panel's interior): an axes text sits in the window's scene, not inside
+    the panel's view box, so a tall label is never clipped by the panel and may overlap its
+    neighbours, as the old annotations did.  The same item is moved and retexted on every hit
+    (created once, then updated; made anew when its anchor side changes).  It keeps its place in
+    the panel, not in the data, until the next hit.
     """
 
     PICK_PX = 6.0          # the pick radius (pixels) around a curve or marker without a picker of its own
@@ -300,6 +304,18 @@ class HoverLabels:
             pass
         return float(event.xdata), float(event.ydata)
 
+    def _fractions(self, x, y):
+        """Data point (x, y) as fractions of the panel's box (from its left and its bottom)."""
+        x0, y0, w, h = self.ax._px_rect()
+        px, py_up = self.ax.transData.transform([[x, y]])[0]
+        H = self.fig._canvas_size()[1]
+        return (px - x0) / (w or 1.0), (y0 + h - (H - py_up)) / (h or 1.0)
+
+    @staticmethod
+    def _anchor(fx, fy):
+        """The label's alignment at panel fractions (fx, fy): ('right', ...) in the right 40 % of the panel, (..., 'top') in its upper 40 %."""
+        return ('right' if fx > 0.6 else 'left'), ('top' if fy > 0.6 else 'bottom')
+
     def _hover(self, event):
         if event.xdata is None:
             return
@@ -312,13 +328,23 @@ class HoverLabels:
         self._current = (artist, index)
         x, y = self._point(artist, index, event)
         text = self.text_for(artist, index)
+        try:
+            fx, fy = self._fractions(x, y)
+        except Exception:
+            return
+        # The label grows toward the panel's interior: to the left of a point in the right part of
+        # the panel, downward from a point in its upper part.
+        ha, va = self._anchor(fx, fy)
+        if self._label is not None and self._label in self.ax._children and (self._label._ha, self._label._va) != (ha, va):
+            self.clear()
         if self._label is None or self._label not in self.ax._children:
-            self._label = self.ax.text(x, y, text, fontsize=8, ha='left', va='bottom', color='k', zorder=60,
-                                       offset=(10.0, 10.0), family='monospace' if self.mono else None,
+            self._label = self.ax.text(fx, fy, text, transform=self.ax.transAxes, fontsize=8, ha=ha, va=va, color='k',
+                                       zorder=60, offset=(-10.0 if ha == 'right' else 10.0, -10.0 if va == 'top' else 10.0),
+                                       family='monospace' if self.mono else None,
                                        bbox=dict(facecolor='#ffffe0', edgecolor='#808080', alpha=0.95, lw=0.8))
         else:
             self._label.set_text(text)
-            self._label.set_position((x, y))
+            self._label.set_position((fx, fy))
         self._label.set_visible(True)
         self.fig.canvas.draw_idle()
 

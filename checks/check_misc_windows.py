@@ -36,13 +36,8 @@ from checks import render_windows as rw                            # noqa: E402
 
 plt._RUNNING[0] = True          # plt.show() returns at once: the checks drive the windows themselves
 SHOTS = sys.argv[1] if len(sys.argv) > 1 else os.path.join(tempfile.gettempdir(), 'misc_shots')
-fails = []
-
-
-def check(name, cond, info=''):
-    print(('PASS  ' if cond else 'FAIL  ') + name + ('' if cond else f'   {info}'))
-    if not cond:
-        fails.append(name)
+check = rw.check           # the one check function of every check script (checks.render_windows)
+fails = rw.FAILS
 
 
 def sizes_for(fig):
@@ -361,5 +356,4 @@ if __name__ == '__main__':
         except Exception:
             traceback.print_exc()
             fails.append(fn.__name__ + ' (exception)')
-    print('\nFAILURES:', fails if fails else 'none')
-    sys.exit(1 if fails else 0)
+    sys.exit(rw.summary())

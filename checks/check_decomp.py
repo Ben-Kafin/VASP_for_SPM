@@ -59,13 +59,8 @@ from mo_ldos_projection._imports import Entity, PlotConfig         # noqa: E402
 import run_wfn_plane_slice as rps                                  # noqa: E402
 
 SHOTS = sys.argv[1] if len(sys.argv) > 1 else os.path.join(tempfile.gettempdir(), 'decomp_shots')
-fails = []
-
-
-def check(name, cond, info=''):
-    print(('PASS  ' if cond else 'FAIL  ') + name + ('' if cond else f'   {info}'))
-    if not cond:
-        fails.append(name)
+check = rw.check           # the one check function of every check script (checks.render_windows)
+fails = rw.FAILS
 
 
 def press(fig, ax, fx, fy, button=1):
@@ -215,7 +210,7 @@ try:
     data_axes = lambda w: [a for a in w.fig.axes if a.get_subplotspec() is not None]
     check('topo: a 3 x 2 grid of cells', len(twin.cells) == 6 and len(data_axes(twin)) == 6)
     check('topo: the missing offset draws not found', all(c['p'] is None for c in twin.cells[-2:]) and any('not found' in t.get_text() for a in data_axes(twin)[-2:] for t in a.texts))
-    # the layer's title rule capitalises a short name that starts with two lower-case letters ('molB' -> 'MolB')
+    # the title rule shows the short name exactly as written (a component label is data); compared case-blind here
     check('topo: the not-found title is Short: details', data_axes(twin)[-1].get_title().lower() == 'molb lumo+499' and 'not found' in data_axes(twin)[-1]._title_full)
     check('topo: one colour bar per drawn cell', len(twin.cbars) == 6 and sum(b is not None for b in twin.cbars) == 4 and all(b.ax.get_subplotspec() is None for b in twin.cbars if b))
     check('topo: the figure patch is transparent', twin.fig.patch.get_facecolor()[3] == 0.0)
@@ -330,5 +325,4 @@ try:
 except Exception:
     traceback.print_exc(); check('plane slice', False)
 
-print('\nFAILURES:', fails if fails else 'none')
-sys.exit(1 if fails else 0)
+sys.exit(rw.summary())

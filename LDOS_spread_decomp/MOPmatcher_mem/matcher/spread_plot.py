@@ -21,15 +21,22 @@ comp_indices are combined-entity offsets: 0 = the HOMO entity, -1 = HOMO-1,
 +1 = LUMO, etc. (kramers.homo_entity_offsets). Absolute band indices are no
 longer accepted.
 
-A Curve CheckButton (lower-left) replaces the per-state sticks with a
-Gaussian-broadened curve: each matched full state becomes a Gaussian centered
-at its energy (VASP-style smearing,
+A Curve check (in the controls under the panels) replaces the per-state
+sticks with a Gaussian-broadened curve: each matched full state becomes a
+Gaussian centered at its energy (VASP-style smearing,
 g = exp(-((E-E0)/sigma)^2) / (sigma*sqrt(pi))), combined into one continuous
-curve per panel. The in-figure slider sets the smearing width sigma in eV
-live (curves are updated in place, no rebuild).
+curve per panel. The σ (eV) number box (controls.SigmaBox, shown in curve
+mode) sets the smearing width live: Enter, leaving the box after an edit, or
+an arrow-key digit step applies it (curves are updated in place, no rebuild).
 
-An Amplitude CheckButton plots sqrt(ov) instead of ov for the sticks; its
+An Amplitude check plots sqrt(ov) instead of ov for the sticks; its
 curve-mode meaning is defined by the pipeline below.
+
+The window is a qtgui figure (the shared Qt layer at the repository root):
+automatic layout (plt.subplots fills the grid of cells, the controls sit in a
+strip under it), hover labels through widgets.HoverLabels (a left click on a
+panel arms them, a right click clears and disarms them), and the toolbar's
+Save button for publication files.
 
 CURVE PIPELINE -- ORDER OF OPERATIONS (keep this order in any future edit):
 
@@ -55,14 +62,16 @@ import os
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
-import matplotlib.pyplot as plt
-from matplotlib.widgets import CheckButtons, Slider
 
-try:
-    import mplcursors
-    HAS_MPLCURSORS = True
-except Exception:
-    HAS_MPLCURSORS = False
+# The shared Qt layer (qtgui at the repository root): found by walking up from this file.
+import os as _os, sys as _sys
+_root = _os.path.dirname(_os.path.abspath(__file__))
+while not _os.path.isdir(_os.path.join(_root, 'qtgui')) and _os.path.dirname(_root) != _root:
+    _root = _os.path.dirname(_root)
+if _root not in _sys.path:
+    _sys.path.insert(0, _root)
+from qtgui import qtplot as plt
+from qtgui import controls, widgets
 
 if __name__ != "__main__":
     from .vacupot_plotter import (
@@ -72,7 +81,7 @@ if __name__ != "__main__":
     )
     from .kramers import pair_entities, homo_entity_offsets
 
-# Curve-mode smearing slider range (eV), VASP SIGMA convention
+# Curve-mode smearing width limits (eV) of the σ box, VASP SIGMA convention
 SIGMA_MIN = 0.01
 SIGMA_MAX = 1.0
 
@@ -200,8 +209,8 @@ def plot_spread(
         Plot configuration. Uses defaults if None.
     curve : bool
         Initial state of the Curve toggle: replace the per-state sticks with a
-        Gaussian-broadened curve per panel, normalized to unit area, with an
-        in-figure sigma slider (eV).
+        Gaussian-broadened curve per panel, normalized to unit area, with the
+        σ (eV) number box shown.
     sigma : float
         Initial Gaussian smearing width in eV (VASP SIGMA convention).
     amplitude : bool
@@ -324,27 +333,24 @@ def plot_spread(
         ))
 
     # ------------------------------------------------------------------
-    # 5. Build figure: one subplot per requested band index, bottom strip
-    #    reserved for the Curve checkbox + sigma slider.
+    # 5. Build figure: one subplot per requested band index in the window's
+    #    grid of cells, the controls in a strip under it (automatic layout:
+    #    the one rule for every window; nothing placed by hand).  DESIGN is
+    #    the window's design size (inches), the text zoom's reference.
     # ------------------------------------------------------------------
     n_panels = len(comp_indices)
     fig_h = max(3.0, 1.8 * n_panels)
+    DESIGN = (cfg.figsize[0], fig_h)
     fig, axes_arr = plt.subplots(
         n_panels, 1,
         sharex=True,
-        figsize=(cfg.figsize[0], fig_h),
+        figsize=DESIGN,
         squeeze=False,
     )
     axes = [axes_arr[i, 0] for i in range(n_panels)]
-    # Bottom strip: reserve a fixed ~1.05 inches for the widgets plus the
-    # shared x-label regardless of panel count, so short (1-2 panel) figures
-    # do not let the x-label descend into the slider band.
-    bfrac = min(0.35, 1.05 / fig_h)
-    fig.subplots_adjust(bottom=bfrac, top=0.93, hspace=0.65)
 
     state = {"curve": bool(curve), "sigma": float(sigma),
              "amplitude": bool(amplitude)}
-    cursor_by_axes: Dict[Any, Any] = {}
     curve_entries: List[Dict[str, Any]] = []   # ax, line, lo, hi, states
     marker_entries: List[Dict[str, Any]] = []  # ax, line, E
 
@@ -384,23 +390,13 @@ def plot_spread(
 
     # ------------------------------------------------------------------
     # 6. Draw closure: renders every panel from panel_data in the current
-    #    mode (sticks or Gaussian-broadened curve), rebuilding the hover
-    #    cursors each time.
+    #    mode (sticks or Gaussian-broadened curve), giving every panel its
+    #    hover labels (widgets.HoverLabels: a new one per redraw replaces
+    #    the panel's old one).
     # ------------------------------------------------------------------
     def _draw_all():
         curve_entries.clear()
         marker_entries.clear()
-        for cur in cursor_by_axes.values():
-            try:
-                cur.remove()
-            except Exception:
-                try:
-                    for sel in list(cur.selections):
-                        cur.remove_selection(sel)
-                    cur.enabled = False
-                except Exception:
-                    pass
-        cursor_by_axes.clear()
 
         for pd, ax in zip(panel_data, axes):
             ax.clear()
@@ -501,52 +497,43 @@ def plot_spread(
                 if v_shifted is not None:
                     ax.set_xlim(right=v_shifted)
             ax.set_ylabel(_ylabel())
+            # "Short: details": the entity's name is shown, the energy goes
+            # to the information panel.
             ax.set_title(
                 f"{comp_label} {pd['label']},  E = {E_comp:+.4f} eV"
             )
 
-            # --- Hover annotations ---
-            if cfg.annotate_on_hover and HAS_MPLCURSORS and artists:
-                cur = mplcursors.cursor(artists, hover=True); cur.enabled = False
-                cursor_by_axes[ax] = cur
-
-                @cur.connect("add")
-                def _on_add(sel, hmap=hover_map):
-                    txt = hmap.get(sel.artist)
-                    if txt:
-                        sel.annotation.set_text(txt)
+            # --- Hover labels (left click arms, right click clears) ---
+            if cfg.annotate_on_hover and artists:
+                widgets.HoverLabels(ax, artists, hover_map)
 
         # --- Shared x-label on bottom axis ---
         axes[-1].set_xlabel(cfg.xlabel)
         fig.canvas.draw_idle()
 
     # ------------------------------------------------------------------
-    # 7. Widgets: Curve + Amplitude toggles, and the sigma slider shown
-    #    only in curve mode.
+    # 7. Controls: the Curve + Amplitude checks and the σ (eV) number box
+    #    (shown only in curve mode), real Qt widgets made once, in a strip
+    #    under the panels (automatic layout: the one rule for every window).
+    #    The window owns the state; the controls only report.
     # ------------------------------------------------------------------
-    # Widget axes are placed at inch-stable heights (fractions scaled by
-    # 1/fig_h) so they stay inside the reserved bottom strip and clear of
-    # the x-label at every panel count. Hiding a widget's axes is what
-    # blocks its events: matplotlib skips invisible axes when resolving
-    # event.inaxes, so a hidden widget cannot be clicked.
-    chk = CheckButtons(
-        fig.add_axes([0.01, 0.06 / fig_h, 0.13, 0.62 / fig_h]),
-        ["Curve", "Amplitude"], [state["curve"], state["amplitude"]],
-    )
-    sld_ax = fig.add_axes([0.35, 0.16 / fig_h, 0.40, 0.20 / fig_h])
-    sld = Slider(
-        sld_ax, r"$\sigma$ (eV)", SIGMA_MIN, SIGMA_MAX,
-        valinit=state["sigma"], valfmt="%.3f",
-    )
+    chk = controls.make(fig, 'spread view', values=[state["curve"], state["amplitude"]])
+    sld = controls.SigmaBox(fig, state["sigma"], SIGMA_MIN, SIGMA_MAX)
+    sigma_box = controls.box(sld)
+    strip = controls.FlowLayout()
+    strip.addWidget(chk)
+    strip.addWidget(sigma_box)
+    fig.layout_root().addLayout(strip)
 
     def _sync_widget_visibility():
-        sld_ax.set_visible(state["curve"])
-        sld.set_active(state["curve"])
+        # The σ box is shown, and takes input, only in curve mode.
+        sigma_box.setVisible(state["curve"])
+        sld.enable(state["curve"])
 
     _sync_widget_visibility()
 
-    def _on_chk(_label):
-        state["curve"], state["amplitude"] = chk.get_status()
+    def _on_chk(_label, states):
+        state["curve"], state["amplitude"] = states
         _sync_widget_visibility()
         _draw_all()
 
@@ -577,26 +564,12 @@ def plot_spread(
             ent["ax"].set_ylim(0, top)
         fig.canvas.draw_idle()
 
-    chk.on_clicked(_on_chk)
-    sld.on_changed(_on_sigma)
+    chk.on_change(_on_chk)
+    sld.on_change(_on_sigma)
 
     _draw_all()
 
-    if HAS_MPLCURSORS:
-        def _on_click(event, _map=cursor_by_axes):
-            if event.inaxes is None: return
-            cur = _map.get(event.inaxes)
-            if cur is None: return
-            if event.button == 1:
-                if not cur.enabled:
-                    cur.enabled = True
-            elif event.button == 3:
-                for sel in list(cur.selections):
-                    cur.remove_selection(sel)
-                cur.enabled = False
-        fig.canvas.mpl_connect("button_press_event", _on_click)
-
-    # keep the widgets (and the closures wired to them) alive with the figure
+    # keep the controls (and the closures wired to them) alive with the figure
     fig._spread_widgets = (chk, sld)
     return fig, axes
 

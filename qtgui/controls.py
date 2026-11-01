@@ -61,6 +61,15 @@ def _qw(item):
     return item.qt if hasattr(item, 'qt') else item
 
 
+def _fig_of(item):
+    """The figure a control or composite belongs to (its `fig`, or its first control's), else None."""
+    for cand in (item, getattr(item, 'box', None), getattr(item, 'left', None)):
+        fig = getattr(cand, 'fig', None)
+        if fig is not None:
+            return fig
+    return None
+
+
 # ---------------------------------------------------------------------- #
 #  Layout helpers: frames, rows, columns                                    #
 # ---------------------------------------------------------------------- #
@@ -69,7 +78,10 @@ def box(*items, title=None, orient='h', spacing=4, margins=(4, 2, 4, 2), stretch
     """
     A box frame holding `items` (controls, composites, Qt widgets or Qt layouts) in a row
     (orient='h') or a column ('v'), with a small title on top when given (automatic layout: the
-    frame and its contents are placed by Qt).  A trailing stretch keeps the items together.
+    frame and its contents are placed by Qt).  The title is a Label control of the items' figure,
+    so it follows the window's control zoom and shows its short form in a portrait window like
+    every other label; without a figure among the items it is a plain Qt label.  A trailing
+    stretch keeps the items together.
     """
     frame = QtWidgets.QFrame()
     frame.setObjectName('box')
@@ -78,7 +90,13 @@ def box(*items, title=None, orient='h', spacing=4, margins=(4, 2, 4, 2), stretch
     outer.setContentsMargins(*margins)
     outer.setSpacing(2)
     if title:
-        t = QtWidgets.QLabel(title)
+        fig = next((f for f in (_fig_of(it) for it in items) if f is not None), None)
+        if fig is not None:
+            lab = Label(fig, 'box title', text=title, fs=8)
+            t = lab.qt
+            frame._title_control = lab
+        else:
+            t = QtWidgets.QLabel(title)
         t.setObjectName('box_title')
         frame._title_label = t
         outer.addWidget(t)
@@ -875,14 +893,19 @@ class Text(Control):
         self._entered = True
 
     def _submit(self):
+        """Enter, or the box left after an edit: the text applied (_accept) unless it is unchanged and nothing was entered."""
         text = self.widget.text()
         entered, self._entered = self._entered, False
         if text == self._last and not entered:
             return
-        self._last = text
-        self._fire(text)
+        self._accept(text)
 
     def _stepped(self, text):
+        """A digit step (Up / Down): the new text applied at once."""
+        self._accept(text)
+
+    def _accept(self, text):
+        """The text taken as the box's value and reported; Value and Count parse and clamp it first."""
         self._last = text
         self._fire(text)
 
@@ -946,17 +969,7 @@ class Count(Text):
     def _limits(self):
         return self.vmin, self.vmax, True
 
-    def _submit(self):
-        text = self.widget.text()
-        entered, self._entered = self._entered, False
-        if text == self._last and not entered:
-            return
-        self._take(text)
-
-    def _stepped(self, text):
-        self._take(text)
-
-    def _take(self, text):
+    def _accept(self, text):
         try:
             v = float(str(text).strip())
             if v != int(v) or not (self.vmin <= v <= self.vmax):
@@ -1027,17 +1040,7 @@ class Value(Text):
     def _limits(self):
         return self.vmin, self.vmax, False
 
-    def _submit(self):
-        text = self.widget.text()
-        entered, self._entered = self._entered, False
-        if text == self._last and not entered:
-            return
-        self._take(text)
-
-    def _stepped(self, text):
-        self._take(text)
-
-    def _take(self, text):
+    def _accept(self, text):
         try:
             v = float(str(text).strip())
             if not np.isfinite(v):
@@ -1241,9 +1244,12 @@ class Label(Control):
             self.widget.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         self._finish()
 
+    def _apply_labels(self):
+        self.widget.setText(self.shown(self._text))
+
     def set_text(self, s):
         self._text = '' if s is None else str(s)
-        self.widget.setText(self._text)
+        self._apply_labels()
 
     def get_text(self):
         return self._text
@@ -1384,9 +1390,16 @@ class GammaBox:
     def text(self):
         return self.box.value
 
+    @property
+    def val(self):
+        """The gamma as a number (the old slider's `val`)."""
+        return self.gamma
+
     def set(self, gamma):
         self.gamma = float(gamma)
         self.box.set(format(self.gamma, self._fmt))
+
+    set_val = set
 
     def _on_submit(self, text):
         try:

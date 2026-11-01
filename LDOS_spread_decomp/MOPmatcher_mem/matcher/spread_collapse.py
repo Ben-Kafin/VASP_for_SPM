@@ -24,7 +24,7 @@ comp_indices are combined-entity offsets: 0 = the HOMO entity, -1 = HOMO-1,
 including "metal" via its own HOMO index). Absolute band indices are no
 longer accepted.
 
-Two CheckButtons in the figure (lower-left) toggle the layout live:
+Two checks in the controls under the panels toggle the layout live:
 
   Vertical OFF, Horizontal OFF (base grid):
       one subplot per (entity-offset row x component column).
@@ -45,9 +45,10 @@ A further Curve toggle replaces the per-state sticks with Gaussian-broadened
 curves: each matched full state becomes a Gaussian centered at its energy
 (VASP-style smearing, g = exp(-((E-E0)/sigma)^2) / (sigma*sqrt(pi))), and
 each MO's spread is drawn as one continuous curve in the MO's stick color.
-An in-figure slider sets sigma in eV live (in-place curve update, no
-rebuild). Segmentation is a stick-mode-only feature and is ignored while
-Curve is on.
+The σ (eV) number box (controls.SigmaBox, shown in curve mode) sets sigma in
+eV live (in-place curve update, no rebuild): Enter, leaving the box after an
+edit, or an arrow-key digit step applies it. Segmentation is a stick-mode-only
+feature and is ignored while Curve is on.
 
 CURVE PIPELINE -- ORDER OF OPERATIONS (keep this order in any future edit):
 
@@ -73,10 +74,14 @@ So the two curve forms are:
 In stick mode Amplitude keeps its original meaning (stick height sqrt(ov),
 unnormalized); the pipeline above applies to curves only.
 
-The toggles are implemented exactly as in stm_from_dft.simulator: a persistent
-figure, a _build_ui() that does fig.clf(), recreates the CheckButtons on a
-dedicated axes region, rebuilds the per-mode subplot layout, and re-wires the
-callback; the callback reads chk.get_status() and rebuilds.
+The window is a qtgui figure (the shared Qt layer at the repository root): a
+persistent figure whose _build_ui() does fig.clf() and rebuilds the per-mode
+subplot layout in the window's grid of cells (automatic layout); the controls
+(the checks, the Segmentation check shown while Horizontal is on, the σ box
+shown in curve mode) are real Qt widgets made once in a strip under the
+panels, and their callbacks update the state and rebuild. Hover labels are
+widgets.HoverLabels on every panel: a left click on a panel arms them, a
+right click clears and disarms them.
 
 Color/data are obtained through RectAEPAWColorPlotter._prepare so that the
 per-component colors (including SOC Kramers pairing, shared-molecule, and metal
@@ -84,7 +89,7 @@ handling) are identical to the main vacupot_plotter rendering.
 
 Multi-run mode (MultiSpreadPlotter / plot_spread_multi): several run
 directories, each with its own component labels but a shared band-index list,
-stacked vertically in one figure with an in-figure Horizontal toggle. With
+stacked vertically in one figure with a Horizontal toggle in its controls. With
 Horizontal ON each run is drawn fully collapsed onto a single axis; with it
 OFF each run splits into one equal-width subplot per component on a
 left-aligned column grid. Bars are plain base colors with no MO markers; the
@@ -101,21 +106,23 @@ import os
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
-import matplotlib.pyplot as plt
-from matplotlib.widgets import CheckButtons, Slider
 from math import sqrt
 
-try:
-    import mplcursors
-    HAS_MPLCURSORS = True
-except Exception:
-    HAS_MPLCURSORS = False
+# The shared Qt layer (qtgui at the repository root): found by walking up from this file.
+import os as _os, sys as _sys
+_root = _os.path.dirname(_os.path.abspath(__file__))
+while not _os.path.isdir(_os.path.join(_root, 'qtgui')) and _os.path.dirname(_root) != _root:
+    _root = _os.path.dirname(_root)
+if _root not in _sys.path:
+    _sys.path.insert(0, _root)
+from qtgui import qtplot as plt
+from qtgui import controls, widgets
 
 # y-axis label of the original-MO row in the multi-run figure: same overlap
 # form as PlotConfig.ylabel but with psi_MO on both sides of the bracket.
 MO_YLABEL = r"$|\langle\psi_{\mathrm{MO}}|\psi_{\mathrm{MO}}\rangle|^2$"
 
-# Curve-mode smearing slider range / default (eV), VASP SIGMA convention.
+# Curve-mode smearing width limits / default (eV) of the σ box, VASP SIGMA convention.
 SIGMA_MIN = 0.01
 SIGMA_MAX = 1.0
 SIGMA_DEFAULT = 0.2
@@ -216,12 +223,24 @@ def _offset_name(offset: int) -> str:
     return f"LUMO+{offset - 1}"
 
 
+def _attach_hover(cfg, ax, artists, hover_map):
+    """
+    The hover labels of one panel (widgets.HoverLabels, the one function behind every hover
+    in the suite): `hover_map` gives each artist its text; a left click on the panel arms them,
+    a right click clears and disarms them.  Nothing when cfg.annotate_on_hover is off or the
+    panel holds no artist.  Shared by SpreadPlotter and MultiSpreadPlotter.
+    """
+    if cfg.annotate_on_hover and artists:
+        widgets.HoverLabels(ax, artists, hover_map)
+
+
 class SpreadPlotter:
     """
-    Builds and maintains a spread-plot figure whose layout is controlled by two
-    in-figure CheckButtons (Vertical / Horizontal). All data loading and color
-    construction happen once in __init__; toggling a checkbox only rebuilds the
-    drawing via _build_ui().
+    Builds and maintains a spread-plot figure whose layout is controlled by the
+    Vertical / Horizontal checks in its controls. All data loading and color
+    construction happen once in __init__; a toggle only rebuilds the drawing
+    via _build_ui().  DESIGN (inches), the window's design size and the text
+    zoom's reference: cfg.figsize[0] wide, 1.8 inches per entity row (at least 3).
     """
 
     def __init__(
@@ -331,14 +350,15 @@ class SpreadPlotter:
         self.sorted_idx = sorted(self.comp_indices)
         self.R_count = len(self.comp_indices)
 
-        # Per-axis cursor registry (rebuilt each _build_ui)
-        self.cursor_by_axes: Dict[Any, Any] = {}
-
-        # Persistent figure (created once, like simulator.py). Skipped when
-        # this instance only supplies data/drawing to MultiSpreadPlotter.
+        # Persistent figure (created once) with its controls (made once, in a
+        # strip under the panels). Skipped when this instance only supplies
+        # data/drawing to MultiSpreadPlotter.
         self.fig = None
+        self.chk = self.chk_seg = self.sld_sigma = None
         if build_figure:
-            self.fig = plt.figure(figsize=(self.cfg.figsize[0], max(3.0, 1.8 * max(1, self.R_count))))
+            self.DESIGN = (self.cfg.figsize[0], max(3.0, 1.8 * max(1, self.R_count)))
+            self.fig = plt.figure(figsize=self.DESIGN)
+            self._make_controls()
             self._build_ui()
 
     # ==================================================================
@@ -534,18 +554,6 @@ class SpreadPlotter:
         if set_xlabel:
             ax.set_xlabel(self.cfg.xlabel)
 
-    def _attach_cursor(self, ax, artists, hover_map):
-        if self.cfg.annotate_on_hover and HAS_MPLCURSORS and artists:
-            cur = mplcursors.cursor(artists, hover=True)
-            cur.enabled = False
-            self.cursor_by_axes[ax] = cur
-
-            @cur.connect("add")
-            def _on_add(sel, hmap=hover_map):
-                txt = hmap.get(sel.artist)
-                if txt:
-                    sel.annotation.set_text(txt)
-
     # ==================================================================
     # Curve (Gaussian-broadening) helpers
     # ==================================================================
@@ -578,7 +586,7 @@ class SpreadPlotter:
         per-curve unit-area normalization, then the final amplitude sqrt),
         rescale each affected axis (5% headroom over the tallest peak,
         matching the build path), and stretch the curve-mode MO markers to
-        the new top. Called by the sigma slider on drag.
+        the new top. Called by the σ box on every applied value.
         """
         if not self._curve_entries:
             return
@@ -610,90 +618,68 @@ class SpreadPlotter:
         self._update_curves()
 
     # ==================================================================
-    # UI build (mirrors simulator._build_ui: clf, checkboxes, layout, wire)
+    # The controls (made once) and the UI build (clf, layout, hover)
     # ==================================================================
+    def _make_controls(self):
+        """
+        The window's controls, real Qt widgets made once (controls.py, the one control set of
+        every window): the 'collapse' checks (Vertical, Horizontal, Amplitude, Curve), the
+        Segmentation check (shown while Horizontal is on) and the σ (eV) number box (shown in
+        curve mode), each in a box frame, in a strip that wraps under the panels.
+        automatic layout: the one rule for every window (nothing placed by hand).
+        """
+        self.chk = controls.make(
+            self.fig, 'collapse',
+            labels=['Vertical', 'Horizontal', 'Amplitude', 'Curve'],
+            values=[self.collapse_vertical, self.collapse_horizontal,
+                    self.amplitude, self.curve_mode])
+        self.chk.on_change(self._on_toggle)
+        self.chk_seg = controls.make(self.fig, 'Segmentation', value=self.collapse_segmentation)
+        self.chk_seg.on_change(self._on_seg_toggle)
+        self._seg_box = controls.box(self.chk_seg)
+        self.sld_sigma = controls.SigmaBox(self.fig, self.sigma, SIGMA_MIN, SIGMA_MAX)
+        self.sld_sigma.on_change(self._on_sigma)
+        self._sigma_box = controls.box(self.sld_sigma)
+        strip = controls.FlowLayout()
+        strip.addWidget(self.chk)
+        strip.addWidget(self._seg_box)
+        strip.addWidget(self._sigma_box)
+        self.fig.layout_root().addLayout(strip)
+
+    def _sync_control_visibility(self):
+        """Segmentation is shown (and takes input) while Horizontal is on; the σ box in curve mode."""
+        self._seg_box.setVisible(self.collapse_horizontal)
+        self.chk_seg.enable(self.collapse_horizontal)
+        self._sigma_box.setVisible(self.curve_mode)
+        self.sld_sigma.enable(self.curve_mode)
+
     def _build_ui(self):
-        # Detach the previous toggle widgets from canvas events before clf()
-        # destroys their axes (their blitting draw handlers survive clf and
-        # would dereference the dead axes on the next draw).
-        for w in (getattr(self, "chk", None), getattr(self, "chk_seg", None),
-                  getattr(self, "sld_sigma", None)):
-            if w is not None:
-                w.disconnect_events()
+        """
+        The panels rebuilt for the current state: the figure cleared, the per-mode subplot grid
+        drawn again (automatic layout: fig.subplots fills the window's grid of cells), every
+        panel's hover labels made anew.  The controls are never rebuilt.
+        """
         self.fig.clf()
-        self.cursor_by_axes = {}
+        widgets.HoverLabels.prune(self.fig)
         self._curve_entries = []
         self._marker_entries = []
-
-        # CheckButtons in lower-left, dedicated axes region (simulator pattern)
-        self.chk = CheckButtons(
-            self.fig.add_axes([0.01, 0.055, 0.13, 0.175]),
-            ['Vertical', 'Horizontal', 'Amplitude', 'Curve'],
-            [self.collapse_vertical, self.collapse_horizontal,
-             self.amplitude, self.curve_mode],
-        )
-        self.chk.on_clicked(self._on_toggle)
-
-        # Segmentation sub-toggle: indented under Horizontal (sub-bullet
-        # style), created only when Horizontal is on so it is visible only
-        # then.
-        if self.collapse_horizontal:
-            self.chk_seg = CheckButtons(
-                self.fig.add_axes([0.04, 0.005, 0.13, 0.045]),
-                ['Segmentation'],
-                [self.collapse_segmentation],
-            )
-            self.chk_seg.on_clicked(self._on_toggle)
-        else:
-            self.chk_seg = None
-
-        # Sigma slider (eV), only meaningful — and only shown — in curve
-        # mode. Kept low in the bottom strip so the shared x-label of short
-        # (single-row) figures cannot descend into it.
-        if self.curve_mode:
-            self.sld_sigma = Slider(
-                self.fig.add_axes([0.34, 0.02, 0.38, 0.03]),
-                r"$\sigma$ (eV)", SIGMA_MIN, SIGMA_MAX,
-                valinit=self.sigma, valfmt="%.3f",
-            )
-            self.sld_sigma.on_changed(self._on_sigma)
-        else:
-            self.sld_sigma = None
-
-        # Reserve room at the bottom for the checkbox strip
-        self.fig.subplots_adjust(bottom=0.24)
+        self._sync_control_visibility()
 
         self._draw_layout()
 
-        # Figure-level click handler for hover enable/disable (per axis)
-        self.fig.canvas.mpl_connect("button_press_event", self._on_click)
-
         self.fig.canvas.draw_idle()
 
-    def _on_toggle(self, label):
-        states = self.chk.get_status()
+    def _on_toggle(self, _label, states):
+        """The 'collapse' checks reported a click: the window takes the four states and rebuilds."""
         self.collapse_vertical, self.collapse_horizontal = states[0], states[1]
         self.amplitude = states[2]
         self.curve_mode = states[3]
-        if self.chk_seg is not None:
-            self.collapse_segmentation = self.chk_seg.get_status()[0]
         self._build_ui()
 
-    def _on_click(self, event):
-        if not HAS_MPLCURSORS:
-            return
-        if event.inaxes is None:
-            return
-        cur = self.cursor_by_axes.get(event.inaxes)
-        if cur is None:
-            return
-        if event.button == 1:
-            if not cur.enabled:
-                cur.enabled = True
-        elif event.button == 3:
-            for sel in list(cur.selections):
-                cur.remove_selection(sel)
-            cur.enabled = False
+    def _on_seg_toggle(self, flag):
+        """The Segmentation check reported a click: the window takes the state and rebuilds."""
+        self.collapse_segmentation = bool(flag)
+        self._build_ui()
 
     # ==================================================================
     # Per-mode layout drawing
@@ -1030,9 +1016,10 @@ class SpreadPlotter:
         else:
             self._draw_reflines(ax, self._comp_fermi_shifted(cell_components[0]))
 
-        # ---- title: reproduce the exact text for this collapse combination ----
+        # ---- title: the text for this collapse combination, "Short: details" (the
+        # layer shows the short name, the details go to the information panel) ----
         if vertical_on and horizontal_on:
-            title = "Spread \u2014 all components, all entities"
+            title = "Spread: all components, all entities"
         elif horizontal_on:
             comp_idx = cell_band_indices[0]
             E_m = self._avg_marker_E(cell_components, comp_idx)
@@ -1054,13 +1041,15 @@ class SpreadPlotter:
         self._finalize_axis(
             ax, axis_max, title,
             set_xlabel=set_xlabel, set_ylabel_flag=set_ylabel_flag)
-        self._attach_cursor(ax, artists, hover)
+        _attach_hover(self.cfg, ax, artists, hover)
 
 
 class MultiSpreadPlotter:
     """
-    Stacked figure over several full-system run directories, with an
-    in-figure Horizontal CheckButton (lower-left) that toggles the layout.
+    Stacked figure over several full-system run directories, with a
+    Horizontal check in its controls that toggles the layout (and the
+    Amplitude and Curve checks, the σ box in curve mode).  DESIGN (inches):
+    cfg.figsize[0] wide, 1.8 inches per row including the MO row (at least 3).
 
     Each run is loaded through its own SpreadPlotter (build_figure=False) so
     data and colors are identical to the single-run figure. Spread bars use
@@ -1199,28 +1188,43 @@ class MultiSpreadPlotter:
         self.col_mo_energies = [t[0] for t in per_col]
         self.col_fermi = [t[1] for t in per_col]
 
-        # ---- persistent figure + Horizontal toggle (rebuilds on click) ----
+        # ---- persistent figure + the controls (made once; a toggle rebuilds) ----
         self.collapse_horizontal = bool(collapse_horizontal)
-        self.cursor_by_axes: Dict[Any, Any] = {}
         R = len(self.plotters)
-        self.fig = plt.figure(
-            figsize=(self.cfg.figsize[0], max(3.0, 1.8 * (R + 1))))
+        self.DESIGN = (self.cfg.figsize[0], max(3.0, 1.8 * (R + 1)))
+        self.fig = plt.figure(figsize=self.DESIGN)
+        self._make_controls()
         self._build_ui()
-        self.fig.canvas.mpl_connect("button_press_event", self._on_click)
 
     # ==================================================================
-    # UI build (single-run _build_ui pattern: clf, checkbox, layout, wire)
+    # The controls (made once) and the UI build (clf, layout, hover)
     # ==================================================================
+    def _make_controls(self):
+        """
+        The window's controls, real Qt widgets made once: the 'collapse' checks (Horizontal,
+        Amplitude, Curve) and the σ (eV) number box (shown in curve mode), in a strip under the
+        panels.  automatic layout: the one rule for every window (nothing placed by hand).
+        """
+        self.chk = controls.make(
+            self.fig, 'collapse', labels=['Horizontal', 'Amplitude', 'Curve'],
+            values=[self.collapse_horizontal, self.amplitude, self.curve_mode])
+        self.chk.on_change(self._on_toggle)
+        self.sld_sigma = controls.SigmaBox(self.fig, self.sigma, SIGMA_MIN, SIGMA_MAX)
+        self.sld_sigma.on_change(self._on_sigma)
+        self._sigma_box = controls.box(self.sld_sigma)
+        strip = controls.FlowLayout()
+        strip.addWidget(self.chk)
+        strip.addWidget(self._sigma_box)
+        self.fig.layout_root().addLayout(strip)
+
     def _build_ui(self):
-        # The previous toggle widgets stay wired to canvas events (e.g. their
-        # blitting draw_event handlers) even after clf() destroys their axes;
-        # detach them first or the next draw dereferences the dead axes.
-        for w in (getattr(self, "chk", None),
-                  getattr(self, "sld_sigma", None)):
-            if w is not None:
-                w.disconnect_events()
+        """
+        The rows rebuilt for the current state: the figure cleared, the collapsed or split grid
+        drawn again (automatic layout: fig.subplots fills the window's grid of cells), every
+        panel's hover labels made anew.  The controls are never rebuilt.
+        """
         self.fig.clf()
-        self.cursor_by_axes = {}
+        widgets.HoverLabels.prune(self.fig)
 
         # Sync the shared drawing state onto every figure-less sub-plotter
         # and clear their curve registries before the rows redraw into them.
@@ -1230,27 +1234,9 @@ class MultiSpreadPlotter:
             sp._curve_entries = []
             sp._marker_entries = []
 
-        self.chk = CheckButtons(
-            self.fig.add_axes([0.01, 0.01, 0.11, 0.13]),
-            ['Horizontal', 'Amplitude', 'Curve'],
-            [self.collapse_horizontal, self.amplitude, self.curve_mode])
-        self.chk.on_clicked(self._on_toggle)
-
-        # Sigma slider (eV), only meaningful — and only shown — in curve
-        # mode. Kept low in the bottom strip so the bottom row's x-label of
-        # short (single-run) figures cannot descend into it.
-        if self.curve_mode:
-            self.sld_sigma = Slider(
-                self.fig.add_axes([0.34, 0.005, 0.38, 0.025]),
-                r"$\sigma$ (eV)", SIGMA_MIN, SIGMA_MAX,
-                valinit=self.sigma, valfmt="%.3f",
-            )
-            self.sld_sigma.on_changed(self._on_sigma)
-        else:
-            self.sld_sigma = None
-
-        # Reserve room for the checkbox strip and per-subplot titles
-        self.fig.subplots_adjust(bottom=0.16, hspace=0.7)
+        # The σ box is shown, and takes input, only in curve mode.
+        self._sigma_box.setVisible(self.curve_mode)
+        self.sld_sigma.enable(self.curve_mode)
 
         if self.collapse_horizontal:
             self._draw_collapsed()
@@ -1260,8 +1246,8 @@ class MultiSpreadPlotter:
         self._set_shared_xlims()
         self.fig.canvas.draw_idle()
 
-    def _on_toggle(self, label):
-        states = self.chk.get_status()
+    def _on_toggle(self, _label, states):
+        """The checks reported a click: the window takes the three states and rebuilds."""
         self.collapse_horizontal, self.amplitude = states[0], states[1]
         self.curve_mode = states[2]
         for sp in self.plotters:
@@ -1285,7 +1271,7 @@ class MultiSpreadPlotter:
             self.axes[0][0], self.mo_energies, self.mol_fermi_avg,
             self.n_mo_sources, self.col_sources[0][0],
             set_ylabel_flag=True,
-            title="Original MOs (averaged over all runs)")
+            title="Original MOs: averaged over all runs")
 
         for i, sp in enumerate(self.plotters):
             ax = self.axes[i + 1][0]
@@ -1302,7 +1288,7 @@ class MultiSpreadPlotter:
             ax.set_title(os.path.basename(os.path.normpath(self.runs[i][0])))
             if i == R - 1:
                 ax.set_xlabel(self.cfg.xlabel)
-            self._attach_cursor(ax, artists, hover)
+            _attach_hover(self.cfg, ax, artists, hover)
 
     # ==================================================================
     # Horizontal OFF: every run splits into one equal-width subplot per
@@ -1321,7 +1307,7 @@ class MultiSpreadPlotter:
                 self.axes[0][k], self.col_mo_energies[k], self.col_fermi[k],
                 len(self.col_sources[k]), self.col_sources[k][0],
                 set_ylabel_flag=(k == 0),
-                title="Original MOs (avg)")
+                title="Original MOs: column average")
 
         for i, sp in enumerate(self.plotters):
             run_dir, comps = self.runs[i]
@@ -1343,7 +1329,7 @@ class MultiSpreadPlotter:
                 ax.set_title(f"{run_name} — {comps[k]}")
                 if all(n_comps[j] <= k for j in range(i + 1, R)):
                     ax.set_xlabel(self.cfg.xlabel)
-                self._attach_cursor(ax, artists, hover)
+                _attach_hover(self.cfg, ax, artists, hover)
 
     # ------------------------------------------------------------------
     def _set_shared_xlims(self):
@@ -1392,7 +1378,7 @@ class MultiSpreadPlotter:
         if set_ylabel_flag:
             ax.set_ylabel(self._mo_ylabel())
         ax.set_title(title)
-        self._attach_cursor(ax, artists, hover)
+        _attach_hover(self.cfg, ax, artists, hover)
 
     # ------------------------------------------------------------------
     def _mo_ylabel(self) -> str:
@@ -1410,34 +1396,6 @@ class MultiSpreadPlotter:
             self.v_common, color="black",
             linestyle="-", linewidth=3.5, zorder=10)
 
-    # ------------------------------------------------------------------
-    def _attach_cursor(self, ax, artists, hover_map):
-        if self.cfg.annotate_on_hover and HAS_MPLCURSORS and artists:
-            cur = mplcursors.cursor(artists, hover=True)
-            cur.enabled = False
-            self.cursor_by_axes[ax] = cur
-
-            @cur.connect("add")
-            def _on_add(sel, hmap=hover_map):
-                txt = hmap.get(sel.artist)
-                if txt:
-                    sel.annotation.set_text(txt)
-
-    def _on_click(self, event):
-        if not HAS_MPLCURSORS:
-            return
-        if event.inaxes is None:
-            return
-        cur = self.cursor_by_axes.get(event.inaxes)
-        if cur is None:
-            return
-        if event.button == 1:
-            if not cur.enabled:
-                cur.enabled = True
-        elif event.button == 3:
-            for sel in list(cur.selections):
-                cur.remove_selection(sel)
-            cur.enabled = False
 
 
 def plot_spread(
@@ -1453,9 +1411,9 @@ def plot_spread(
     sigma: float = SIGMA_DEFAULT,
 ) -> Tuple[plt.Figure, "SpreadPlotter"]:
     """
-    Build the interactive spread-plot figure. The two CheckButtons in the
-    lower-left of the figure toggle the Vertical / Horizontal collapse live;
-    collapse_vertical / collapse_horizontal set the initial checkbox state.
+    Build the interactive spread-plot figure. The Vertical / Horizontal checks
+    in the controls under the panels toggle the collapse live;
+    collapse_vertical / collapse_horizontal set the initial check state.
 
     Parameters
     ----------
@@ -1478,8 +1436,8 @@ def plot_spread(
         Plot configuration. Uses defaults if None.
     curve : bool
         Initial state of the Curve toggle: replace the per-state sticks with
-        Gaussian-broadened curves (one per MO), with an in-figure sigma
-        slider (eV). Each probability curve is normalized to unit area; with
+        Gaussian-broadened curves (one per MO), with the σ (eV) number box
+        shown. Each probability curve is normalized to unit area; with
         Amplitude on the displayed curve is the sqrt of that normalized
         curve (the final step, applied after normalization).
     sigma : float
@@ -1488,8 +1446,8 @@ def plot_spread(
     Returns
     -------
     fig, sp
-        The matplotlib Figure and the SpreadPlotter instance (kept so the
-        widgets stay responsive; do not let it be garbage-collected).
+        The qtplot Figure and the SpreadPlotter instance (kept so the
+        controls stay responsive; do not let it be garbage-collected).
     """
     sp = SpreadPlotter(
         output_dir=output_dir,
@@ -1518,7 +1476,7 @@ def plot_spread_multi(
 ) -> Tuple[plt.Figure, "MultiSpreadPlotter"]:
     """
     Build the stacked multi-run spread figure (see MultiSpreadPlotter). The
-    in-figure Horizontal CheckButton toggles between the collapsed
+    Horizontal check in its controls toggles between the collapsed
     one-axis-per-run stack and the per-component column grid live.
 
     Parameters
@@ -1542,7 +1500,7 @@ def plot_spread_multi(
     curve : bool
         Initial state of the Curve toggle: replace the per-state sticks with
         Gaussian-broadened curves (area under each Gaussian = that state's
-        intensity), with an in-figure sigma slider (eV). Each probability
+        intensity), with the σ (eV) number box shown. Each probability
         curve is normalized to unit area; with Amplitude on the displayed
         curve is the sqrt of that normalized curve.
     sigma : float
@@ -1551,8 +1509,8 @@ def plot_spread_multi(
     Returns
     -------
     fig, msp
-        The matplotlib Figure and the MultiSpreadPlotter instance (keep a
-        reference so the toggle and hover cursors stay responsive).
+        The qtplot Figure and the MultiSpreadPlotter instance (keep a
+        reference so the toggles and hover labels stay responsive).
     """
     msp = MultiSpreadPlotter(
         runs=runs,
@@ -1622,12 +1580,12 @@ if __name__ == "__main__":
     # runs/components (0 = HOMO entity, -1 = HOMO-1, +1 = LUMO) ----
     comp_indices = [-2, -1, 0, 1]
 
-    # ---- Initial toggle state (flip live with the in-figure checkboxes) ----
+    # ---- Initial toggle state (flip live with the checks under the panels) ----
     collapse_vertical = True
     collapse_horizontal = True
     amplitude = True        # sticks: sqrt(ov); curves: sqrt of the
                             # unit-area probability curve (applied last)
-    curve = True            # True = Gaussian-broadened curves (sigma slider)
+    curve = True            # True = Gaussian-broadened curves (σ box)
     sigma = 0.2              # initial smearing width in eV (VASP SIGMA style)
 
     # ---- Visual tuning ----

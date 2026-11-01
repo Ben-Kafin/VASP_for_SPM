@@ -6,8 +6,16 @@ Created on Fri Apr  3 19:18:23 2026
 """
 
 # run_stm.py
+import os, sys
+
+# The shared Qt layer (qtgui at the repository root): found by walking up from this file.
+_root = os.path.dirname(os.path.abspath(__file__))
+while not os.path.isdir(os.path.join(_root, 'qtgui')) and os.path.dirname(_root) != _root:
+    _root = os.path.dirname(_root)
+if _root not in sys.path:
+    sys.path.insert(0, _root)
+from qtgui.qtplot import LinearSegmentedColormap
 from stm_from_dft import Interactive_STM_Simulator
-from matplotlib.colors import LinearSegmentedColormap
 
 # Point at the VASP directory containing DOSCAR, LOCPOT, POSCAR/CONTCAR
 #v_dir = r'dir/run'

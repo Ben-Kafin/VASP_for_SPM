@@ -22,7 +22,15 @@ import h5py
 import numpy as np
 from typing import List, Optional, Tuple, Union
 from pymatgen.io.vasp import Locpot
-import matplotlib.pyplot as plt
+
+# The shared Qt layer (qtgui at the repository root): found by walking up from this file.
+import os as _os, sys as _sys
+_root = _os.path.dirname(_os.path.abspath(__file__))
+while not _os.path.isdir(_os.path.join(_root, 'qtgui')) and _os.path.dirname(_root) != _root:
+    _root = _os.path.dirname(_root)
+if _root not in _sys.path:
+    _sys.path.insert(0, _root)
+from qtgui import qtplot as plt
 
 # --- 1. Import all external tools properly ---
 # Relative imports when loaded as the 'matcher' package; absolute fallbacks when

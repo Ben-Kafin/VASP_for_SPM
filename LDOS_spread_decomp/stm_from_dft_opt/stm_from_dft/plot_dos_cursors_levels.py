@@ -1,13 +1,32 @@
+"""
+DOS plotter with energy cursors and level markers: the total DOS, then (a click on a curve
+descends, a click beside the curves ascends) the Au / molecule partition, the atom types, the
+atoms of one type, and one atom's orbital curves with hover labels (widgets.HoverLabels) and, in
+SOC mode, the |m| overlay toggled with the 'm' key.  Drawn with the suite's shared Qt layer
+(qtgui at the repository root: PySide6 + pyqtgraph); the parsing is unchanged.
+"""
 import re
+import os as _os
+import sys as _sys
+
+# The shared Qt layer (qtgui at the repository root): found by walking up from this file.
+_root = _os.path.dirname(_os.path.abspath(__file__))
+while not _os.path.isdir(_os.path.join(_root, 'qtgui')) and _os.path.dirname(_root) != _root:
+    _root = _os.path.dirname(_root)
+if _root not in _sys.path:
+    _sys.path.insert(0, _root)
+
 import numpy as np
 import sys
-import matplotlib.pyplot as plt
-from matplotlib.lines import Line2D
 from os.path import exists, join
-import matplotlib.colors as mc, colorsys
-import mplcursors
+import colorsys
+
+from qtgui import qtplot as plt
+from qtgui import widgets
 
 from doscar_parser import SpinAwareDosParser, SpinMode
+
+DESIGN = (6.4, 4.8)        # the window's design size (inches): its text zoom is its size relative to this (qtplot.window_zoom)
 
 
 class DosPlotter:
@@ -151,7 +170,7 @@ class DosPlotter:
     # Helpers
     # ------------------------------------------------------------------
     def _lighten_color(self, color, amount=0.3):
-        c = mc.to_rgb(color)
+        c = plt.to_rgb(color)
         h, l, s = colorsys.rgb_to_hls(*c)
         return colorsys.hls_to_rgb(h, min(1, l + amount * (1 - l)), s)
 
@@ -175,7 +194,12 @@ class DosPlotter:
     # Plotting
     # ------------------------------------------------------------------
     def plot_dos_cursors(self, nums=None, types=None):
-        fig, ax = plt.subplots()
+        """
+        The window: one panel of DESIGN size (automatic layout: plt.subplots fills its grid), its
+        level handlers (on_pick, on_click, on_key) and the orbital hover labels; plt.show() holds
+        the process until the window closes.
+        """
+        fig, ax = plt.subplots(figsize=DESIGN)
         self.plot_level = 0
         self.active_element, self.active_atom = None, None
 
@@ -211,8 +235,8 @@ class DosPlotter:
                         label='Au', picker=True, pickradius=5, zorder=2)
                 ax.plot(self.energies, self.molecule_dos, color='black', lw=2,
                         label='Molecule', picker=True, pickradius=5, zorder=2)
-                proxies = [Line2D([0], [0], color='orange', lw=2),
-                           Line2D([0], [0], color='black', lw=2)]
+                proxies = [plt.Line2D([0], [0], color='orange', lw=2),
+                           plt.Line2D([0], [0], color='black', lw=2)]
                 ax.legend(proxies, ['Au', 'Molecule'], title="Partition",
                           loc='upper right', frameon=False)
 
@@ -221,7 +245,7 @@ class DosPlotter:
                     ax.plot(self.energies, self.element_dos[t],
                             color=self._type_color_map.get(t, 'grey'),
                             lw=2, label=t, picker=True, pickradius=3)
-                proxies = [Line2D([0], [0], color=self._type_color_map.get(t, 'grey'), lw=2)
+                proxies = [plt.Line2D([0], [0], color=self._type_color_map.get(t, 'grey'), lw=2)
                            for t in self.atomtypes]
                 ax.legend(proxies, self.atomtypes, title="Atom Types",
                           loc='upper right', frameon=False)
@@ -236,7 +260,7 @@ class DosPlotter:
                         ax.plot(self.energies, y_sum,
                                 color=self._type_color_map.get(self.active_element, 'grey'),
                                 lw=2, label=label, picker=True, pickradius=3, zorder=2)
-                proxies = [Line2D([0], [0], color=self._type_color_map.get(t, 'grey'), lw=2)
+                proxies = [plt.Line2D([0], [0], color=self._type_color_map.get(t, 'grey'), lw=2)
                            for t in self.atomtypes]
                 ax.legend(proxies, self.atomtypes, title="Atom Types",
                           loc='upper right', frameon=False)
@@ -297,41 +321,40 @@ class DosPlotter:
                                                       zorder=9)
                                     orb_artists.append(m_line)
 
-                        cursor = mplcursors.cursor(orb_artists, hover=True)
-                        cursor.connect("add",
-                                       lambda sel: sel.annotation.set_text(
-                                           sel.artist.get_label()))
+                        # The hover label of the orbital curves (their labels), on from the start as the old cursor was.
+                        widgets.HoverLabels(ax, orb_artists, enabled=True, arm_by_click=False)
                     else:
-                        orig = mc.to_rgb(element_color)
+                        orig = plt.to_rgb(element_color)
                         lumi = 0.299 * orig[0] + 0.587 * orig[1] + 0.114 * orig[2]
                         faded_color = (S * np.array(orig)) + ((1 - S) * lumi)
                         ax.plot(self.energies, y_sum, color=faded_color,
                                 lw=1.5, alpha=0.05, zorder=2)
 
                 # Legends
-                atom_proxies = [Line2D([0], [0],
-                                       color=self._type_color_map.get(t, 'grey'), lw=2)
+                atom_proxies = [plt.Line2D([0], [0],
+                                           color=self._type_color_map.get(t, 'grey'), lw=2)
                                 for t in self.atomtypes]
                 leg1 = ax.legend(atom_proxies, self.atomtypes,
                                  title="Atom Types", loc='upper right', frameon=False)
                 ax.add_artist(leg1)
 
                 orb_legend_entries = list(unique_bases)
-                orb_legend_proxies = [Line2D([0], [0], color='black',
-                                             linestyle=linestyle_map[b], lw=1.5)
+                orb_legend_proxies = [plt.Line2D([0], [0], color='black',
+                                                 linestyle=linestyle_map[b], lw=1.5)
                                       for b in unique_bases]
                 if is_soc:
                     mag_state = "ON" if self.show_mag else "OFF"
                     orb_legend_entries.append(f"|m| overlay: {mag_state}  [press 'm']")
-                    orb_legend_proxies.append(Line2D([0], [0], color='grey',
-                                                     linestyle='--', lw=1.0, alpha=0.7))
+                    orb_legend_proxies.append(plt.Line2D([0], [0], color='grey',
+                                                         linestyle='--', lw=1.0, alpha=0.7))
 
                 ax.legend(orb_legend_proxies, orb_legend_entries,
                           title="Orbitals", loc='upper left', frameon=False)
 
+            # The title as "Short: details": 'DOS' shown, the spin mode in the information panel.
             mode_tag = {SpinMode.COLLINEAR_UNPOL: "",
-                        SpinMode.COLLINEAR_POL: " (spin-polarized)",
-                        SpinMode.NCL_SOC: " (SOC)"}
+                        SpinMode.COLLINEAR_POL: ": spin-polarized",
+                        SpinMode.NCL_SOC: ": SOC"}
             ax.set_xlabel('energy – $E_f$ / eV')
             ax.set_ylabel('DOS / states eV⁻¹')
             ax.set_title(f"DOS{mode_tag.get(self.spin_mode, '')}")
@@ -372,7 +395,7 @@ class DosPlotter:
         fig.canvas.mpl_connect('button_press_event', on_click)
         fig.canvas.mpl_connect('key_press_event', on_key)
         update_plot_visuals()
-        plt.tight_layout()
+        self.fig, self.ax = fig, ax
         plt.show()
 
 

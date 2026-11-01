@@ -86,7 +86,14 @@ import os
 from collections import defaultdict
 from typing import Optional, Tuple
 
-import matplotlib.pyplot as plt
+# The shared Qt layer (qtgui at the repository root): found by walking up from this file.
+import os as _os, sys as _sys
+_root = _os.path.dirname(_os.path.abspath(__file__))
+while not _os.path.isdir(_os.path.join(_root, 'qtgui')) and _os.path.dirname(_root) != _root:
+    _root = _os.path.dirname(_root)
+if _root not in _sys.path:
+    _sys.path.insert(0, _root)
+from qtgui import qtplot as plt
 
 from .vacupot_plotter import RectAEPAWColorPlotter, PlotConfig
 
@@ -165,7 +172,7 @@ def plot_combined_runs(
     """
     cfg = cfg or PlotConfig()
     plotter = RectAEPAWColorPlotter(cfg)
-    plotter._cursor_by_axes.clear()
+    plotter._hover_by_axes.clear()
 
     # Accept either a run directory or a direct band_matches_rectangular.txt path.
     complex_main_path = _resolve_main_path(complex_main_path)
@@ -289,7 +296,6 @@ def plot_combined_runs(
             top = F.v_aligned if cfg.energy_max_vacuum else cfg.energy_range[1]
             axes[0].set_ylim(cfg.energy_range[0], top)
 
-        plotter._wire_global_click(fig)
         return fig, axes
 
     n_rows = len(mol_labels_F) + 4
@@ -365,6 +371,5 @@ def plot_combined_runs(
         right = F.v_aligned if cfg.energy_max_vacuum else cfg.energy_range[1]
         axes[-1].set_xlim(cfg.energy_range[0], right)
 
-    plotter._wire_global_click(fig)
     fig.tight_layout()
     return fig, axes

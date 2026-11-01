@@ -1470,13 +1470,13 @@ def file_stamp(name):
 def short_title(text, portrait=False):
     """
     The essential part of a title: its first line, cut at the first ': ', ', ', double space,
-    or ' ['.  The rest (counts, states, file details) goes to the window's info panel.  A title
-    that starts with two lower-case letters is capitalised ('raw dI/dV' -> 'Raw dI/dV'), except a
-    file name (anything ending in an extension such as '.vasp'), which is shown exactly as the
-    file is named, so that the name can be copied from the info panel into a file search.  With
-    `portrait` (the window taller than it is wide, Figure.portrait) a file name is shortened to its
-    date-and-time stamp (file_stamp); a file name without a stamp stays whole.  The one rule for
-    every file name shown as a title in the package.
+    or ' ['.  The rest (counts, states, file details) goes to the window's info panel.  The short
+    name is shown exactly as written: a component label ('molA'), an element, or a file name
+    (anything ending in an extension such as '.vasp') is data, so its case is never changed, and a
+    file name can be copied from the info panel into a file search.  With `portrait` (the window
+    taller than it is wide, Figure.portrait) a file name is shortened to its date-and-time stamp
+    (file_stamp) when it has one; a name without a stamp stays whole.  The one rule for every
+    title shown in the suite.
     """
     t = str(text or '').strip()
     t = t.split('\n')[0]
@@ -1485,14 +1485,10 @@ def short_title(text, portrait=False):
         if k > 0:
             t = t[:k]
     t = t.strip().rstrip(':,;')
-    if is_file_name(t):
-        if portrait:
-            stamp = file_stamp(t)
-            if stamp:
-                return stamp
-        return t
-    if len(t) > 1 and t[0].islower() and t[1].islower():
-        t = t[0].upper() + t[1:]              # 'raw dI/dV' -> 'Raw dI/dV' (never 'dI/dV' -> 'DI/dV')
+    if is_file_name(t) and portrait:
+        stamp = file_stamp(t)
+        if stamp:
+            return stamp
     return t
 
 

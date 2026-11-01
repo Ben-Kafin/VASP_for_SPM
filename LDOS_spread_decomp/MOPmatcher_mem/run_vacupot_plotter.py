@@ -13,12 +13,15 @@ so both must be present next to each other.
 """
 
 import os
-import matplotlib
-# For an interactive window (hover/click), use a GUI backend. Comment this out to
-# keep your environment default (Spyder usually provides one). If you only want a
-# saved PNG with no window, set: matplotlib.use("Agg")
-# matplotlib.use("QtAgg")
-import matplotlib.pyplot as plt
+
+# The shared Qt layer (qtgui at the repository root): found by walking up from this file.
+import os as _os, sys as _sys
+_root = _os.path.dirname(_os.path.abspath(__file__))
+while not _os.path.isdir(_os.path.join(_root, 'qtgui')) and _os.path.dirname(_root) != _root:
+    _root = _os.path.dirname(_root)
+if _root not in _sys.path:
+    _sys.path.insert(0, _root)
+from qtgui import qtplot as plt
 
 from matcher import PlotConfig, RectAEPAWColorPlotter, matcher_vacupot
 
@@ -30,7 +33,8 @@ from matcher import PlotConfig, RectAEPAWColorPlotter, matcher_vacupot
 # ---------------------------------------------------------------------------
 MATCH_FILE = r'dir/run_complex/band_matches_rectangular.txt'
 
-# Optional: also save the figure to disk (set to None to skip saving).
+# Optional: also save the figure to disk (set to None to skip saving): a publication file
+# through matplotlib (PDF, EPS, SVG, or PNG / TIFF at SAVE_DPI), as the window's Save button.
 SAVE_PATH = None   # e.g. r'dir/output/vacupot_plot.png'
 SAVE_DPI = 300
 
@@ -101,7 +105,7 @@ def main():
     fig, axes = plotter.plot(MATCH_FILE, bonding=BONDING)
 
     if SAVE_PATH:
-        fig.savefig(SAVE_PATH, dpi=SAVE_DPI, bbox_inches="tight")
+        fig.savefig(SAVE_PATH, dpi=SAVE_DPI)
         print(f"[OK] Saved figure to {SAVE_PATH}")
 
     plt.show()

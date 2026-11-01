@@ -135,14 +135,46 @@ the one documented exception to "one scene per window" and "matplotlib off the s
   `HoverLabels`, `SigmaBox`, `GammaBox`, the suite's control table; a demo window renders
   offscreen (commit 76e35cc).
 - [x] 4.3 `checks/render_windows.py`: the render-and-measure helper (commit 76e35cc).
-- [~] 4.4 The simulator and its wrapper (the worked example), `plot_dos_cursors_levels.py`.
+- [x] 4.4 The simulator and its wrapper (the worked example), `plot_dos_cursors_levels.py`.
 - [x] 4.5 The decomposition windows: `decomp_window.py`, `topo_decomp_window.py`,
   `global_decomposition.py`, `run_wfn_plane_slice.py`; their tests (68 pass, 58 skip without the
   example data; 3 plane-slice tests fail exactly as they did at the base commit d9c0ca0: a
   `"power"` norm mode the module does not have, and an atom-tolerance expectation; their
   expectations were left as written, see the delivery report).
-- [~] 4.6 The matcher plots: `spread_collapse.py`, `spread_plot.py`,
+- [x] 4.6 The matcher plots: `spread_collapse.py`, `spread_plot.py`,
   `state_decomposition_plot.py`, `vacupot_plotter.py`.
 - [x] 4.7 `Band_structure_plot.py`, `forces.py`, `lv_slice_w_atoms_2system.py`.
-- [ ] 4.8 Verification pass (3.6) on every window; the repeated-logic scan.
-- [ ] 4.9 READMEs (root and every package touched), this plan ticked, commit, push.
+- [x] 4.8 Verification pass (3.6) on every window; the repeated-logic scan (section 5).
+- [x] 4.9 READMEs (root and every package touched), this plan ticked, commit, push.
+
+## 5. Findings of the verification pass (not changed; for the owner)
+
+- **Pre-existing test failures** (`mo_ldos_projection/tests/test_wfn_plane_slice.py`), identical at
+  the base commit d9c0ca0 and now: `test_run_end_to_end_saves_png[power]` and
+  `test_run_multi_input_compare` ask for a norm mode `"power"` that `run_wfn_plane_slice._shared_norm`
+  rejects (it knows `"log"` and `"linear"`); `test_multi_input_heterogeneous_defaults` expects one
+  atom marker on the second panel while the module's default tolerance (3 Å) places five. The
+  conversion fork had rewritten these expectations; they were put back as written, because
+  changing what a test asserts about the module is outside the approved scope.
+- **Repeated logic that predates the conversion** (the `ast` scan of section 11.6 of the guide):
+  `_offset_name` in `decomp_window`, `global_decomposition`, `spread_collapse`, `spread_plot`;
+  `_gauss_sum` and `_curve_grid` in `spread_collapse`, `spread_plot`, `state_decomposition_plot`
+  (although `_imports.py` names `spread_plot`'s as the single implementation); `_curve_values` in
+  `spread_collapse` and `spread_plot`; `_entity_label` in `global_decomposition` and `spread_plot`;
+  `_ylabel` and `_on_chk` in `spread_plot` and `state_decomposition_plot`; `refresh` in
+  `decomp_window` and `topo_decomp_window`; `_orbit_base`, `_lighten_color` and the
+  element-by-index helper in `simulator` and `plot_dos_cursors_levels`. Each is one function in
+  more than one place; making each one function touches the physics modules, so it was left for
+  the owner's decision. The duplicates the conversion itself introduced were removed (the number
+  boxes' submit logic in `controls`, the check function of the check scripts).
+- **Layout under rule 7 in the simulator.** In the Single Point and Map views the Partitioned
+  LDOS curve panel follows the height of the topography panels in its row (rule 7: curve panels
+  follow the spatial panel), so it is shorter than in the matplotlib figure, where it filled the
+  row's height, and the row leaves empty room above and below. Widening the topography columns
+  or taking the curve panel out of the row is a layout decision for the owner.
+- **The 3D panel of `forces.py`** keeps matplotlib's own text sizes (the documented exception).
+- **A hover label** keeps its place on the panel, not its data position, across a pan or zoom
+  until the next hit.
+- **A long run-script title** in the combined matcher plot's vertical layout ("Bulk surface and
+  adatom") overflows its narrow column; written "Bulk: surface and adatom" it would show its short
+  name (rule 6). The run scripts' settings were not changed.

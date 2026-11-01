@@ -10,17 +10,44 @@ noncollinear / SOC calculations from DOSCAR and LOCPOT.
 then adjust the `Interactive_STM_Simulator(...)` arguments (energy range, LDOS sampling height,
 colormap, number of unit cells) and the `run_interactive(...)` arguments (topography grid, bias,
 tip height, decay model on/off, cache reuse, line-scan endpoints, marker positions, extra
-broadening per element, path mode seed). The interactive figure gives constant-current topography,
-dI/dV at markers, line scans and path scans with sliders and toggles.
+broadening per element, path mode seed). The window gives constant-current topography, dI/dV at
+markers, line scans, path scans and energy maps.
+
+## The window
+
+The window is a Qt window (PySide6 + pyqtgraph) drawn with the shared `qtgui` layer at the
+repository root: its panels and controls sit in one automatic layout (nothing is placed by hand,
+nothing overlaps at any window size, the window never scrolls), every text follows the window's
+size, and a panel's title shows its short name with the details (bias, height, the marker) in the
+information panel docked at the bottom. The toolbar has Home, Pan, Zoom and Save; Save writes PDF,
+EPS, SVG, PNG or TIFF through matplotlib (publication files), a PNG or SVG as on screen, a
+screenshot, or the curves as CSV.
+
+| control | where | what it does |
+|---|---|---|
+| `mode` radio | left column, top | the view: `Single Point`, `Line`, `Path`, `Map` (the panels of the view are rebuilt; the controls stay) |
+| `broadening` box | left column | one check per atom type with its `σ <type>` box (eV, 0 to 1, two decimals), shown while the check is on: extra Gaussian broadening of that type's DOS |
+| `RUN` / `STOP` | left column, bottom | starts and stops the computation; on STOP the line endpoints / path nodes and marker positions are printed in the form `run_interactive` takes |
+| toggles | beside RUN | `Atoms`, `Decay`, `0-clamp` (under Decay), `Norm`, `Mag`, `Cell`, `Extend` |
+| `Topo h`, `LDOS h` | columns beside the topography panels | the tip heights (Å, 0 to the cell top above the highest atom) with a `Rerun` button each: the height applies when Rerun is pressed while running |
+| bottom strip | under the panels | `Cells` (0 to 4 periodic images each way), `Path Pts` (Path view, 2 to 12 nodes), `Markers` (1 to 10), `E Pts` (Map view, 1 to 20 energy maps), `E Min`, `E Max` (eV, -5 to 5), `LDOS γ` (the heatmaps' power-law colour scale, re-colours only) |
+
+Every count and value is a number box: type a value and press Enter, or select a digit and press
+Up or Down to step it (a Value stops at its limits; a step applies at once). Markers, line ends,
+path nodes and the energy markers of the Map view are dragged with the mouse; a click on a curve
+of the Partitioned LDOS panel descends a level (partition, atom types, atoms, orbitals) and a click
+beside the curves ascends. At the orbital level the curves carry hover labels. The MO to LDOS
+decomposition wrapper (`mo_ldos_decomp`) adds its σ box and its `Send to decomp` buttons to the
+left column through `Interactive_STM_Simulator.add_control_box`.
 
 ## Package `stm_from_dft/`
 
 | module | role |
 |---|---|
-| `simulator.py` | `Unified_STM_Simulator` (GPU LDOS, Simpson integration, Chen barrier, constant-current convergence, caches) and `Interactive_STM_Simulator` (the figure and its controls). Decay model: Tier 2 with the optional occupied-side 0-clamp |
+| `simulator.py` | `Unified_STM_Simulator` (GPU LDOS, Simpson integration, Chen barrier, constant-current convergence, caches) and `Interactive_STM_Simulator` (the window: its controls made once, its panels per view, on the shared `qtgui` layer). Decay model: Tier 2 with the optional occupied-side 0-clamp |
 | `doscar_parser.py` | `SpinAwareDosParser`, `SpinMode`: DOSCAR reader for all three spin modes |
 | `locpot_manager.py` | `LocpotManager`: LOCPOT loading and `.npy` caching for all three spin modes |
-| `plot_dos_cursors_levels.py` | `DosPlotter`: DOS plot with energy cursors and level markers (run block at the bottom, `v_dir`) |
+| `plot_dos_cursors_levels.py` | `DosPlotter`: DOS window with levels (total, Au / molecule, atom types, atoms, one atom's orbitals with hover labels; a click on a curve descends, a click beside the curves ascends; `m` toggles the \|m\| overlay in SOC mode) (run block at the bottom, `v_dir`) |
 | `tier3_decay.py` | UNUSED, fully commented: the Tier 3 decay model, kept as reference for future work on the tunneling barrier |
 | `sim_decay_full.py` | UNUSED, fully commented: the full-model frozen-bias decay build of the simulator, kept as reference for the same work |
 
@@ -30,4 +57,7 @@ restores them exactly.
 Inputs: DOSCAR, LOCPOT, POSCAR or CONTCAR (and INCAR for the spin-mode check). Outputs: figures and
 the `global_topo_*` / `ldos_topo_*` `.npy` caches in the run directory.
 
-Dependencies: numpy, scipy, matplotlib, cupy (CUDA GPU), pymatgen, mplcursors.
+Dependencies: numpy, scipy, cupy (CUDA GPU), pymatgen, PySide6 and pyqtgraph (the shared `qtgui`
+layer at the repository root), matplotlib (the publication files written by the toolbar's Save
+button). `checks/check_simulator.py` at the repository root opens the window offscreen on synthetic
+inputs (numpy stand-ins for cupy) and measures its layout at several sizes.

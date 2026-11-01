@@ -11,9 +11,9 @@ Flow:
      one (checksum/provenance-gated), then the matcher writes the extended
      run record and the txt outputs. A virgin set of VASP directories is
      fully processed here — no prior MOPMatcher run is required.
-  3. Launch the STM decomposition workflow: the unmodified simulator on a
-     σ-tagged working directory (synthetic DOSCAR), with the wrapper's σ
-     slider + textbox and the "Send to decomp" box (an "ldos" button for
+  3. Launch the STM decomposition workflow: the simulator on a σ-tagged
+     working directory (synthetic DOSCAR), with the wrapper's σ box and
+     the "Send to decomp" box (an "ldos" button for
      the per-marker LDOS decomposition and a "topo" button for the MO
      topo decomposition over topo_decomp_offsets). Set
      use_synthetic_doscar = False below to run the simulator on the run
@@ -31,7 +31,14 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import h5py
-import matplotlib.pyplot as plt
+
+# The shared Qt layer (qtgui at the repository root): found by walking up from this file.
+_root = os.path.dirname(os.path.abspath(__file__))
+while not os.path.isdir(os.path.join(_root, 'qtgui')) and os.path.dirname(_root) != _root:
+    _root = os.path.dirname(_root)
+if _root not in sys.path:
+    sys.path.insert(0, _root)
+from qtgui import qtplot as plt
 
 from mo_ldos_projection._imports import PlotConfig, resolve_run_match
 from mo_ldos_projection.sim_wrapper import StmDecompSession
@@ -213,7 +220,7 @@ if __name__ == "__main__":
     )
     session.launch()
 
-    # Hold the app: the wrapper runs under interactive mode so the
-    # simulator's plt.show() returns; block here until every window closes.
+    # Hold the app: the wrapper runs under interactive mode (qtplot.ion) so
+    # the simulator's plt.show() returns; block here until every window closes.
     plt.ioff()
     plt.show()

@@ -7,7 +7,15 @@ Created on Fri Apr  3 19:20:10 2026
 
 # run_matcher.py
 from matcher import run_match, PlotConfig, RectAEPAWColorPlotter
-import matplotlib.pyplot as plt
+
+# The shared Qt layer (qtgui at the repository root): found by walking up from this file.
+import os as _os, sys as _sys
+_root = _os.path.dirname(_os.path.abspath(__file__))
+while not _os.path.isdir(_os.path.join(_root, 'qtgui')) and _os.path.dirname(_root) != _root:
+    _root = _os.path.dirname(_root)
+if _root not in _sys.path:
+    _sys.path.insert(0, _root)
+from qtgui import qtplot as plt
 
 run_kwargs = {
     # --- Builder settings ---

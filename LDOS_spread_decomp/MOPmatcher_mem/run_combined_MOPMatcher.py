@@ -25,7 +25,15 @@ Subplot order (top -> bottom):
 """
 from matcher import PlotConfig
 from matcher.combined_vacupot_plotter import plot_combined_runs
-import matplotlib.pyplot as plt
+
+# The shared Qt layer (qtgui at the repository root): found by walking up from this file.
+import os as _os, sys as _sys
+_root = _os.path.dirname(_os.path.abspath(__file__))
+while not _os.path.isdir(_os.path.join(_root, 'qtgui')) and _os.path.dirname(_root) != _root:
+    _root = _os.path.dirname(_root)
+if _root not in _sys.path:
+    _sys.path.insert(0, _root)
+from qtgui import qtplot as plt
 
 # --- Point these at each run's directory (or its band_matches_rectangular.txt) ---
 # "complex" run: full = NHC + gold-adatom complex; components = molecule(s) + lone gold atom

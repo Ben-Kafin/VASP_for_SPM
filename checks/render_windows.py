@@ -186,6 +186,27 @@ def check_window(fig, name, shots_dir=None, sizes=SIZES):
             'counts': {'axes': len([a for a in fig.axes if a._visible]), 'controls': len(fig._qt_controls)}}
 
 
+RESULTS = []          # (name, ok) of every check made through check(), in order
+FAILS = []            # the names of the failed ones (a script may append a failure of its own)
+
+
+def check(name, cond, info=''):
+    """One PASS / FAIL line per check, the result kept (RESULTS, FAILS); the one check function of every check script."""
+    ok = bool(cond)
+    print(('PASS  ' if ok else 'FAIL  ') + name + ('' if ok else f'   {info}'))
+    RESULTS.append((name, ok))
+    if not ok:
+        FAILS.append(name)
+    return ok
+
+
+def summary():
+    """The closing lines of a check script: 'n of m checks passed', the failures; returns the exit code."""
+    n_fail = sum(1 for _, ok in RESULTS if not ok)
+    print(f"\n{len(RESULTS) - n_fail} of {len(RESULTS)} checks passed" + (f"; FAILED: {FAILS}" if FAILS else ""))
+    return 1 if FAILS else 0
+
+
 def print_report(report):
     n = len(report['problems'])
     print(f"{'PASS' if n == 0 else 'FAIL'}  {report['name']}: {report['counts']['axes']} panels, "

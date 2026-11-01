@@ -47,7 +47,7 @@ ascending by ov and drop from the smallest upward while the cumulative
 dropped probability mass remains <= sum_threshold; stop the first time
 including the next ov would push the dropped mass past sum_threshold.
 
-A Curve CheckButton (lower-left) replaces each SPREADS panel (the outer
+A Curve check (in the controls under the panels) replaces each SPREADS panel (the outer
 states panels stay put) with that system's single total curve: the system's
 summed Gaussian-broadened intensity over all its contributing component
 states (VASP-style smearing,
@@ -65,8 +65,17 @@ colors,
 rendered as a per-segment-colored LineCollection (consecutive grid points
 become tiny segments, each colored by the blend at that energy). The color
 weights come from the RAW broadened intensities, so the blend is unaffected
-by the normalization and amplitude transforms below. The in-figure slider
-sets sigma in eV live.
+by the normalization and amplitude transforms below. The σ (eV) number box
+(controls.SigmaBox, shown in curve mode) sets sigma in eV live: Enter,
+leaving the box after an edit, or an arrow-key digit step applies it.
+
+The window is a qtgui figure (the shared Qt layer at the repository root):
+automatic layout (the row of panels fills the window's grid of cells, the
+controls sit in a strip under it), hover labels through widgets.HoverLabels
+(original-states and curve panels: a left click arms them, a right click
+clears and disarms them; a spreads panel: a left click on a full state's
+stack arms the labels of that state's segments alone), and the toolbar's
+Save button for publication files.
 
 CURVE PIPELINE -- ORDER OF OPERATIONS (keep this order in any future edit):
 
@@ -97,21 +106,22 @@ from collections import defaultdict
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
-import matplotlib.pyplot as plt
-from matplotlib.collections import LineCollection
-from matplotlib.widgets import CheckButtons, Slider
 
-try:
-    import mplcursors
-    HAS_MPLCURSORS = True
-except Exception:
-    HAS_MPLCURSORS = False
+# The shared Qt layer (qtgui at the repository root): found by walking up from this file.
+import os as _os, sys as _sys
+_root = _os.path.dirname(_os.path.abspath(__file__))
+while not _os.path.isdir(_os.path.join(_root, 'qtgui')) and _os.path.dirname(_root) != _root:
+    _root = _os.path.dirname(_root)
+if _root not in _sys.path:
+    _sys.path.insert(0, _root)
+from qtgui import qtplot as plt
+from qtgui import controls, widgets
 
 if __name__ != "__main__":
     from .vacupot_plotter import RectAEPAWColorPlotter, PlotConfig
     from .kramers import pair_entities
 
-# Curve-mode smearing slider range (eV), VASP SIGMA convention
+# Curve-mode smearing width limits (eV) of the σ box, VASP SIGMA convention
 SIGMA_MIN = 0.01
 SIGMA_MAX = 1.0
 
@@ -225,7 +235,7 @@ def plot_state_decomposition(
     curve : bool
         Initial state of the Curve toggle: replace each system's stacked
         spreads panel with its gradient-colored total curve (the outer
-        original-states panels stay), with an in-figure sigma slider (eV).
+        original-states panels stay), with the σ (eV) number box shown.
         See the module docstring for the color blend and pipeline.
     sigma : float
         Initial Gaussian smearing width in eV (VASP SIGMA convention).
@@ -425,14 +435,15 @@ def plot_state_decomposition(
     # ------------------------------------------------------------------
     # 6. Figure. Rotated layout: ENERGY IS VERTICAL, so the figure height
     #    carries the spectrum and the width carries the row of columns.
-    #    The data axes are built by _rebuild_axes inside _draw_all and
-    #    `axes` is mutated in place. Bottom strip: reserve a fixed ~1.05
-    #    inches for the widgets regardless of column count.
+    #    The data axes are built by _rebuild_axes inside _draw_all (the
+    #    window's grid of cells; automatic layout: the one rule for every
+    #    window, nothing placed by hand) and `axes` is mutated in place.
+    #    DESIGN is the window's design size (inches), the text zoom's
+    #    reference.
     # ------------------------------------------------------------------
     fig_h = max(5.0, 2.0 * cfg.figsize[1])
-    fig = plt.figure(figsize=(cfg.figsize[0], fig_h))
-    bfrac = min(0.35, 1.05 / fig_h)
-    fig.subplots_adjust(bottom=bfrac, top=0.93, wspace=0.35)
+    DESIGN = (cfg.figsize[0], fig_h)
+    fig = plt.figure(figsize=DESIGN)
     axes: List[plt.Axes] = []
 
     state = {"curve": bool(curve), "sigma": float(sigma),
@@ -464,15 +475,24 @@ def plot_state_decomposition(
             lab = lab[:-3] + "$"
         return lab
 
-    # Per-axis bookkeeping for the click-armed cursors (stick mode), the
-    # per-axis curve cursors (curve mode) and the original-states panels'
-    # cursors (both modes); all rebuilt on every redraw.
+    def _panel_title(kind: str, lbls: List[str], what: str) -> str:
+        # "Short: details" (the layer shows the short name, the details go to
+        # the information panel): the metal or a single molecule keeps
+        # "<name> <what>"; several molecules give "molecule <what>: a, b"
+        # so the comma-separated names never cut the shown title.
+        if kind == "metal":
+            return f"metal {what}"
+        if len(lbls) == 1:
+            return f"{lbls[0]} {what}"
+        return f"molecule {what}: {', '.join(lbls)}"
+
+    # Per-axis bookkeeping of the spreads (stick) panels: the segment artists
+    # and hover texts per full state, and each stack's extent for the click
+    # rule; rebuilt on every redraw.  The hover labels themselves are
+    # widgets.HoverLabels, one per panel (the figure's registry).
     state_artists: Dict[Any, Dict[int, List[Any]]] = {}
     hover_maps:    Dict[Any, Dict[int, Dict[Any, str]]] = {}
     state_extent:  Dict[Any, Dict[int, Tuple[float, float]]] = {}
-    state_cursors: Dict[Any, Dict[int, Any]] = {}
-    curve_cursors: Dict[Any, Any] = {}
-    og_cursors:    Dict[Any, Any] = {}
 
     def _erange(energies: List[float]) -> Tuple[float, float]:
         # ascending (lo, hi) energy window for the curves; a reversed
@@ -487,24 +507,32 @@ def plot_state_decomposition(
             lo, hi = lo - 1.0, hi + 1.0
         return float(lo), float(hi)
 
-    def _remove_all_cursors():
-        curs = [c for by_state in state_cursors.values()
-                for c in by_state.values()]
-        curs.extend(curve_cursors.values())
-        curs.extend(og_cursors.values())
-        for cur in curs:
-            try:
-                cur.remove()
-            except Exception:
-                try:
-                    for sel in list(cur.selections):
-                        cur.remove_selection(sel)
-                    cur.enabled = False
-                except Exception:
-                    pass
-        state_cursors.clear()
-        curve_cursors.clear()
-        og_cursors.clear()
+    def _stick_energy_window() -> Optional[Tuple[float, float]]:
+        # The energy range of stick mode without an energy_range: what matplotlib's autoscale
+        # gave the old figure (axhline and hlines both enter it), the union over the shared
+        # panels of every horizontal line's energy (the original states, the stacks, the
+        # reference lines drawn), widened by 5 % of its span at each end (axes.ymargin).
+        ys: List[float] = []
+        for lbl in figure_labels:
+            ys += [E_m + fermi_shift for _, _, E_m in comp_pairs_ent.get(lbl, [])]
+        for panel_idx in range(n_panels):
+            for recs in kept[panel_idx].values():
+                if recs:
+                    ys.append(recs[0][4] + recs[0][5] + fermi_shift)
+        if cfg.show_fermi_line:
+            ys.append(0.0)
+        if cfg.show_local_fermi:
+            for kind, lbls in panels:
+                lab = "metal" if kind == "metal" else (lbls[0] if lbls else None)
+                if lab is not None and lab in known_fermis:
+                    ys.append(known_fermis[lab] + fermi_shift)
+        if cfg.show_vacuum_line and v_shifted is not None:
+            ys.append(v_shifted)
+        if not ys:
+            return None
+        lo, hi = min(ys), max(ys)
+        span = (hi - lo) or 1.0
+        return lo - 0.05 * span, hi + 0.05 * span
 
     def _draw_reflines(ax, kind, lbls):
         # energy runs vertically, so every reference line is horizontal
@@ -549,6 +577,7 @@ def plot_state_decomposition(
         for a in list(axes):
             a.remove()
         axes.clear()
+        widgets.HoverLabels.prune(fig)          # the removed panels' hover labels go with them
         arr = fig.subplots(1, n, sharey=True, squeeze=False)
         axes.extend(arr[0, :])
 
@@ -624,23 +653,13 @@ def plot_state_decomposition(
         _draw_reflines(ax, kind, lbls)
         ax.set_xticks([])
         ax.set_xlabel(_ylabel())
-        name = "metal" if kind == "metal" else ", ".join(lbls)
-        # small titles: four side-by-side columns leave little room and long
-        # molecule names collide with their neighbors at the default size
-        ax.set_title(f"{name} states", fontsize="small")
-        if cfg.annotate_on_hover and HAS_MPLCURSORS and og_hover:
-            cur = mplcursors.cursor(list(og_hover), hover=True)
-            cur.enabled = False
-            og_cursors[ax] = cur
-
-            @cur.connect("add")
-            def _on_add(sel, hmap=og_hover):
-                txt = hmap.get(sel.artist)
-                if txt:
-                    sel.annotation.set_text(txt)
+        # small titles: four side-by-side columns leave little room
+        ax.set_title(_panel_title(kind, lbls, "states"), fontsize="small")
+        if cfg.annotate_on_hover and og_hover:
+            # left click arms the labels of this panel, right click clears them
+            widgets.HoverLabels(ax, list(og_hover), og_hover)
 
     def _draw_curve_panel(ax, panel_idx, kind, lbls, flip, lo, hi):
-        name = "metal" if kind == "metal" else ", ".join(lbls)
         groups = [
             (component_colors.get(lbl, {}).get(
                 comp_idx, (0.4, 0.4, 0.4, 1.0)), sts)
@@ -648,11 +667,12 @@ def plot_state_decomposition(
         ]
         _draw_reflines(ax, kind, lbls)
         ax.set_xlabel(_ylabel())
+        name = "metal" if kind == "metal" else ", ".join(lbls)
         if not groups:
-            ax.set_title(f"{name} curve\n(no contributions kept)",
+            ax.set_title(_panel_title(kind, lbls, "curve") + ": no contributions kept",
                          fontsize="small")
             return
-        lc = LineCollection([], linewidths=1.8, zorder=2)
+        lc = plt.LineCollection([], linewidths=1.8, zorder=2)
         ax.add_collection(lc)
         n_contrib = sum(len(sts) for _, sts in groups)
         hover_txt = (
@@ -663,15 +683,10 @@ def plot_state_decomposition(
             f"color = intensity-weighted blend of state colors")
         curve_entries.append(dict(ax=ax, lc=lc, groups=groups,
                                   lo=lo, hi=hi, name=name, flip=flip))
-        ax.set_title(f"{name} curve", fontsize="small")
-        if cfg.annotate_on_hover and HAS_MPLCURSORS:
-            cur = mplcursors.cursor([lc], hover=True)
-            cur.enabled = False
-            curve_cursors[ax] = cur
-
-            @cur.connect("add")
-            def _on_add(sel, txt=hover_txt):
-                sel.annotation.set_text(txt)
+        ax.set_title(_panel_title(kind, lbls, "curve"), fontsize="small")
+        if cfg.annotate_on_hover:
+            # left click arms the label of this panel, right click clears it
+            widgets.HoverLabels(ax, [lc], {lc: hover_txt})
 
     def _draw_stick_panel(ax, panel_idx, kind, lbls, flip):
         # ---- stick mode: stacked-segment drawing, rotated -- each stack
@@ -731,12 +746,18 @@ def plot_state_decomposition(
 
         _draw_reflines(ax, kind, lbls)
         ax.set_xlabel(_ylabel())
-        name = "metal" if kind == "metal" else ", ".join(lbls)
-        ax.set_title(f"{name} spreads", fontsize="small")
+        ax.set_title(_panel_title(kind, lbls, "spreads"), fontsize="small")
+
+        # The panel's hover labels, armed by the window's own click rule
+        # (_on_click: a left click on one state's stack arms that state's
+        # segments alone), so the figure's click arming is off here.
+        if cfg.annotate_on_hover and state_artists[ax]:
+            all_arts = [a for arts in state_artists[ax].values() for a in arts]
+            all_txt = {a: t for hm in hover_maps[ax].values() for a, t in hm.items()}
+            widgets.HoverLabels(ax, all_arts, all_txt, arm_by_click=False)
 
     def _draw_all():
         curve_entries.clear()
-        _remove_all_cursors()
         state_artists.clear()
         hover_maps.clear()
         state_extent.clear()
@@ -775,70 +796,51 @@ def plot_state_decomposition(
             axes[0].set_ylim(cfg.energy_range)
         elif state["curve"] and lo is not None:
             axes[0].set_ylim(lo, hi)
-
-        # --- Click-armed per-full-state cursors (stick mode only) ---
-        if not state["curve"] and cfg.annotate_on_hover and HAS_MPLCURSORS:
-            for ax in axes:
-                if ax not in state_artists:
-                    continue
-                state_cursors[ax] = {}
-                by_state = state_artists.get(ax, {})
-                for full_idx, arts in by_state.items():
-                    if not arts:
-                        continue
-                    cur = mplcursors.cursor(arts, hover=True)
-                    cur.enabled = False
-                    hm = hover_maps[ax][full_idx]
-                    @cur.connect("add")
-                    def _on_add(sel, _hm=hm):
-                        txt = _hm.get(sel.artist)
-                        if txt:
-                            sel.annotation.set_text(txt)
-                    state_cursors[ax][full_idx] = cur
+        else:
+            win = _stick_energy_window()
+            if win is not None:
+                axes[0].set_ylim(*win)
 
         fig.canvas.draw_idle()
 
     # ------------------------------------------------------------------
-    # 8. Widgets: Curve + Amplitude toggles, a Norm sub-toggle and the
-    #    sigma slider shown only in curve mode.
+    # 8. Controls: the Curve + Amplitude checks, the Norm check and the
+    #    σ (eV) number box (the last two shown only in curve mode), real Qt
+    #    widgets made once, in a strip under the panels (automatic layout:
+    #    the one rule for every window).  The window owns the state; the
+    #    controls only report.
     # ------------------------------------------------------------------
-    # Widget axes are placed at inch-stable heights (fractions scaled by
-    # 1/fig_h) so they stay inside the reserved bottom strip and clear of
-    # the intensity labels at every column count. Hiding a widget's axes is
-    # what blocks its events: matplotlib skips invisible axes when resolving
-    # event.inaxes, so a hidden widget cannot be clicked.
-    chk = CheckButtons(
-        fig.add_axes([0.01, 0.06 / fig_h, 0.13, 0.62 / fig_h]),
-        ["Curve", "Amplitude"], [state["curve"], state["amplitude"]],
-    )
-    norm_ax = fig.add_axes([0.16, 0.06 / fig_h, 0.10, 0.32 / fig_h])
-    chk_norm = CheckButtons(norm_ax, ["Norm"], [state["norm_each"]])
-    sld_ax = fig.add_axes([0.35, 0.16 / fig_h, 0.40, 0.20 / fig_h])
-    sld = Slider(
-        sld_ax, r"$\sigma$ (eV)", SIGMA_MIN, SIGMA_MAX,
-        valinit=state["sigma"], valfmt="%.3f",
-    )
+    chk = controls.make(fig, 'spread view', values=[state["curve"], state["amplitude"]])
+    chk_norm = controls.make(fig, 'Norm', value=state["norm_each"])
+    norm_box = controls.box(chk_norm)
+    sld = controls.SigmaBox(fig, state["sigma"], SIGMA_MIN, SIGMA_MAX)
+    sigma_box = controls.box(sld)
+    strip = controls.FlowLayout()
+    strip.addWidget(chk)
+    strip.addWidget(norm_box)
+    strip.addWidget(sigma_box)
+    fig.layout_root().addLayout(strip)
 
     def _sync_widget_visibility():
-        sld_ax.set_visible(state["curve"])
-        sld.set_active(state["curve"])
-        # Norm picks the normalization scheme (step 2 of the pipeline), so
-        # it only means anything in curve mode. Never call
-        # CheckButtons.set_active here -- that toggles a box rather than
-        # enabling the widget.
-        norm_ax.set_visible(state["curve"])
+        # The σ box and the Norm check are shown, and take input, only in
+        # curve mode: Norm picks the normalization scheme (step 2 of the
+        # pipeline), so it only means anything there.
+        sigma_box.setVisible(state["curve"])
+        sld.enable(state["curve"])
+        norm_box.setVisible(state["curve"])
+        chk_norm.enable(state["curve"])
 
     _sync_widget_visibility()
 
-    def _on_chk(_label):
-        state["curve"], state["amplitude"] = chk.get_status()
+    def _on_chk(_label, states):
+        state["curve"], state["amplitude"] = states
         _sync_widget_visibility()
         _draw_all()
 
-    def _on_norm(_label):
+    def _on_norm(flag):
         # normalization scheme change: recompute in place (step 2 of the
         # pipeline changes, steps 1 and 3 rerun around it)
-        state["norm_each"] = chk_norm.get_status()[0]
+        state["norm_each"] = bool(flag)
         if curve_entries:
             _apply_curve_xlims(_update_curve_artists())
         fig.canvas.draw_idle()
@@ -851,18 +853,18 @@ def plot_state_decomposition(
             _apply_curve_xlims(_update_curve_artists())
         fig.canvas.draw_idle()
 
-    chk.on_clicked(_on_chk)
-    chk_norm.on_clicked(_on_norm)
-    sld.on_changed(_on_sigma)
+    chk.on_change(_on_chk)
+    chk_norm.on_change(_on_norm)
+    sld.on_change(_on_sigma)
 
     _draw_all()
 
     # ------------------------------------------------------------------
-    # 9. Click handling. Stick mode: left click on a state's stack ->
-    #    disable every other state's cursor on that axis, enable this
-    #    state's cursor; right click -> clear/disable every state cursor.
-    #    Curve and original-states panels: left click arms the axis'
-    #    cursor, right click clears it.
+    # 9. Click handling of the spreads (stick) panels. Left click on a
+    #    state's stack -> the panel's hover labels follow that state's
+    #    segments alone (armed); right click -> cleared and disarmed. The
+    #    curve and original-states panels are armed and cleared by the
+    #    figure's own hover-label click rule (widgets.HoverLabels).
     # ------------------------------------------------------------------
     def _hit_full_idx(ax, ex, ey):
         info = state_extent.get(ax, {})
@@ -871,8 +873,8 @@ def plot_state_decomposition(
         # ~5-pixel tolerance along the (vertical) energy axis, in data
         # units, derived per-axis.
         inv = ax.transData.inverted()
-        p0 = inv.transform((0.0, 0.0))
-        p1 = inv.transform((0.0, 5.0))
+        p0 = inv.transform([[0.0, 0.0]])[0]
+        p1 = inv.transform([[0.0, 5.0]])[0]
         y_tol = abs(p1[1] - p0[1])
 
         best = None
@@ -885,51 +887,31 @@ def plot_state_decomposition(
                     best = full_idx
         return best
 
-    def _arm_or_clear(cur, button):
-        if button == 1:
-            if not cur.enabled:
-                cur.enabled = True
-        elif button == 3:
-            for sel in list(cur.selections):
-                cur.remove_selection(sel)
-            cur.enabled = False
-
     def _on_click(event):
         if event.inaxes is None:
             return
         ax = event.inaxes
-        cur = og_cursors.get(ax)
-        if cur is not None:
-            _arm_or_clear(cur, event.button)
-            return
-        if state["curve"]:
-            cur = curve_cursors.get(ax)
-            if cur is not None:
-                _arm_or_clear(cur, event.button)
-            return
-        cursors = state_cursors.get(ax, {})
-        if not cursors:
+        if ax not in state_artists:
+            return                      # a curve or original-states panel: HoverLabels arms it
+        hl = widgets.HoverLabels.of(ax)
+        if hl is None:
             return
         if event.button == 1:
             hit = _hit_full_idx(ax, event.xdata, event.ydata)
             if hit is None:
                 return
-            for fi, cur in cursors.items():
-                if fi != hit:
-                    for sel in list(cur.selections):
-                        cur.remove_selection(sel)
-                    cur.enabled = False
-            cursors[hit].enabled = True
+            # this state's segments alone are labelled from now on
+            hl.artists = list(state_artists[ax][hit])
+            hl.texts = dict(hover_maps[ax][hit])
+            hl.clear()
+            hl.set_enabled(True)
         elif event.button == 3:
-            for cur in cursors.values():
-                for sel in list(cur.selections):
-                    cur.remove_selection(sel)
-                cur.enabled = False
+            hl.clear()
+            hl.set_enabled(False)
 
-    if HAS_MPLCURSORS:
-        fig.canvas.mpl_connect("button_press_event", _on_click)
+    fig.canvas.mpl_connect("button_press_event", _on_click)
 
-    # keep the widgets (and the closures wired to them) alive with the figure
+    # keep the controls (and the closures wired to them) alive with the figure
     fig._decomp_widgets = (chk, sld, chk_norm)
     # registry of the per-system gradient curves, exposed for tests/tooling
     fig._decomp_curve_entries = curve_entries
@@ -956,7 +938,7 @@ if __name__ == "__main__":
     sum_threshold = 0.01
 
     # ---- Curve (Gaussian broadening) initial state ----
-    curve = False            # True = one gradient curve per system (slider)
+    curve = False            # True = one gradient curve per system (σ box)
     sigma = 0.1              # initial smearing width in eV (VASP SIGMA style)
     amplitude = True        # sticks: sqrt(ov); curves: sqrt of the
                              # normalized curve (applied last)
