@@ -1,10 +1,13 @@
 # -*- coding: utf-8 -*-
-"""Shared fixtures: paths, parsed PROCAR, matcher results (session-scoped)."""
+"""Shared fixtures: paths, parsed PROCAR, matcher results (session-scoped).
+
+The windows draw with the shared Qt layer (qtgui at the repository root): the suite runs on
+Qt's offscreen platform (QT_QPA_PLATFORM=offscreen, set here when nothing is set) and the
+layer's event loop is marked running so a window's plt.show() returns at once."""
 import os
 import sys
 
-import matplotlib
-matplotlib.use("Agg")
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import numpy as np
 import pytest
@@ -15,6 +18,14 @@ _PKG_DIR = os.path.dirname(_TESTS_DIR)
 _ROOT = os.path.dirname(_PKG_DIR)
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
+# The shared Qt layer: the folder holding qtgui/ (the repository root), found by walking up.
+_QT_ROOT = _ROOT
+while not os.path.isdir(os.path.join(_QT_ROOT, "qtgui")) and os.path.dirname(_QT_ROOT) != _QT_ROOT:
+    _QT_ROOT = os.path.dirname(_QT_ROOT)
+if _QT_ROOT not in sys.path:
+    sys.path.insert(0, _QT_ROOT)
+from qtgui import qtplot as _qtplot          # noqa: E402
+_qtplot._RUNNING[0] = True                   # plt.show() returns at once under pytest
 
 EXAMPLE_DIR = os.environ.get(
     "MO_LDOS_EXAMPLE_DIR",

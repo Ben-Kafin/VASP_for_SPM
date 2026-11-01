@@ -12,7 +12,7 @@ from mo_ldos_projection.decomp_window import (
     DecompWindow, MO_AREA_NOISE_THRESHOLD)
 from mo_ldos_projection._imports import PlotConfig
 
-_TRAPZ = getattr(np, "trapezoid", np.trapz)
+_TRAPZ = getattr(np, "trapezoid", None) or np.trapz    # numpy 2.x dropped trapz: never evaluate it eagerly
 
 
 def _snapshot(sigma=0.2):

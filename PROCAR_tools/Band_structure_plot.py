@@ -23,24 +23,33 @@ PROCAR reading goes through the package's shared ProcarParser (procar_parser.py)
 so ISPIN=1/2, noncollinear, LORBIT=10/11/12/14 and any orbital column set
 (s/p/d, 9 lm, 16 lm with f) are handled in one place. Element mode sums every
 orbital column of an element; orbital mode keeps its s/p/d RGB channels.
+
+The window is a Qt window of the suite's shared layer (qtgui at the repository
+root: PySide6 + pyqtgraph): the panels sit in an automatic layout with the
+'Orbital' toggle in a box under them (automatic layout: the one rule for every
+window, nothing placed by hand), the hover labels of the band markers are the
+layer's HoverLabels (left click on a panel arms them and labels the marker under
+the click, right click clears and disarms them), and the toolbar's Save button
+writes PDF / EPS / SVG / PNG / TIFF through matplotlib.
 """
 
 import os
 import re
 import numpy as np
-import matplotlib
-import matplotlib.pyplot as plt
-from matplotlib.lines import Line2D
-from matplotlib.widgets import CheckButtons
 from collections import defaultdict
 from enum import Enum, auto
 from procar_parser import ProcarParser, orbital_groups
 
-try:
-    import mplcursors
-    HAS_MPLCURSORS = True
-except ImportError:
-    HAS_MPLCURSORS = False
+# The shared Qt layer (qtgui at the repository root): found by walking up from this file.
+import os as _os, sys as _sys
+_root = _os.path.dirname(_os.path.abspath(__file__))
+while not _os.path.isdir(_os.path.join(_root, 'qtgui')) and _os.path.dirname(_root) != _root:
+    _root = _os.path.dirname(_root)
+if _root not in _sys.path:
+    _sys.path.insert(0, _root)
+from qtgui import qtplot as plt, controls, widgets
+
+DESIGN = (12, 8)     # the window's design size (inches): its text zoom is its size relative to this (qtplot.window_zoom)
 
 
 class SpinMode(Enum):
@@ -340,14 +349,15 @@ class CPUOrbitalBandPlotter:
         return self._state_arr[:, :, :, ions0, :].sum(axis=(3, 4))
 
     def plot_colored_bands(self):
-        """Build the interactive figure with an 'Orbital' toggle (bottom left).
+        """Build the interactive window with an 'Orbital' toggle in a box under the panels.
 
         Toggle OFF (default): single-panel element mode, element->RGB using the
         input filter_types (None slots skip a channel).
         Toggle ON: one subplot per element NAMED IN filter_types (None slots
         skipped); coloring switches to orbital (hue = s/p/d blend, visibility =
         total population). Both modes read one precomputed state tensor, so
-        clicking the toggle is instant."""
+        clicking the toggle is instant.  The toggle is one Qt control
+        (controls.make) made once; every rebuild replaces the panels only."""
         self.band_raw = self.parse_band_dat()
         self._build_state_tensor()   # single heavy step; both modes read this
         self._soc_groups = None
@@ -359,123 +369,63 @@ class CPUOrbitalBandPlotter:
                   f"{len(self._soc_groups)} groups ({len(multi)} degenerate, "
                   f"{len(self._soc_groups) - len(multi)} singleton); "
                   f"worst in-group |dE| = {worst:.2e} eV")
-        self.fig = plt.figure(figsize=(12, 8))
-        # Axes -> mplcursors.Cursor registry (MOPmatcher pattern). The click
-        # handler captures this dict by reference, so rebuilds that clear and
-        # repopulate it are picked up without rewiring the event.
-        self._cursor_by_axes = {}
-        # 'Orbital' toggle, bottom left.
-        self._ax_toggle = self.fig.add_axes([0.01, 0.01, 0.12, 0.06])
-        self._chk_orbital = CheckButtons(self._ax_toggle, ['Orbital'],
-                                         [getattr(self, 'color_by', 'element') == 'orbital'])
-        self._chk_orbital.on_clicked(self._on_toggle)
+        self.fig = plt.figure(figsize=DESIGN)
+        # 'Orbital' toggle: one Qt control in a box under the panels (automatic layout: the one
+        # rule for every window, nothing placed by hand); the panels fill the automatic grid above.
+        self._chk_orbital = controls.make(self.fig, 'Orbital',
+                                          value=getattr(self, 'color_by', 'element') == 'orbital')
+        self._chk_orbital.on_change(self._on_toggle)
+        self.fig.layout_root().addWidget(
+            controls.widget_of(controls.row(controls.box(self._chk_orbital), stretch=True)))
         self._rebuild_figure()
-        self._wire_global_click(self.fig)
         self._report_cursor_status()
         plt.show()
 
     def _report_cursor_status(self):
-        """Console diagnostics for the interactive cursors: both failure modes
-        (mplcursors missing from the running env, non-interactive backend) are
-        otherwise silent."""
-        backend = matplotlib.get_backend()
-        if not HAS_MPLCURSORS:
-            print("[cursor] mplcursors NOT importable in this Python environment "
-                  "-- band/k-point cursors disabled. Install with: pip install mplcursors")
-            return
-        print(f"[cursor] mplcursors OK, backend={backend}, "
-              f"cursors on {len(self._cursor_by_axes)} axes. "
-              "Left-click a band panel to enable; right-click to clear.")
-        if 'inline' in backend.lower() or backend.lower() == 'agg':
-            print("[cursor] WARNING: this backend renders a STATIC image -- clicks and "
-                  "hover never reach the plot. In Spyder set Preferences > IPython "
-                  "console > Graphics > Backend to 'Qt5' or 'Automatic' (or run "
-                  "'%matplotlib qt' in the console), then re-run.")
+        """One console line on the hover labels' rule (widgets.HoverLabels)."""
+        print("[hover] left-click a band panel to arm its labels (the marker under the click is "
+              "labelled at once, then the one under the mouse); right-click to clear and disarm.")
 
-    def _on_toggle(self, label):
-        states = self._chk_orbital.get_status()
-        self.color_by = 'orbital' if states[0] else 'element'
+    def _on_toggle(self, flag):
+        """The 'Orbital' control's handler: flag is its new state (controls.Check: callback(flag))."""
+        self.color_by = 'orbital' if flag else 'element'
         self._rebuild_figure()
         self.fig.canvas.draw_idle()
 
     def _rebuild_figure(self):
-        """Clear and redraw the figure body for the current mode, preserving the
-        toggle widget axes."""
-        self._cursor_by_axes.clear()
-        for ax in list(self.fig.axes):
-            if ax is not self._ax_toggle:
-                self.fig.delaxes(ax)
+        """Clear and redraw the panels for the current mode (the toggle is a control of the
+        window's layout, not an axes, so it stays)."""
+        self.fig.clf()
         if getattr(self, 'color_by', 'element') == 'orbital':
             self._draw_orbital_mode()
         else:
             self._draw_element_mode()
 
-    def _attach_cursor(self, ax, artists, hover_map):
-        """Attach an initially-disabled hover cursor to an axis (MOPmatcher
-        pattern): the cursor exists but shows nothing until a left click on
-        the axis arms it (see _wire_global_click). Targets the explicit
-        scatter list so reference lines (Fermi line, KLABELS guides) never
-        annotate. hover_map: scatter artist -> 1-based band number
-        (collinear), or (tuple of 1-based member band numbers, per-k |dE|
-        array or None) for NCL/SOC groups; the k-point comes from the
-        selected point's index within the artist."""
-        if not (HAS_MPLCURSORS and artists):
-            return
-        cur = mplcursors.cursor(artists, hover=True); cur.enabled = False
-        self._cursor_by_axes[ax] = cur
-
-        @cur.connect("add")
-        def _on_add(sel, hmap=hover_map):
-            info = hmap.get(sel.artist)
-            if info is None:
-                return
-            # mplcursors >= 0.5 exposes sel.index; older releases use
-            # sel.target.index. Scatter (PathCollection) indices are ints.
-            idx = getattr(sel, "index", None)
-            if idx is None:
-                idx = getattr(sel.target, "index", None)
-            if idx is None:
-                return
-            idx = int(idx)
-            k_no = idx + 1
+    @staticmethod
+    def _hover_text(info):
+        """The hover text of one scatter as a function of the point index (the k-point):
+        hover_map's value is a 1-based band number (collinear), or (tuple of 1-based member band
+        numbers, per-k |dE| array or None) for an NCL/SOC group."""
+        def text(idx):
+            k_no = int(idx) + 1
             if not isinstance(info, tuple):     # collinear: single band number
-                sel.annotation.set_text(f"band {info}\nk-point {k_no}")
-                return
+                return f"band {info}\nk-point {k_no}"
             members, dE = info                  # NCL/SOC group
             if len(members) == 1:               # singleton: keep single-band text
-                sel.annotation.set_text(f"band {members[0]}\nk-point {k_no}")
-                return
-            sel.annotation.set_text(
-                "\n".join(f"band {b} k-point {k_no}" for b in members))
+                return f"band {members[0]}\nk-point {k_no}"
+            return "\n".join(f"band {b} k-point {k_no}" for b in members)
+        return text
 
-    def _wire_global_click(self, fig):
-        """Figure-level click handler (MOPmatcher pattern): left-click arms
-        the hover cursor of the axes under the mouse (annotations then follow
-        the marker the mouse is over); right-click removes all annotations
-        from that axis and disarms its cursor. Clicks outside the data axes
-        (including the Orbital toggle) fall through the registry lookup."""
-        if HAS_MPLCURSORS:
-            def _on_click(event, _map=self._cursor_by_axes):
-                if event.inaxes is None: return
-                cur = _map.get(event.inaxes)
-                if cur is None: return
-                if event.button == 1:
-                    if not cur.enabled:
-                        cur.enabled = True
-                        print("[cursor] enabled -- annotations follow the mouse; "
-                              "right-click to clear")
-                    # Annotate the marker under the click right away;
-                    # mplcursors itself only picks on the next mouse motion.
-                    try:
-                        cur._on_select_event(event)
-                    except Exception:
-                        pass
-                elif event.button == 3:
-                    for sel in list(cur.selections):
-                        cur.remove_selection(sel)
-                    cur.enabled = False
-                    print("[cursor] cleared and disabled")
-            fig.canvas.mpl_connect("button_press_event", _on_click)
+    def _attach_cursor(self, ax, artists, hover_map):
+        """The hover labels of an axis (widgets.HoverLabels, the layer's one hover rule): off
+        until a left click on the axis arms them, a right click clears and disarms them.
+        Targets the explicit scatter list so reference lines (Fermi line, KLABELS guides) never
+        annotate. hover_map: scatter artist -> 1-based band number (collinear), or (tuple of
+        1-based member band numbers, per-k |dE| array or None) for NCL/SOC groups; the k-point
+        comes from the hovered point's index within the artist."""
+        if not artists:
+            return
+        widgets.HoverLabels(ax, artists, {sc: self._hover_text(info) for sc, info in hover_map.items()})
 
     def _draw_element_mode(self):
         """Single-panel coloring: each band point's RGB is the normalized
@@ -539,15 +489,16 @@ class CPUOrbitalBandPlotter:
         self._attach_cursor(ax, artists, hover_map)
 
         base_colors = [[1,0,0], [0,1,0], [0,0,1]]
-        legend_elements = [Line2D([0], [0], marker='o', color='w', label=e,
-                          markerfacecolor=c, markersize=10)
-                          for e, c in zip(self.filter_types, base_colors) if e]
+        legend_elements = [plt.Line2D([0], [0], marker='o', color='w', label=e,
+                           markerfacecolor=c, markersize=10)
+                           for e, c in zip(self.filter_types, base_colors) if e]
         ax.legend(handles=legend_elements, title="Atomic Projections", loc='upper right')
 
         self._apply_klabels(ax)
         ax.axhline(0, color='red', ls='-', lw=0.8, alpha=0.5)
         ax.set_ylim(-3, 3); ax.set_ylabel('Energy (eV)')
-        ax.set_title(f"Dynamic Normalized Fatbands: {self.filter_types}")
+        # "Short: details": the short name is shown, the details go to the info panel.
+        ax.set_title(f"Fatbands: dynamic normalized, {self.filter_types}")
 
     def _draw_orbital_mode(self):
         """One subplot per element NAMED IN filter_types (None slots skipped).
@@ -613,9 +564,9 @@ class CPUOrbitalBandPlotter:
             self._attach_cursor(ax, artists, hover_map)
 
             orb_colors = [[1,0,0], [0,1,0], [0,0,1]]
-            legend_elements = [Line2D([0], [0], marker='o', color='w', label=orb,
-                              markerfacecolor=c, markersize=10)
-                              for orb, c in zip(_ORBITAL_ORDER, orb_colors)]
+            legend_elements = [plt.Line2D([0], [0], marker='o', color='w', label=orb,
+                               markerfacecolor=c, markersize=10)
+                               for orb, c in zip(_ORBITAL_ORDER, orb_colors)]
             ax.legend(handles=legend_elements, title="Orbitals", loc='upper right')
 
             self._apply_klabels(ax)
@@ -625,7 +576,8 @@ class CPUOrbitalBandPlotter:
             if ax_idx == 0:
                 ax.set_ylabel('Energy (eV)')
 
-        self.fig.suptitle(f"Orbital-Resolved Fatbands (per element): {elements}", fontsize=13)
+        # "Short: details": the short name is shown, the details go to the info panel.
+        self.fig.suptitle(f"Orbital-resolved fatbands: per element, {elements}", fontsize=13)
 
 if __name__ == "__main__":
     # Element mode by default; click the bottom-left 'Orbital' toggle to switch

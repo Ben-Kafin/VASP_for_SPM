@@ -453,7 +453,13 @@ def mkpen(color, lw=1.5, ls='-', alpha=None):
     pen = QtGui.QPen(qcolor(color, alpha))
     pen.setWidthF(max(pt2px(lw), 0.5))
     pen.setCosmetic(True)
-    pen.setStyle(_LINESTYLES.get(ls, Qt.PenStyle.SolidLine))
+    if isinstance(ls, (tuple, list)) and len(ls) == 2 and isinstance(ls[1], (tuple, list)) and len(ls[1]) >= 2:
+        # matplotlib's (offset, (on, off, ...)) dash tuple, lengths in units of the line width (Qt's dash pattern unit).
+        pen.setStyle(Qt.PenStyle.CustomDashLine)
+        pen.setDashPattern([float(v) for v in ls[1]])
+        pen.setDashOffset(float(ls[0] or 0.0))
+    else:
+        pen.setStyle(_LINESTYLES.get(ls, Qt.PenStyle.SolidLine))
     if pen.style() != Qt.PenStyle.SolidLine:
         pen.setCapStyle(Qt.PenCapStyle.FlatCap)
     return pen
@@ -1320,6 +1326,99 @@ def _tick_strings(vals, spacing):
     return out
 
 
+_GREEK = {'alpha': 'α', 'beta': 'β', 'gamma': 'γ', 'delta': 'δ', 'epsilon': 'ε', 'varepsilon': 'ε', 'zeta': 'ζ',
+          'eta': 'η', 'theta': 'θ', 'iota': 'ι', 'kappa': 'κ', 'lambda': 'λ', 'mu': 'μ', 'nu': 'ν', 'xi': 'ξ', 'pi': 'π',
+          'rho': 'ρ', 'sigma': 'σ', 'tau': 'τ', 'upsilon': 'υ', 'phi': 'φ', 'varphi': 'φ', 'chi': 'χ', 'psi': 'ψ',
+          'omega': 'ω', 'Gamma': 'Γ', 'Delta': 'Δ', 'Theta': 'Θ', 'Lambda': 'Λ', 'Xi': 'Ξ', 'Pi': 'Π', 'Sigma': 'Σ',
+          'Phi': 'Φ', 'Psi': 'Ψ', 'Omega': 'Ω', 'AA': 'Å', 'times': '×', 'pm': '±', 'cdot': '·', 'infty': '∞',
+          'langle': '⟨', 'rangle': '⟩', 'leq': '≤', 'geq': '≥', 'neq': '≠', 'approx': '≈', 'propto': '∝',
+          'rightarrow': '→', 'leftarrow': '←', 'to': '→', 'hbar': 'ħ', 'perp': '⊥', 'parallel': '∥', 'sqrt': '√',
+          'partial': '∂', 'nabla': '∇', 'sum': 'Σ', 'int': '∫', 'degree': '°', 'circ': '°', 'prime': '′', ',': ' ',
+          ';': ' ', ' ': ' ', 'quad': '  ', 'ell': 'ℓ'}
+_SUP = str.maketrans('0123456789+-=()n', '⁰¹²³⁴⁵⁶⁷⁸⁹⁺⁻⁼⁽⁾ⁿ')
+_SUB = str.maketrans('0123456789+-=()', '₀₁₂₃₄₅₆₇₈₉₊₋₌₍₎')
+_MATH_RE = re.compile(r'\$(.*?)\$', re.S)
+_CMD_RE = re.compile(r'\\(mathrm|mathit|mathbf|text|rm|bf|it|left|right|displaystyle|,|;| |[A-Za-z]+)')
+
+
+def _math_group(t, i):
+    """The argument starting at t[i]: a {...} group (its inside, the index after it) or one character."""
+    if i < len(t) and t[i] == '{':
+        depth, j = 0, i
+        while j < len(t):
+            depth += (t[j] == '{') - (t[j] == '}')
+            j += 1
+            if depth == 0:
+                break
+        return t[i + 1:j - 1], j
+    if i < len(t) and t[i] == '\\':
+        m = _CMD_RE.match(t, i)
+        if m:
+            return t[i:m.end()], m.end()
+    return (t[i], i + 1) if i < len(t) else ('', i)
+
+
+def _math_part(t, html_out):
+    """One mathtext segment (between dollar signs) as text: commands, groups, superscripts and subscripts."""
+    out, i = '', 0
+    while i < len(t):
+        ch = t[i]
+        if ch == '\\':
+            m = _CMD_RE.match(t, i)
+            if m is None:
+                out += ch
+                i += 1
+                continue
+            name = m.group(1)
+            i = m.end()
+            if name in ('mathrm', 'mathit', 'mathbf', 'text', 'rm', 'bf', 'it', 'displaystyle'):
+                if i < len(t) and t[i] == '{':
+                    g, i = _math_group(t, i)
+                    out += _math_part(g, html_out)
+                continue
+            if name in ('left', 'right'):
+                continue
+            out += _GREEK.get(name, name)
+        elif ch in '^_':
+            g, i = _math_group(t, i + 1)
+            inner = _math_part(g, html_out)
+            if html_out:
+                out += f"<{'sup' if ch == '^' else 'sub'}>{inner}</{'sup' if ch == '^' else 'sub'}>"
+            else:
+                table = _SUP if ch == '^' else _SUB
+                conv = inner.translate(table)
+                out += conv if all(c in '⁰¹²³⁴⁵⁶⁷⁸⁹⁺⁻⁼⁽⁾ⁿ₀₁₂₃₄₅₆₇₈₉₊₋₌₍₎' for c in conv) else (ch + inner)
+        elif ch in '{}':
+            i += 1
+        else:
+            out += ch
+            i += 1
+    return out
+
+
+def mathtext(text, html_out=False):
+    """
+    A label with matplotlib mathtext ($...$) as plain text (Unicode Greek letters, Å, superscript
+    and subscript digits) or as HTML (<sup>, <sub>) for pyqtgraph's axis labels: the windows keep
+    their matplotlib label strings and the layer shows them; the publication export (mplexport)
+    gives matplotlib the original strings.  A text without a dollar sign is returned as it is
+    (escaped for HTML when html_out).
+    """
+    t = '' if text is None else str(text)
+    if '$' not in t:
+        return html.escape(t) if html_out else t
+    parts, last = [], 0
+    for m in _MATH_RE.finditer(t):
+        plain = t[last:m.start()]
+        parts.append(html.escape(plain) if html_out else plain)
+        inner = m.group(1)
+        parts.append(_math_part(html.escape(inner) if html_out else inner, html_out))
+        last = m.end()
+    tail = t[last:]
+    parts.append(html.escape(tail) if html_out else tail)
+    return ''.join(parts)
+
+
 def short_label(text):
     """
     An axis label as simple as the title: the quantity (before the first ', ') and its units
@@ -1771,6 +1870,20 @@ class _Axis(pg.AxisItem):
         vmin, vmax = norm.vmin, norm.vmax
         if vmin is None or vmax is None or not vmax > vmin:
             return []
+        if isinstance(norm, SymLogNorm):
+            # A symmetric-log colour bar: 0 and ±linthresh × 10^k up to the limits (matplotlib's SymmetricalLogLocator).
+            vals = [0.0]
+            k = 0
+            while norm.linthresh * 10.0 ** k <= max(abs(vmin), abs(vmax)) * (1 + 1e-9) and k < 40:
+                v = norm.linthresh * 10.0 ** k
+                if vmin <= v <= vmax:
+                    vals.append(v)
+                if vmin <= -v <= vmax:
+                    vals.append(-v)
+                k += 1
+            vals = sorted(v for v in vals if vmin <= v <= vmax)
+            pos = np.asarray(norm(np.asarray(vals, dtype=np.float64)), dtype=np.float64) if vals else np.zeros(0)
+            return [(None, [float(q) for q in pos])]
         if getattr(norm, 'log', False) and vmin > 0:
             # A logarithmic colour bar: a tick at every decade; 2 and 5 within the decades when fewer than three show.
             e0, e1 = math.ceil(math.log10(vmin) - 1e-9), math.floor(math.log10(vmax) + 1e-9)
@@ -1817,8 +1930,8 @@ class _Axis(pg.AxisItem):
         else:
             norm = self._mode[1]
             vals = [float(norm.inverse(v)) for v in values]
-            if getattr(norm, 'log', False):
-                return [f"{v:g}" for v in vals]
+            if getattr(norm, 'log', False) or isinstance(norm, SymLogNorm):
+                return [f"{v:g}".replace('-', '\u2212') for v in vals]
         big = max((abs(v) for v in vals), default=0.0)
         if big and (big < 1e-3 or big >= 1e5):
             e = int(math.floor(math.log10(big)))
@@ -2132,16 +2245,20 @@ def _rgba_rows(colors, n, alpha=None, default='C0'):
     if isinstance(colors, str):
         rows = np.tile(to_rgba(colors), (max(n, 1), 1))
     else:
-        arr = np.asarray(colors, dtype=object) if not isinstance(colors, np.ndarray) else colors
-        if arr.dtype != object and arr.ndim == 1 and len(arr) in (3, 4) and n != len(arr):
+        # Numbers: one (r, g, b[, a]) colour, or an (m, 3 | 4) array of colours; anything else (names,
+        # hex strings, tuples mixed in a list) is converted colour by colour.
+        try:
+            arr = np.asarray(colors, dtype=np.float64)
+        except (TypeError, ValueError):
+            arr = None
+        if arr is not None and arr.ndim == 1 and len(arr) in (3, 4):
             rows = np.tile(to_rgba(tuple(float(v) for v in arr)), (max(n, 1), 1))
-        elif arr.dtype != object and arr.ndim == 2 and arr.shape[1] in (3, 4):
+        elif arr is not None and arr.ndim == 2 and arr.shape[1] in (3, 4):
             rows = np.ones((arr.shape[0], 4))
-            rows[:, :arr.shape[1]] = np.asarray(arr, dtype=np.float64)
-        elif arr.dtype != object and arr.ndim == 1 and len(arr) in (3, 4):
-            rows = np.tile(to_rgba(tuple(float(v) for v in arr)), (max(n, 1), 1))
+            rows[:, :arr.shape[1]] = arr
         else:
-            rows = np.array([to_rgba(c) for c in list(colors)]) if len(list(colors)) else np.zeros((0, 4))
+            items = list(colors)
+            rows = np.array([to_rgba(c) for c in items]) if items else np.zeros((0, 4))
             if len(rows) == 1 and n > 1:
                 rows = np.tile(rows, (n, 1))
     if len(rows) < n and len(rows):
@@ -2620,15 +2737,20 @@ class QuadMesh(Artist):
         self._paint()
 
     def get_array(self):
-        return self._C
+        """The cell values as matplotlib gives them: a masked array, the cells given as masked (or NaN) masked."""
+        return np.ma.masked_invalid(self._C)
 
     def set_norm(self, norm):
         self.norm = norm
         self._paint()
+        if self.colorbar is not None:
+            self.colorbar.update_normal(self)
 
     def set_cmap(self, cmap):
         self.cmap = to_cmap(cmap)
         self._paint()
+        if self.colorbar is not None:
+            self.colorbar.update_normal(self)
 
 
 def _band_levels(z, levels):
@@ -2799,6 +2921,12 @@ class TriContourSet(Artist):
 
     def get_array(self):
         return self._args[2]
+
+    def get_facecolor(self):
+        """The bands' colours, one (r, g, b, a) row per band (matplotlib's ContourSet.get_facecolor)."""
+        return np.array(self.cmap._table, dtype=np.float64)
+
+    get_facecolors = get_facecolor
 
 
 class LineCollection(Artist):
@@ -3088,7 +3216,7 @@ class Text(Artist):
         ti = self.item
         ti.setFont(qfont(self._size, self._family, self._weight, zoom=getattr(self.figure, 'font_zoom', 1.0)))
         ti.setColor(qcolor(self._color))
-        ti.setText(self._text)
+        ti.setText(mathtext(self._text))
         doc = ti.textItem.document()
         opt = doc.defaultTextOption()
         opt.setAlignment({'center': Qt.AlignmentFlag.AlignHCenter, 'right': Qt.AlignmentFlag.AlignRight}.get(
@@ -3678,6 +3806,11 @@ class Axes:
         return [a for a in self._children if isinstance(a, AxesImage)]
 
     @property
+    def patches(self):
+        """matplotlib's ax.patches: the layer draws no patch artists (spans are items of their own), so always empty."""
+        return []
+
+    @property
     def lines(self):
         return [a for a in self._children if isinstance(a, (Line2D, _RefLine))]
 
@@ -4187,6 +4320,7 @@ class Axes:
             self._cell.unbind(self)
             fig._auto_dispose(self._cell)
         fig._set_info(self, '')
+        fig.__dict__.get('_hover_labels', {}).pop(self, None)     # the hover label registered on this axes (widgets.HoverLabels)
 
     # --- clearing ---
 
@@ -4327,7 +4461,7 @@ class Axes:
             axis.setLabel('')
             axis.showLabel(False)
             return
-        axis.setLabel(html.escape(short_label(text)).replace('\n', '<br>'))
+        axis.setLabel(mathtext(short_label(text), html_out=True).replace('\n', '<br>'))
         axis.set_label_pt(10 if fontsize is None else fontsize)
         if color is not None:
             axis.label.setDefaultTextColor(qcolor(color))
@@ -4379,23 +4513,27 @@ class Axes:
         else:
             labs = labels if labels is not None else [axis.tickStrings([t], 1.0, abs(ticks[-1] - ticks[0]) / max(len(ticks) - 1, 1) or 1.0)[0]
                                                       for t in ticks]
-            axis.setTicks([[(float(t), str(s)) for t, s in zip(ticks, labs)]])
+            axis.setTicks([[(float(t), mathtext(str(s))) for t, s in zip(ticks, labs)]])
+        axis._adjustSize()
+        self._place()
+
+    def _set_tick_labels(self, axis, labels):
+        """matplotlib's set_xticklabels / set_yticklabels: the texts of the ticks set before (set_xticks), in order; an empty list hides the values."""
+        axis._dirty = True
+        labels = list(labels)
+        if len(labels) == 0:
+            axis.setStyle(showValues=False)
+        elif axis._tickLevels:
+            ticks = [v for level in axis._tickLevels for v, _ in level]
+            axis.setTicks([[(float(t), mathtext(str(s))) for t, s in zip(ticks, labels)]])
         axis._adjustSize()
         self._place()
 
     def set_xticklabels(self, labels, **kw):
-        self.xaxis_item._dirty = True
-        if len(list(labels)) == 0:
-            self.xaxis_item.setStyle(showValues=False)
-            self.xaxis_item._adjustSize()
-            self._place()
+        self._set_tick_labels(self.xaxis_item, labels)
 
     def set_yticklabels(self, labels, **kw):
-        self.yaxis_item._dirty = True
-        if len(list(labels)) == 0:
-            self.yaxis_item.setStyle(showValues=False)
-            self.yaxis_item._adjustSize()
-            self._place()
+        self._set_tick_labels(self.yaxis_item, labels)
 
     def tick_params(self, axis='both', labelsize=None, labelleft=None, labelbottom=None, labelright=None,
                     left=None, bottom=None, length=None, **kw):
@@ -5038,7 +5176,7 @@ class Axes:
             lab = pg.LabelItem('', justify='left')
             lab.item.setFont(fnt)
             lab.item.setDefaultTextColor(QtGui.QColor('black'))
-            lab.item.setPlainText(str(l))
+            lab.item.setPlainText(mathtext(str(l)))
             lab.item.document().setDocumentMargin(1)
             row_h = int(math.ceil(row_px))
             lab_w = int(math.ceil(fm.horizontalAdvance(str(l)))) + 6
@@ -5952,6 +6090,9 @@ class Figure:
                 pass
         for ax in list(self._axes):
             ax._refont(z)
+            cell = ax._cell
+            if cell is not None and cell.inner_w is not None:
+                cell.updateGeometry()          # a narrow cell's hint (inner_w at the zoom) is announced to its layout
         for t in self._texts:
             t._apply()
         if hasattr(self.manager, 'info'):
@@ -6186,6 +6327,15 @@ class Figure:
             grid.setColumnStretch(c, max(int(round(1000 * gs.width_ratios[c] / max(sum(gs.width_ratios), 1e-12))), 1))
         for r in range(gs.nrows):
             grid.setRowStretch(r, max(int(round(1000 * gs.height_ratios[r] / max(sum(gs.height_ratios), 1e-12))), 1))
+        # A grid reused after clf() by a smaller gridspec (a window that rebuilds its panels on a
+        # toggle): a column or row beyond the new gridspec that holds nothing drops its stretch, or
+        # the empty ones would keep their share of the room.
+        for c in range(gs.ncols, grid.columnCount()):
+            if not any(grid.itemAtPosition(r, c) is not None for r in range(grid.rowCount())):
+                grid.setColumnStretch(c, 0)
+        for r in range(gs.nrows, grid.rowCount()):
+            if not any(grid.itemAtPosition(r, c) is not None for c in range(grid.columnCount())):
+                grid.setRowStretch(r, 0)
         slot = QtWidgets.QWidget()
         lay = QtWidgets.QHBoxLayout(slot)
         lay.setContentsMargins(0, 0, 0, 0)
@@ -6315,7 +6465,9 @@ class Figure:
             auto['root'].insertWidget(0, cell)
             self._title_cell = cell
         if self._title_cell is not None:
-            # The title in its own cell of the window's layout (automatic layout), centred in it.
+            # The title in its own cell of the window's layout (automatic layout), centred in it; an
+            # empty title hides the cell (no empty band stays when a window drops its title).
+            self._title_cell.setVisible(bool(t.strip()))
             self._suptitle = self.text(0.5, 0.5, t, cell=self._title_cell, fontsize=font_pt(fontsize, 12.0),
                                        ha='center', va='center', fontweight=kw.get('fontweight'))
             return self._suptitle
@@ -6352,28 +6504,35 @@ class Figure:
     # --- colour bars ---
 
     def colorbar(self, mappable, cax=None, ax=None, fraction=0.15, pad=0.05, label=None, shrink=1.0, aspect=20,
-                 **kw):
+                 location='right', **kw):
         """
-        A Colorbar for `mappable` (an AxesImage / QuadMesh, or an object with a `mappable`, such as
-        plots.RowHeatmap) in `cax`; without `cax`, matplotlib's placement: `ax` (the first axes when
-        None) gives up `fraction` + `pad` of its width on the right, and the bar takes `fraction` of
-        it (narrower when `aspect`, height over width, asks), `shrink` of the height, centred;
-        Colorbar.remove restores the axes.
+        A Colorbar for `mappable` (an AxesImage / QuadMesh, or an object with a `mappable`) in
+        `cax`; without `cax`, beside `ax` (the mappable's own axes when None; a list of axes: one
+        bar for the row they share) in a narrow cell of the automatic grid, on its right, or on
+        the left of the first panel with location='left' (matplotlib's keyword).  An axes placed
+        by figure fractions gives up `fraction` + `pad` of its width on the right, and the bar
+        takes `fraction` of it (narrower when `aspect`, height over width, asks), `shrink` of the
+        height, centred; Colorbar.remove restores the axes.
         """
         mappable = getattr(mappable, 'mappable', mappable) if not isinstance(mappable, (AxesImage, QuadMesh)) else mappable
         parent_rect = None
         group = None
         if isinstance(ax, (list, tuple, np.ndarray)):
-            # One bar for several panels (matplotlib's ax=[...]): beside the last one, as tall as the row they share.
+            # One bar for several panels (matplotlib's ax=[...]): beside the row they share.
             group = [a for a in np.ravel(ax) if a is not None]
-            ax = group[-1] if group else None
+            ax = (group[0] if location == 'left' else group[-1]) if group else None
+        if cax is None and ax is None:
+            ax = getattr(mappable, 'axes', None)          # matplotlib's default: the mappable's axes
         if cax is None and ax is not None and getattr(getattr(ax, '_cell', None), '_slot', None) is not None:
             # A subplot of the automatic grid: the bar in a narrow cell of its own beside the panel, in the
             # panel's slot (automatic layout), as tall as the panel (align_row).
             slot = ax._cell._slot
             bar = PanelCell(self, inner_w=15)
             bar._slot = slot
-            slot.layout().addWidget(bar)
+            if location == 'left':
+                slot.layout().insertWidget(0, bar)
+            else:
+                slot.layout().addWidget(bar)
             slot._cells.append(bar)
             cax = Axes(self, cell=bar)
             row = getattr(ax, '_row', None)
@@ -6486,10 +6645,26 @@ class Figure:
         self.manager.show()
 
     def clf(self):
+        """Every axes and figure text removed; the automatic grid's title cell is hidden until a suptitle is set again."""
         for ax in list(self._axes):
             ax.remove()
         for t in list(self._texts):
             t.remove()
+        if self._title_cell is not None and getattr(self, '_auto', None) is not None:
+            self._title_cell.setVisible(False)
+        auto = getattr(self, '_auto', None)
+        if auto is not None:
+            # The automatic grid starts afresh: a window rebuilt with fewer rows or columns must not keep the
+            # stretches (room) of the rows it had (QGridLayout keeps every row it was ever given).
+            root, old = auto['root'], auto['grid']
+            idx = root.indexOf(old)
+            root.removeItem(old)
+            old.deleteLater()
+            grid = QtWidgets.QGridLayout()
+            grid.setHorizontalSpacing(12)
+            grid.setVerticalSpacing(10)
+            root.insertLayout(max(idx, 0), grid, 1)
+            auto['grid'] = grid
 
     clear = clf
 
@@ -6620,6 +6795,7 @@ def export_vector(fig, path):
 # ---------------------------------------------------------------------- #
 
 _RUNNING = [False]
+_INTERACTIVE = [False]      # matplotlib's interactive mode (ion / ioff): show() returns at once while it is on
 
 
 def _app():
@@ -6732,7 +6908,8 @@ def show(block=None):
         if not f._shown:
             f.manager.show()
             f._relayout()
-    if block is False:
+    if block is False or (block is None and _INTERACTIVE[0]):
+        # block=False, or matplotlib's interactive mode (ion): the windows are shown and show returns.
         app.processEvents()
         return
     if _RUNNING[0] or QtCore.QThread.currentThread().loopLevel() > 0:
@@ -6761,15 +6938,17 @@ def draw():
 
 
 def ion():
-    pass
+    """matplotlib's interactive mode on: show() returns right after showing the windows (a script holds the process with ioff() and show())."""
+    _INTERACTIVE[0] = True
 
 
 def ioff():
-    pass
+    """matplotlib's interactive mode off: show() runs the event loop until every window is closed."""
+    _INTERACTIVE[0] = False
 
 
 def isinteractive():
-    return True
+    return _INTERACTIVE[0]
 
 
 class _Cycler:

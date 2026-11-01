@@ -160,6 +160,10 @@ def check_window(fig, name, shots_dir=None, sizes=SIZES):
     W0, H0 = fig._design_px
     problems = []
     for label, fx, fy in sizes:
+        if label == 'portrait':
+            # A shape taller than wide for every window, a wide design included: the width is the
+            # smaller of 0.45 of the design width and half the design height.
+            fx = min(fx, 0.5 * H0 / W0)
         resize(fig, W0 / plt.DPI * fx, H0 / plt.DPI * fy)
         pump(100)
         factor = min(fx, fy)

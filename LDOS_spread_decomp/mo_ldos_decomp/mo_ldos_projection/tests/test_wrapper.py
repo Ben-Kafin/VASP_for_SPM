@@ -100,7 +100,7 @@ def test_sigma_commit_new_dir_reinstantiate_restore(example_dir):
     """Full σ-commit round trip on the example run with a small grid.
     Verifies: a new σ-tagged dir exists, the simulator was re-instantiated
     on it, and every captured UI element and the markers were restored."""
-    import matplotlib.pyplot as plt
+    from qtgui import qtplot as plt
     from mo_ldos_projection.sim_wrapper import StmDecompSession
     from mo_ldos_projection._imports import PlotConfig
 
@@ -151,7 +151,7 @@ def test_sigma_commit_new_dir_reinstantiate_restore(example_dir):
 def test_send_to_decomposition_snapshot(example_dir):
     """Decay off + computed spectra ⇒ the window opens with one LDOS curve
     per marker over the current energy window."""
-    import matplotlib.pyplot as plt
+    from qtgui import qtplot as plt
     from mo_ldos_projection.sim_wrapper import StmDecompSession
     from mo_ldos_projection._imports import PlotConfig
 
@@ -186,7 +186,7 @@ def test_send_topo_to_decomposition_snapshot(example_dir):
     """Decay off ⇒ the topo window opens straight from launch (no RUN, no
     markers): one cell per input offset per molecule component, per-point
     projections over the full topo grid on the topo bias window."""
-    import matplotlib.pyplot as plt
+    from qtgui import qtplot as plt
     from mo_ldos_projection.sim_wrapper import StmDecompSession
     from mo_ldos_projection._imports import PlotConfig
 

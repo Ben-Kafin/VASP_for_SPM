@@ -180,13 +180,14 @@ class HoverLabels:
 
     PICK_PX = 6.0          # the pick radius (pixels) around a curve or marker without a picker of its own
 
-    def __init__(self, ax, artists=(), texts=None, enabled=False, arm_by_click=True):
+    def __init__(self, ax, artists=(), texts=None, enabled=False, arm_by_click=True, mono=False):
         self.ax = ax
         self.fig = ax.figure
         self.artists = []
         self.texts = {}
         self.enabled = bool(enabled)
         self.arm_by_click = bool(arm_by_click)
+        self.mono = bool(mono)           # a monospace label (a text laid out in columns)
         self._label = None
         self._current = None
         texts = texts or {}
@@ -212,6 +213,16 @@ class HoverLabels:
     def of(ax):
         """The HoverLabels of an axes, or None."""
         return getattr(ax.figure, '_hover_labels', {}).get(ax)
+
+    @staticmethod
+    def prune(fig):
+        """The entries of axes no longer on the figure dropped (a window that rebuilds its panels calls it after the rebuild)."""
+        reg = getattr(fig, '_hover_labels', None)
+        if not reg:
+            return
+        live = {id(a) for a in fig.axes}
+        for ax in [a for a in reg if id(a) not in live]:
+            reg[ax].remove()
 
     @staticmethod
     def _on_motion(event):
@@ -303,7 +314,7 @@ class HoverLabels:
         text = self.text_for(artist, index)
         if self._label is None or self._label not in self.ax._children:
             self._label = self.ax.text(x, y, text, fontsize=8, ha='left', va='bottom', color='k', zorder=60,
-                                       offset=(10.0, 10.0),
+                                       offset=(10.0, 10.0), family='monospace' if self.mono else None,
                                        bbox=dict(facecolor='#ffffe0', edgecolor='#808080', alpha=0.95, lw=0.8))
         else:
             self._label.set_text(text)

@@ -55,7 +55,7 @@ like the maps: Amplitude changes the graduated quantity, Norm makes
 every bar show the one shared range. A flat map (no range — drawn
 fully transparent) gets no bar, and "not found" cells never do.
 
-Toggles (both display-only; CheckButtons, both default OFF):
+Toggles (both display-only; the 'topo view' check box, both default OFF):
   Amplitude   OFF: intensity = p² (probability, the LDOS-decomp scaling)
               ON:  intensity = |p| (amplitude)
   Norm        OFF: the opacity ramp anchors on that MO's OWN
@@ -67,6 +67,14 @@ Toggles (both display-only; CheckButtons, both default OFF):
 Exports (Save data) are always the RAW projection coefficients p per
 grid point per found entity — probability (p²) and amplitude (|p|) views
 are exactly reconstructable and no display normalization is baked in.
+
+Window (the shared Qt layer, qtgui at the repository root): the R × C grid
+is rebuilt on every toggle (fig.clf and a GridSpec in the figure's
+automatic grid of cells: automatic layout, nothing placed by hand), each
+map a tricontourf drawn through a lookup table with a colour bar in a
+narrow cell beside it; the controls ('topo view' toggles, 'Save data') are
+made once and sit in one strip under the grid. The title is "Short:
+details" (the σ, window, bias and height go to the information panel).
 """
 from __future__ import annotations
 
@@ -74,11 +82,16 @@ import os
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
-import matplotlib.pyplot as plt
-from matplotlib import gridspec
-from matplotlib.cm import ScalarMappable
-from matplotlib.colors import LinearSegmentedColormap, Normalize
-from matplotlib.widgets import Button, CheckButtons
+
+# The shared Qt layer (qtgui at the repository root): found by walking up from this file.
+import os as _os, sys as _sys
+_root = _os.path.dirname(_os.path.abspath(__file__))
+while not _os.path.isdir(_os.path.join(_root, 'qtgui')) and _os.path.dirname(_root) != _root:
+    _root = _os.path.dirname(_root)
+if _root not in _sys.path:
+    _sys.path.insert(0, _root)
+from qtgui import qtplot as plt, controls
+from qtgui.qtplot import ScalarMappable, LinearSegmentedColormap, Normalize
 
 if __name__ != "__main__":
     from ._imports import PlotConfig, _gauss_sum
@@ -126,13 +139,16 @@ class TopoDecompWindow:
         self._apply_snapshot(snapshot)
 
         R, C = len(self.offsets), len(self.mol_labels)
-        self.fig = plt.figure(
-            figsize=(max(6.0, 4.2 * C), max(4.2, 3.4 * R)))
-        # Transparent figure patch: with savefig.facecolor='auto' (the
-        # default) a toolbar SVG/PNG save then carries NO opaque
-        # background rectangle beneath the color layers, so the
-        # low-intensity regions are genuinely transparent in the export.
+        # The design size (inches): the text zoom of the window is its size relative to this
+        # (qtplot.window_zoom); the old figure's size, which grew with the grid.
+        self.DESIGN = (max(6.0, 4.2 * C), max(4.2, 3.4 * R))
+        self.fig = plt.figure(figsize=self.DESIGN)
+        # Transparent figure patch: the publication export (the toolbar's
+        # Save, qtgui.mplexport) then carries NO opaque background
+        # rectangle beneath the color layers, so the low-intensity regions
+        # are genuinely transparent in the export.
         self.fig.patch.set_facecolor("none")
+        self._make_controls()
         self._build_ui()
 
     # ------------------------------------------------------------------
@@ -249,34 +265,35 @@ class TopoDecompWindow:
         a, b = self.lv[0, :2], self.lv[1, :2]
         return np.array([[0.0, 0.0], a, a + b, b])
 
+    def _make_controls(self):
+        """The controls, made once (a window owns its state; the controls only report): the
+        'topo view' toggles and 'Save data' in one strip under the panel grid."""
+        fig = self.fig
+        self.chk = controls.make(fig, 'topo view', labels=["Amplitude", "Norm"],
+                                 values=[self.amplitude, self.norm_shared])
+        self.chk.on_change(self._on_toggle)
+        self.btn_save = controls.make(fig, 'Save data')
+        self.btn_save.on_change(self.save_data)
+        # automatic layout: the one rule for every window (nothing placed by hand).
+        strip = controls.FlowLayout()
+        strip.addWidget(controls.box(self.chk, title='view'))
+        strip.addWidget(controls.box(self.btn_save))
+        fig.layout_root().addLayout(strip)
+
     def _build_ui(self):
-        for w in (getattr(self, "chk", None), getattr(self, "btn_save", None)):
-            if w is not None:
-                w.disconnect_events()
         self.fig.clf()
 
-        self.chk = CheckButtons(
-            self.fig.add_axes([0.01, 0.02, 0.10, 0.10]),
-            ["Amplitude", "Norm"],
-            [self.amplitude, self.norm_shared],
-        )
-        self.chk.on_clicked(self._on_toggle)
-
-        self.btn_save = Button(self.fig.add_axes([0.84, 0.025, 0.12, 0.045]),
-                               "Save data")
-        self.btn_save.on_clicked(lambda _e: self.save_data())
-
         lo, hi = sorted([0.0, self.topo_bias])
+        # "Short: details": the short name shows above the grid, the rest goes to the information panel.
         self.fig.suptitle(
-            f"MO topo decomposition — σ = {self.sigma:.3f} eV, "
+            f"MO topo decomposition: σ {self.sigma:.3f} eV, "
             f"window {lo:+.3f} → {hi:+.3f} eV, "
-            f"topo {self.topo_bias:g} V @ {self.topo_height:g} Å",
+            f"topo {self.topo_bias:g} V at {self.topo_height:g} Å",
             fontsize=11)
 
         R, C = len(self.offsets), len(self.mol_labels)
-        gs = gridspec.GridSpec(R, C, figure=self.fig,
-                               bottom=0.16, top=0.90,
-                               hspace=0.35, wspace=0.25)
+        # automatic layout: the GridSpec fills the figure's automatic grid of cells (nothing placed by hand).
+        gs = plt.gridspec.GridSpec(R, C, figure=self.fig)
         corners = self._cell_corners()
         levels = np.linspace(0.0, 1.0, self.mask_levels)
         share = None
@@ -292,8 +309,7 @@ class TopoDecompWindow:
                     ax.annotate("not found", xy=(0.5, 0.5),
                                 xycoords="axes fraction", ha="center",
                                 fontsize=10)
-                    ax.set_title(f"{comp} {_offset_name(offset)} — "
-                                 "not found", fontsize=9)
+                    ax.set_title(f"{comp} {_offset_name(offset)}: not found", fontsize=9)
                 else:
                     # ONE single-color layer: the MO's color, opacity
                     # ramped by the intensity field (transparent at the
@@ -312,10 +328,10 @@ class TopoDecompWindow:
                     # color fade graduated in the plotted quantity's
                     # real values over the reference range the opacity
                     # ramp anchors on (per-MO or shared per the Norm
-                    # toggle). use_gridspec=False keeps the stolen bar
-                    # axes subplotspec-free — data axes stay the R×C
-                    # grid. Flat maps (drawn fully transparent) get no
-                    # bar: there is no range to graduate.
+                    # toggle), in a narrow cell beside the panel (the
+                    # bar's axes has no subplotspec — data axes stay the
+                    # R×C grid). Flat maps (drawn fully transparent) get
+                    # no bar: there is no range to graduate.
                     lo_i, hi_i = self._reference_range(cell)
                     if hi_i > lo_i:
                         sm = ScalarMappable(
@@ -341,8 +357,7 @@ class TopoDecompWindow:
 
         self.fig.canvas.draw_idle()
 
-    def _on_toggle(self, _label):
-        states = self.chk.get_status()
+    def _on_toggle(self, _label, states):
         self.amplitude, self.norm_shared = states[0], states[1]
         self._build_ui()
 

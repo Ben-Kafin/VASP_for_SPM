@@ -1,12 +1,39 @@
-import matplotlib.pyplot as plt
+"""
+Interactive 3D view of the atoms and their force vectors for every ionic step of an OUTCAR, with
+the force-convergence plot of plot_forces as a second panel.
+
+The window is a window of the suite's shared Qt layer (qtgui at the repository root: PySide6 +
+pyqtgraph), laid out automatically (automatic layout: the one rule for every window, nothing
+placed by hand): the 3D panel on top, the convergence panel under it, the window-start slider in
+a box at the bottom.  The 3D panel is the one documented exception to "matplotlib off the
+screen" (plan 3.5): the layer draws 2D panels in one pyqtgraph scene and has no 3D axes, so the
+atoms and arrows stay matplotlib's Axes3D on a matplotlib Qt canvas placed as one cell of the
+layout, with every 3D interaction unchanged (left drag rotates, right drag pans, the wheel
+zooms).  The window-start slider is the one slider kept (rule 8 of the guide: it scrubs the list
+of ionic steps); the time marker on the convergence panel steps the 3D view (click or drag), the
+arrow keys step one frame at a time.  The toolbar's Save button writes the 2D panel as PDF / EPS
+/ SVG / PNG / TIFF through matplotlib.
+"""
+
 import sys
 import getopt
 from numpy import array,dot,cross,cos,sin,pi,percentile,average,std,arcsinh
 from numpy.linalg import norm,inv
-from mpl_toolkits.mplot3d import Axes3D
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection
-from matplotlib.widgets import Slider
 import os
+import types
+
+# The shared Qt layer (qtgui at the repository root): found by walking up from this file.
+import os as _os, sys as _sys
+_root = _os.path.dirname(_os.path.abspath(__file__))
+while not _os.path.isdir(_os.path.join(_root, 'qtgui')) and _os.path.dirname(_root) != _root:
+    _root = _os.path.dirname(_root)
+if _root not in _sys.path:
+    _sys.path.insert(0, _root)
+from qtgui import qtplot as plt, controls
+from qtgui.qtplot import QtWidgets
+
+DESIGN = (14, 9)     # the window's design size (inches): its text zoom is its size relative to this (qtplot.window_zoom)
 
 #3D arrow geometry constants
 ARROW_SEGMENTS=12
@@ -42,6 +69,13 @@ def plot_arrow3d(ax,origin,vec,color):
     ax.add_collection3d(cone)
 
 def forces(outcar,poscar,**args):
+    """
+    The window: the 3D panel (matplotlib's Axes3D on a matplotlib Qt canvas, the one 3D
+    exception), the convergence panel (a qtplot axes) with its time marker, and the window-start
+    slider.  Returns a namespace with the figure and its handlers (fig, mpl_fig, canvas3d, ax,
+    axf, slider, state, set_step, update_window, on_press, on_motion, on_release, on_key,
+    on_scroll) so that the window can be driven from code (checks/check_misc_windows.py).
+    """
     if 'show_all' in args and args['show_all']:
         show_all=True
     else:
@@ -108,12 +142,24 @@ def forces(outcar,poscar,**args):
     if hi[2]<=lo[2]:
         hi[2]=max(corners[:,2])
 
-    fig=plt.figure(figsize=(14,9))
-    gs=fig.add_gridspec(3,1,height_ratios=[5,1,0.15])
-    ax=fig.add_subplot(gs[0],projection='3d')
-    axf=fig.add_subplot(gs[1])
-    ax_slider=fig.add_subplot(gs[2])
-    fig.subplots_adjust(left=0.06,right=0.94,top=0.99,bottom=0.05,hspace=0.25)
+    #the window (qtplot): its canvas carries the layout of the three rows below
+    fig=plt.figure(figsize=DESIGN)
+    #the 3D panel: matplotlib's Axes3D on a matplotlib Qt canvas, a plain widget of the layout
+    #(the one 3D exception to "matplotlib off the screen", plan 3.5; imported here, after the
+    #QApplication exists, so the Qt binding already loaded is the one it uses)
+    from matplotlib.figure import Figure as MplFigure
+    from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
+    mpl_fig=MplFigure(figsize=(DESIGN[0],DESIGN[1]*5.0/6.15))
+    canvas3d=FigureCanvasQTAgg(mpl_fig)
+    ax=mpl_fig.add_subplot(projection='3d')
+    mpl_fig.subplots_adjust(left=0.02,right=0.98,top=0.93,bottom=0.02)   #room for the 3D panel's own title
+    #the convergence panel: a qtplot axes in a cell of the layout, its legend in a narrow cell of
+    #its own at the right (where the old figure legend sat), so no curve is covered
+    cell_f=fig.cell()
+    axf=fig.add_axes(cell=cell_f)
+    cell_leg=fig.cell(inner_w=175,stretch=(False,True))   #wide enough for 'lower quartile' at the legend's size
+    ax_leg=fig.add_axes(cell=cell_leg)
+    ax_leg.axis('off')
     #mouse bindings on the 3D panel: left drag rotates, right drag pans in the plane of the
     #plot, scroll wheel zooms; the default right-drag zoom is disabled
     ax.mouse_init(rotate_btn=1,pan_btn=3,zoom_btn=[])
@@ -193,8 +239,9 @@ def forces(outcar,poscar,**args):
     axf.set(ylabel='$F_{total}$'+' / eV $\\AA^{-1}$')
     xlabels={'time':'optimization time / fs','steps':'optimization steps'}
     axf.set(xlabel=xlabels[mode])
+    #the convergence legend beside the panel (the old figure legend at the right), in the legend cell
     handles,labels=axf.get_legend_handles_labels()
-    fig.legend(handles,labels,bbox_to_anchor=(1.01,0.5),loc='right')
+    ax_leg.legend(handles,labels,loc='center left',fontsize=7,frameon=False)
 
     #time marker on the convergence subplot acts as the slider:
     #clicking or dragging within the subplot snaps it to the nearest ionic step
@@ -206,6 +253,7 @@ def forces(outcar,poscar,**args):
             state['step']=step
             marker.set_xdata([time[step],time[step]])
             draw_step(step)
+            canvas3d.draw_idle()
             fig.canvas.draw_idle()
 
     def nearest_step(x):
@@ -222,6 +270,8 @@ def forces(outcar,poscar,**args):
 
     def on_release(event):
         state['pressed']=False
+
+    def on_release3d(event):
         #matplotlib's built-in 3D pan (right-button drag) shifts the axis limits internally:
         #capture them so redraws keep the panned view
         state['lims']=[list(ax.get_xlim3d()),list(ax.get_ylim3d()),list(ax.get_zlim3d())]
@@ -233,6 +283,10 @@ def forces(outcar,poscar,**args):
             set_step(min(state['step']+1,nsteps-1))
         elif event.key=='left':
             set_step(max(state['step']-1,state['window']))
+        else:
+            return
+        if hasattr(event,'handled'):
+            event.handled=True          #the qtplot canvas keeps the key (no focus move)
 
     def on_scroll(event):
         #scroll wheel zooms the 3D panel in and out about the current view center
@@ -247,13 +301,16 @@ def forces(outcar,poscar,**args):
                 half=0.5*(state['lims'][i][1]-state['lims'][i][0])*factor
                 state['lims'][i]=[center-half,center+half]
             apply_limits()
-            fig.canvas.draw_idle()
+            canvas3d.draw_idle()
 
+    #the convergence panel's events on the window's canvas, the 3D panel's on its own canvas
     fig.canvas.mpl_connect('button_press_event',on_press)
     fig.canvas.mpl_connect('motion_notify_event',on_motion)
     fig.canvas.mpl_connect('button_release_event',on_release)
     fig.canvas.mpl_connect('key_press_event',on_key)
-    fig.canvas.mpl_connect('scroll_event',on_scroll)
+    canvas3d.mpl_connect('key_press_event',on_key)
+    canvas3d.mpl_connect('button_release_event',on_release3d)
+    canvas3d.mpl_connect('scroll_event',on_scroll)
 
     def update_ylim():
         #y limits follow the visible window's data, same 5% padding rule as the full-range plot
@@ -265,6 +322,12 @@ def forces(outcar,poscar,**args):
                 vis_range=vis_max
             if vis_range>0.0:
                 axf.set_ylim(bottom=vis_min-0.05*vis_range,top=vis_max+0.05*vis_range)
+
+    def window_text(idx):
+        #the window start as the readout beside the slider shows it
+        if mode=='time':
+            return 'window start {:.3f} fs'.format(time[idx])
+        return 'window start at step {}'.format(idx+1)
 
     def update_window(val):
         idx=min(range(nsteps),key=lambda i: abs(time[i]-val))
@@ -286,22 +349,39 @@ def forces(outcar,poscar,**args):
             state['step']=idx
             marker.set_xdata([time[idx],time[idx]])
         draw_step(state['step'])
+        readout.set_text(window_text(idx))
+        canvas3d.draw_idle()
         fig.canvas.draw_idle()
 
+    #the window-start slider: the one slider kept (rule 8: it scrubs the list of ionic steps);
+    #its value is the step index, its callback the same update_window(time) as before
+    window_slider=controls.make(fig,'window start',value=0,vmin=0,vmax=max(nsteps-1,1))
+    readout=controls.Label(fig,text=window_text(0))
+    window_slider.on_change(lambda idx: update_window(time[int(idx)]))
     if nsteps>1:
-        window_slider=Slider(ax_slider,'window start',time[0],time[-1],valinit=time[0],valstep=array(time))
-        window_slider.on_changed(update_window)
-        #keep a hard reference on the axes: widget callbacks are weakly referenced and die if the Slider is garbage collected
-        ax_slider._window_slider=window_slider
         axf.set_xlim(time[0],time[-1])
     else:
-        ax_slider.set_visible(False)
+        window_slider.show(False)          #a single step: nothing to scrub (the old slider axes was hidden)
+
+    #automatic layout: the one rule for every window (nothing placed by hand): the 3D canvas,
+    #the convergence cell and the slider box in one column; the layout sizes and places them.
+    root=QtWidgets.QVBoxLayout()
+    root.addWidget(canvas3d,5)
+    root.addLayout(controls.row(cell_f,cell_leg),1)
+    root.addWidget(controls.widget_of(controls.row(controls.box(window_slider,readout),stretch=False)))
+    fig.set_layout(root)
 
     compute_scaling(0)
     draw_step(0)
+    #the species legend of the 3D panel, kept across its redraws (a legend of its own figure)
     species_handles,species_labels=ax.get_legend_handles_labels()
-    fig.legend(species_handles,species_labels)
+    mpl_fig.legend(species_handles,species_labels,loc='upper right')
+    canvas3d.draw_idle()
     plt.show()
+    return types.SimpleNamespace(fig=fig,mpl_fig=mpl_fig,canvas3d=canvas3d,ax=ax,axf=axf,ax_leg=ax_leg,marker=marker,
+                                 slider=window_slider,readout=readout,state=state,set_step=set_step,
+                                 update_window=update_window,on_press=on_press,on_motion=on_motion,
+                                 on_release=on_release,on_release3d=on_release3d,on_key=on_key,on_scroll=on_scroll)
 
 def parse_forces(ifile,**args):
     if 'seldyn' in args:

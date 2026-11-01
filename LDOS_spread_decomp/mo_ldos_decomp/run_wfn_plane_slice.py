@@ -30,9 +30,15 @@ choice, a gamma correction in the STM simulator's ldos_gamma spirit is
 applied to the norm's 0-1 OUTPUT before the color lookup (gamma 1.0 =
 the plain log/linear plot, < 1 stretches weak features, > 1 compresses
 them; the data and the colorbar's labels are never transformed), with
-a live gamma slider + text box on every figure in the simulator's
-style, except gamma may also go above 1 (slider to 2.0, text box
-unlimited).
+a live gamma number box on every figure (controls.GammaBox: Enter,
+leaving the box after an edit, or an arrow-key digit step applies the
+new gamma at once; any finite gamma > 0, above 1 and above 2 included).
+
+The figure is a window of the shared Qt layer (qtgui at the repository
+root): the panels fill the figure's automatic grid with one colour bar
+beside the last (automatic layout, nothing placed by hand) and the
+gamma box sits under them; the PNG is written through the layer's
+publication export (matplotlib) before the box is attached.
 
 The volumetric files are streamed with run_wfn_mo_sum's chunked reader
 (one full grid in memory per input — needed for interpolation — but
@@ -88,8 +94,8 @@ gamma = 1.0                        # exponent on the norm's 0-1 output,
                                    # independent of norm_mode: 1.0 leaves
                                    # the log/linear scaling untouched, < 1
                                    # stretches weak features, > 1 compresses
-                                   # them. Live slider 0.1-2.0 + text box
-                                   # (any positive value) on every figure.
+                                   # them. Live gamma box (any positive
+                                   # value) on every figure.
 cmap = "inferno"
 invert_cmap = False                # True → reversed colormap (matplotlib's
                                    # "_r" twin, toggled either way, so
@@ -304,61 +310,79 @@ def _resolve_cmap(name: str, invert: bool) -> str:
     return name[:-2] if name.endswith("_r") else name + "_r"
 
 
-_GammaNormCls = None
+# The shared Qt layer (qtgui at the repository root): found by walking up from this file.
+_root = os.path.dirname(os.path.abspath(__file__))
+while not os.path.isdir(os.path.join(_root, 'qtgui')) and os.path.dirname(_root) != _root:
+    _root = os.path.dirname(_root)
+if _root not in sys.path:
+    sys.path.insert(0, _root)
+from qtgui import qtplot as plt, controls           # noqa: E402
 
 
-def _gamma_norm(base, gamma):
+class _GammaNorm(plt.Normalize):
     """
-    Wrap a base norm (log or linear) with the gamma correction: the
+    A base norm (log or linear) wrapped with the gamma correction: the
     base maps data to its usual 0-1 range, then t -> t**gamma warps
     that normalized value before the colormap lookup. The data itself
     is never transformed and colorbar labels stay true data values —
-    gamma only moves where they sit along the bar. The wrapper keeps
-    .base and .gamma so the widgets can re-wrap the same base with a
-    new gamma. (Class built on first use — matplotlib stays a
-    function-local import, matching the rest of this module.)
+    gamma only moves where they sit along the bar. Keeps .base and
+    .gamma so the gamma box can re-wrap the same base with a new gamma;
+    `log` follows the base so a log base's colour bar ticks its decades;
+    to_matplotlib() is the same wrapper over the base's matplotlib form
+    for the publication export (qtgui.mplexport).
     """
-    global _GammaNormCls
-    if _GammaNormCls is None:
-        from matplotlib.colors import Normalize
 
-        class _GammaNorm(Normalize):
-            def __init__(self, base, gamma):
+    def __init__(self, base, gamma):
+        super().__init__(vmin=base.vmin, vmax=base.vmax)
+        self.base = base
+        self.gamma = float(gamma)
+        self.log = bool(getattr(base, 'log', False))
+
+    def __call__(self, value):
+        # Clip to 0-1 first: below-vmin values saturate at the low end
+        # like a plain norm draw, instead of a fractional power of a
+        # negative masking them blank (NaN stays NaN: not drawn).
+        t = np.clip(np.asarray(self.base(value), dtype=np.float64), 0.0, 1.0)
+        return np.power(t, self.gamma)
+
+    def inverse(self, value):
+        return self.base.inverse(np.power(np.asarray(value, dtype=np.float64), 1.0 / self.gamma))
+
+    def to_matplotlib(self):
+        from matplotlib.colors import Normalize
+        from qtgui.mplexport import _mpl_norm
+        base = _mpl_norm(self.base)
+        gamma = self.gamma
+
+        class _MplGammaNorm(Normalize):
+            def __init__(self):
                 super().__init__(vmin=base.vmin, vmax=base.vmax)
-                self.base = base
-                self.gamma = float(gamma)
+                self.base, self.gamma = base, gamma
 
             def __call__(self, value, clip=None):
-                # Clip to 0-1 first: below-vmin values saturate at the
-                # low end like a plain norm draw, instead of a
-                # fractional power of a negative masking them blank.
                 t = np.ma.clip(self.base(value), 0.0, 1.0)
                 return np.ma.power(t, self.gamma)
 
             def inverse(self, value):
-                return self.base.inverse(np.ma.power(value,
-                                                     1.0 / self.gamma))
+                return self.base.inverse(np.ma.power(value, 1.0 / self.gamma))
 
-        _GammaNormCls = _GammaNorm
-    return _GammaNormCls(base, gamma)
+        return _MplGammaNorm()
+
+
+def _gamma_norm(base, gamma):
+    """The base norm wrapped with the gamma correction (_GammaNorm)."""
+    return _GammaNorm(base, gamma)
 
 
 def _style_gamma_colorbar(cbar, norm):
     """
-    Decade ticks for a gamma-wrapped log norm: the wrapper is a plain
-    Normalize subclass, so the colorbar falls back to linearly spaced
-    ticks (which crowd at the top of a log scale) unless told
-    otherwise. Must be re-applied after every widget norm swap —
-    set_norm resets the colorbar's locator. A linear base keeps the
-    default locator.
+    The colour bar brought up to date after a norm swap: the layer's bar
+    follows its mappable's norm (update_normal) and ticks a log base at
+    its decades on its own (the wrapper's `log` flag), so this is the one
+    place that refreshes the bar; a linear base keeps the plain ticks.
     """
-    from matplotlib.colors import LogNorm
-    from matplotlib.ticker import LogFormatterSciNotation, LogLocator
-
-    if isinstance(norm.base, LogNorm):
-        cbar.locator = LogLocator(base=10.0)
-        cbar.formatter = LogFormatterSciNotation(base=10.0)
-        cbar.update_ticks()
+    cbar.update_normal(cbar.mappable)
+    cbar.update_ticks()
 
 
 def _shared_norm(V_list, norm_mode=norm_mode, gamma=gamma):
@@ -370,18 +394,16 @@ def _shared_norm(V_list, norm_mode=norm_mode, gamma=gamma):
     correction (_gamma_norm) — gamma 1.0 is the pure log/linear plot.
     Returns (norm, C_list).
     """
-    from matplotlib.colors import LogNorm, Normalize
-
     vmax = max(float(np.nanmax(V)) for V in V_list)
     if norm_mode == "log":
         pos_mins = [float(V[V > 0].min()) for V in V_list if (V > 0).any()]
         if not pos_mins or vmax <= 0:
             raise ValueError("no positive values to plot on a log norm")
         vmin = max(min(pos_mins), vmax * 1e-8)
-        return (_gamma_norm(LogNorm(vmin=vmin, vmax=vmax), gamma),
+        return (_gamma_norm(plt.LogNorm(vmin=vmin, vmax=vmax), gamma),
                 [np.ma.masked_less_equal(V, 0.0) for V in V_list])
     if norm_mode == "linear":
-        return _gamma_norm(Normalize(vmin=0.0, vmax=vmax), gamma), list(V_list)
+        return _gamma_norm(plt.Normalize(vmin=0.0, vmax=vmax), gamma), list(V_list)
     raise ValueError(f"unknown norm_mode {norm_mode!r}")
 
 
@@ -399,9 +421,6 @@ def plot_slices(panels, atoms, suptitle, norm_mode=norm_mode, cmap=cmap,
     every panel and sits on the first. Returns (fig, axes, pcms) as
     plain lists.
     """
-    import matplotlib.pyplot as plt
-    from matplotlib.patches import Patch
-
     norm, C_list = _shared_norm([p[2] for p in panels],
                                 norm_mode=norm_mode, gamma=gamma)
     n = len(panels)
@@ -409,8 +428,11 @@ def plot_slices(panels, atoms, suptitle, norm_mode=norm_mode, cmap=cmap,
     atoms_lists = list(atoms) if per_panel else [list(atoms)] * n
     if len(atoms_lists) != n:
         raise ValueError("per-panel atoms must match the number of panels")
-    fig, axes = plt.subplots(1, n, sharey=True, constrained_layout=True,
-                             figsize=(4.8 * n + 1.6, 4.8), squeeze=False)
+    # The design size (inches), one panel's width per input plus the colour bar's; the text zoom
+    # follows the window's size relative to it.  automatic layout: the panels fill the figure's
+    # automatic grid of cells (nothing placed by hand).
+    DESIGN = (4.8 * n + 1.6, 4.8)
+    fig, axes = plt.subplots(1, n, sharey=True, figsize=DESIGN, squeeze=False)
     axes = list(axes[0])
 
     pcms = []
@@ -424,17 +446,16 @@ def plot_slices(panels, atoms, suptitle, norm_mode=norm_mode, cmap=cmap,
             ax.scatter(a["s"], a["z"], c=color, marker="o", s=60,
                        edgecolor="k", zorder=5)
             if a["elem"] not in seen:
-                handles.append(Patch(color=color, label=a["elem"]))
+                handles.append(plt.Patch(color=color, label=a["elem"]))
                 seen.add(a["elem"])
         ax.set_aspect("equal")
         ax.set_xlabel(r"distance along plane / $\AA$")
         ax.set_title(title)
     if handles:
-        # Explicit loc: "best" scans the full mesh and is slow on
-        # production-size grids (450x693 per panel).
         axes[0].legend(handles=handles, title="Elements", loc="upper right")
     axes[0].set_ylabel(r"height z / $\AA$")
 
+    # One colour bar for every panel, in a narrow cell beside the last one, as tall as the row.
     cbar = fig.colorbar(pcms[0], ax=axes)
     cbar.set_label(value_label)
     _style_gamma_colorbar(cbar, norm)
@@ -456,40 +477,16 @@ def plot_slice(S, Z, V, atoms, title, norm_mode=norm_mode, cmap=cmap,
 
 def attach_gamma_widgets(fig, pcms, gamma_init=gamma):
     """
-    Live gamma control in the STM simulator's bottom-row style: a
-    slider with an editable text box beside it (the slider's own value
-    text hidden, partial/invalid entries silently reverted). Unlike the
-    simulator the gamma is NOT capped at 1: the slider spans 0.1-2.0
-    and the text box accepts any positive value, even above the slider
-    range (the slider display just pegs). Mode-independent: each change
-    re-wraps the meshes' SAME base norm (log or linear) with the new
-    gamma via _gamma_norm and re-colors the existing meshes — nothing
-    is recomputed; the colorbar follows the shared norm automatically
-    (log decade ticks re-applied after the swap). Returns
-    (slider, textbox), also kept on fig._gamma_widgets.
+    The live gamma control: a γ number box (controls.GammaBox, two
+    decimals) under the panels. Any finite gamma > 0 is accepted, above
+    1 and above 2 included (an entry that is not one is reported on the
+    console and the box put back). Mode-independent: each change re-wraps
+    the meshes' SAME base norm (log or linear) with the new gamma via
+    _gamma_norm and re-colors the existing meshes — nothing is recomputed;
+    the colour bar follows the shared norm (_style_gamma_colorbar).
+    Returns the GammaBox, also kept on fig._gamma_widgets.
     """
-    from matplotlib.widgets import Slider, TextBox
-
-    fmt = "{:.2f}"
-
-    # Reserve a bottom strip for the widgets — constrained layout keeps
-    # managing only the region above it.
-    try:
-        fig.get_layout_engine().set(rect=(0.0, 0.10, 1.0, 0.90))
-    except Exception:
-        pass
-    ax_sld = fig.add_axes([0.32, 0.035, 0.30, 0.03])
-    ax_tb = fig.add_axes([0.66, 0.035, 0.08, 0.03])
-    for a in (ax_sld, ax_tb):
-        a.set_in_layout(False)
-        a.set_navigate(False)
-    sld = Slider(ax_sld, "γ", 0.1, 2.0,
-                 valinit=min(max(gamma_init, 0.1), 2.0), valstep=0.05)
-    try:
-        sld.valtext.set_visible(False)
-    except Exception:
-        pass
-    tb = TextBox(ax_tb, "", initial=fmt.format(gamma_init))
+    box = controls.GammaBox(fig, gamma_init, fmt='.2f')
 
     def _apply(g):
         norm = _gamma_norm(pcms[0].norm.base, g)
@@ -500,49 +497,13 @@ def attach_gamma_widgets(fig, pcms, gamma_init=gamma):
             _style_gamma_colorbar(cbar, norm)
         fig.canvas.draw_idle()
 
-    def _set_text(text):
-        tb.eventson = False
-        try:
-            tb.set_val(text)
-        finally:
-            tb.eventson = True
-
-    def _on_slider(val):
-        _set_text(fmt.format(float(val)))
-        _apply(float(val))
-
-    def _on_submit(text):
-        # Guarded like the simulator's textboxes: an exception here must
-        # never leave the TextBox holding the canvas mouse grab.
-        try:
-            try:
-                gamma = float((text or "").strip())
-            except (TypeError, ValueError):
-                gamma = float("nan")    # invalid entry: revert below
-            if not np.isfinite(gamma) or gamma <= 0.0:
-                _set_text(fmt.format(float(pcms[0].norm.gamma)))
-                return
-            sld.eventson = False
-            try:
-                sld.set_val(min(max(gamma, sld.valmin), sld.valmax))
-            finally:
-                sld.eventson = True
-            _set_text(fmt.format(gamma))
-            _apply(gamma)
-        except Exception:
-            pass
-        finally:
-            try:
-                cv = tb.ax.figure.canvas
-                if getattr(cv, "mouse_grabber", None) is tb.ax:
-                    cv.release_mouse(tb.ax)
-            except Exception:
-                pass
-
-    sld.on_changed(_on_slider)
-    tb.on_submit(_on_submit)
-    fig._gamma_widgets = (sld, tb)
-    return sld, tb
+    box.on_change(_apply)
+    # automatic layout: the one rule for every window (nothing placed by hand): the box in a row
+    # under the panels, in the figure's automatic grid.
+    fig.layout_root().addWidget(controls.widget_of(controls.row(controls.box(box, title='colour scale'),
+                                                                stretch=True)))
+    fig._gamma_widgets = box
+    return box
 
 
 def default_input_file(run_dir: str, component: str, offset: int,
@@ -627,9 +588,9 @@ def run(input_paths, indices: Sequence[int],
     if save_png:
         suffix = "_plane_slice.png" if single else "_plane_slice_compare.png"
         png = os.path.splitext(paths[0])[0] + suffix
-        fig.savefig(png, dpi=300)
+        fig.savefig(png, dpi=300)        # the publication export (qtgui.mplexport: matplotlib writes the file)
         print(f"[WFNSLICE] wrote {png}")
-    # After the PNG save, so saved images stay widget-free.
+    # After the PNG save, so saved images stay control-free.
     attach_gamma_widgets(fig, pcms, gamma)
     results = [(S, Z, V) for S, Z, V, _ in panels]
     if single:
@@ -674,8 +635,6 @@ def _parse_cli_args(argv: Sequence[str]
 
 
 if __name__ == "__main__":
-    import matplotlib.pyplot as plt
-
     cli_paths, cli_idx = _parse_cli_args(sys.argv[1:])
     if not cli_paths:
         if isinstance(input_files, (str, os.PathLike)):

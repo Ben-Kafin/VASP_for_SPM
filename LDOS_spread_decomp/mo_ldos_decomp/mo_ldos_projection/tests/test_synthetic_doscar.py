@@ -6,7 +6,7 @@ import numpy as np
 
 from mo_ldos_projection._imports import resolve_stm
 
-_TRAPZ = getattr(np, "trapezoid", np.trapz)
+_TRAPZ = getattr(np, "trapezoid", None) or np.trapz    # numpy 2.x dropped trapz: never evaluate it eagerly
 
 
 def test_parser_autodetect_and_shapes(synth_doscar, procar, doscar_header):

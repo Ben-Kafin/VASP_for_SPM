@@ -21,11 +21,11 @@ names to s/p/d/f groups.
 
 | script | does | reads | run block settings |
 |---|---|---|---|
-| `Band_structure_plot.py` | interactive fatband plot: element mode (RGB = named elements' total projections, all orbital columns) and orbital mode (s/p/d hue per element); SOC Kramers doublets merged along the path; hover labels with mplcursors | PROCAR, POSCAR, DOSCAR, VASPKIT `BAND.dat` and `KLABELS` | `directory`, `filter_types` (up to three elements, `None` skips a channel) |
+| `Band_structure_plot.py` | interactive fatband window (Qt, the shared `qtgui` layer): element mode (RGB = named elements' total projections, all orbital columns) and orbital mode (s/p/d hue per element), switched by the `Orbital` toggle under the panels; SOC Kramers doublets merged along the path; hover labels of the band markers (left click on a panel arms them and labels the marker under the click, right click clears and disarms); the toolbar's Save button writes PDF / EPS / SVG / PNG / TIFF | PROCAR, POSCAR, DOSCAR, VASPKIT `BAND.dat` and `KLABELS` | `directory`, `filter_types` (up to three elements, `None` skips a channel) |
 | `procar_filter_lorbit14.py` | `ProcarStatePlotter`: tags each state with its contributing elements, drops states made only of `filter_types`, plots per-ion totals as sticks, combines k-points per band (per spin and band for ISPIN=2) and exports the normalized composition matrices | PROCAR, POSCAR | `directory`, `fermi_level`, `filter_types` |
 | `phase_DOS.py` | phase-sensitive (coherent) site- and orbital-projected DOS from the complex phase block, written to `PHASE_SENSITIVE_DOSCAR.dat`; needs LORBIT=12/13/14 | PROCAR, POSCAR, DOSCAR | `target_dir`, `energy_range`, `n_points`, `sigma` |
 | `procar_spin.py` | `GPUComplexProcarParser`: GPU workflow that pairs the two spin channels per k-point and band, applies per-element square-root Gaussian broadening and k-weighting, and saves `Broadened_Orbital_Curves.npy`; needs LORBIT=12/13/14 and cupy | PROCAR, POSCAR, DOSCAR | `target_dir`, `my_sigmas` |
 | `unfold_bands.py` | band-structure plot from VASPKIT `BAND.dat` / `KLABELS`, Fermi energy from `BAND_GAP` when present, with the gap evaluated at the central k-point (Γ if present) (does not read PROCAR) | BAND.dat, KLABELS, BAND_GAP | `filepath` |
 
-Dependencies: numpy, matplotlib; cupy for `procar_spin.py`; mplcursors (optional) for
-`Band_structure_plot.py`.
+Dependencies: numpy, matplotlib; cupy for `procar_spin.py`; PySide6 and pyqtgraph (the shared
+`qtgui` layer at the repository root) for `Band_structure_plot.py`.

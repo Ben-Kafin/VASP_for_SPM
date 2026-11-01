@@ -5,9 +5,9 @@ decomp_window.py — the per-marker LDOS + og-MO decomposition figure
 
 Markers are stacked vertically as blocks (spread_collapse multi-run
 pattern), marker order preserved, shared energy axis. Within every block
-the layout is governed by ONE shared set of three CheckButtons — Vertical,
-Horizontal, Amplitude — functioning exactly as spread_collapse's curve-mode
-toggles. Vertical and Horizontal DEFAULT ON; Amplitude DEFAULTS OFF: the
+the layout is governed by ONE shared box of three toggles — Vertical,
+Horizontal, Amplitude (controls.Checks 'collapse') — functioning exactly
+as spread_collapse's curve-mode toggles. Vertical and Horizontal DEFAULT ON; Amplitude DEFAULTS OFF: the
 window opens fully collapsed, probability-scale. There is no Curve toggle
 and no stick mode: always curves at the committed σ.
 
@@ -42,8 +42,9 @@ energy grid (clipped to the LDOS window by construction).
 
 Threshold (noise filter): in-window area a_ent = trapz(W_ent, window);
 keep iff a_ent ≥ MO_AREA_NOISE_THRESHOLD (module constant, default 1e-4),
-adjustable via the small textbox on this window; re-filter and redraw on
-commit. The kept set is computed once per press and is common to all
+adjustable via the 'area ≥' box on this window (Enter, or leaving the box
+after an edit; an entry that is not a number puts the box back); re-filter
+and redraw on commit. The kept set is computed once per press and is common to all
 marker blocks.
 
 Display scaling (user-directed revision of the original common-α rule):
@@ -62,8 +63,8 @@ is taken against the FULL unit-normed LDOS: p_a = ⟨L̂, Ŵ_a⟩ per
 (entity, marker).
 
 Metal curve (user-directed; display-only toggle via the "Metal curve"
-CheckButton in the bottom strip, between the area textbox and the Save
-data button — ON by default): a PER-MARKER composite of every
+check box in the control strip, between the area box and the Save data
+button — ON by default): a PER-MARKER composite of every
 independent metal state's spread curve. Each metal state n has its own
 spread W_n(E) = Σ_j grid_metal[n,j]·g_σ(E−E_j) (the matcher's
 grid/metal rows, smeared at the committed σ on the window grid) and its
@@ -109,6 +110,17 @@ Exports are always the UNSCALED probability-scale W_ent columns
 regardless of the toggles; the per-marker projections (incl. p_met) and
 the block factor ride in the header, so the probability view is exactly
 reconstructable and the magnitude view is its pointwise sqrt.
+
+Window (the shared Qt layer, qtgui at the repository root): the panel grid
+is rebuilt on every toggle (fig.clf and a GridSpec in the figure's
+automatic grid of cells: automatic layout, nothing placed by hand); the
+controls are made once and sit in one strip under the grid (the 'collapse'
+toggles, the 'area ≥' box, the 'Metal curve' toggle, 'Save data'). A
+hover label (widgets.HoverLabels, one per panel) shows an MO curve's
+projection, the LDOS area or the metal composite's projection: a left
+click on a panel arms it and labels the curve under the click, a right
+click clears and disarms it. Titles are "Short: details"; the details go
+to the window's information panel.
 """
 from __future__ import annotations
 
@@ -118,15 +130,15 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import h5py
-import matplotlib.pyplot as plt
-from matplotlib import gridspec
-from matplotlib.widgets import Button, CheckButtons, TextBox
 
-try:
-    import mplcursors
-    HAS_MPLCURSORS = True
-except Exception:
-    HAS_MPLCURSORS = False
+# The shared Qt layer (qtgui at the repository root): found by walking up from this file.
+import os as _os, sys as _sys
+_root = _os.path.dirname(_os.path.abspath(__file__))
+while not _os.path.isdir(_os.path.join(_root, 'qtgui')) and _os.path.dirname(_root) != _root:
+    _root = _os.path.dirname(_root)
+if _root not in _sys.path:
+    _sys.path.insert(0, _root)
+from qtgui import qtplot as plt, controls, widgets
 
 if __name__ != "__main__":
     from ._imports import (
@@ -267,10 +279,11 @@ class DecompWindow:
         self._load_static()
         self._apply_snapshot(snapshot)
 
-        self.cursor_by_axes: Dict[Any, Any] = {}
-        self.fig = plt.figure(
-            figsize=(self.cfg.figsize[0],
-                     max(4.0, 2.2 * max(1, len(self.markers)))))
+        # The design size (inches): the text zoom of the window is its size relative to this
+        # (qtplot.window_zoom); the old figure's size, which grew with the marker count.
+        self.DESIGN = (self.cfg.figsize[0], max(4.0, 2.2 * max(1, len(self.markers))))
+        self.fig = plt.figure(figsize=self.DESIGN)
+        self._make_controls()
         self._build_ui()
 
     # ------------------------------------------------------------------
@@ -424,81 +437,46 @@ class DecompWindow:
         return tuple(base)
 
     # ------------------------------------------------------------------
+    # The controls: made once, in one strip under the panel grid (a
+    # window owns its state; the controls only report).
+    # ------------------------------------------------------------------
+    def _make_controls(self):
+        fig = self.fig
+        self.chk = controls.make(fig, 'collapse',
+                                 labels=["Vertical", "Horizontal", "Amplitude"],
+                                 values=[self.collapse_vertical, self.collapse_horizontal, self.amplitude])
+        self.chk.on_change(self._on_toggle)
+        self.tb_thresh = controls.make(fig, 'area ≥', value=f"{self.threshold:.2e}")
+        self.tb_thresh.on_change(self._on_threshold)
+        # Metal-curve display toggle, between the area box and Save data.
+        self.chk_metal = controls.make(fig, 'Metal curve', value=self.show_metal)
+        self.chk_metal.on_change(self._on_metal_toggle)
+        self.btn_save = controls.make(fig, 'Save data')
+        self.btn_save.on_change(self.save_data)
+        # automatic layout: the one rule for every window (nothing placed by hand).  The strip
+        # wraps in a narrow window; the panels fill the automatic grid above it.
+        strip = controls.FlowLayout()
+        strip.addWidget(controls.box(self.chk, title='layout'))
+        strip.addWidget(controls.box(self.tb_thresh, self.chk_metal, title='curves'))
+        strip.addWidget(controls.box(self.btn_save))
+        fig.layout_root().addLayout(strip)
+
+    # ------------------------------------------------------------------
     # UI build (persistent figure; fig.clf() rebuild; toggles re-layout
     # from the snapshot data only — LDOS and W_ent are never recomputed
-    # by a toggle, and α is never rescaled by one)
+    # by a toggle, and α is never rescaled by one; the controls persist)
     # ------------------------------------------------------------------
     def _build_ui(self):
-        for w in (getattr(self, "chk", None), getattr(self, "tb_thresh", None),
-                  getattr(self, "chk_metal", None),
-                  getattr(self, "btn_save", None)):
-            if w is not None:
-                w.disconnect_events()
         self.fig.clf()
-        self.cursor_by_axes = {}
-
-        self.chk = CheckButtons(
-            self.fig.add_axes([0.01, 0.02, 0.11, 0.12]),
-            ["Vertical", "Horizontal", "Amplitude"],
-            [self.collapse_vertical, self.collapse_horizontal,
-             self.amplitude],
-        )
-        self.chk.on_clicked(self._on_toggle)
-
-        ax_tb = self.fig.add_axes([0.30, 0.03, 0.10, 0.035])
-        self.tb_thresh = TextBox(ax_tb, "area ≥ ",
-                                 initial=f"{self.threshold:.2e}")
-        self.tb_thresh.on_submit(self._on_threshold)
-
-        # Metal-curve display toggle, between the area textbox and Save data.
-        self.chk_metal = CheckButtons(
-            self.fig.add_axes([0.50, 0.02, 0.20, 0.06]),
-            ["Metal curve"], [self.show_metal])
-        self.chk_metal.on_clicked(self._on_metal_toggle)
-
-        self.btn_save = Button(self.fig.add_axes([0.84, 0.025, 0.12, 0.045]),
-                               "Save data")
-        self.btn_save.on_clicked(lambda _e: self.save_data())
-
-        self.fig.subplots_adjust(bottom=0.18, hspace=0.9)
         self._draw_blocks()
-
-        # Figure-level click handler for hover enable/disable (per axis;
-        # spread_collapse pattern: left click enables, right click clears
-        # and disables).
-        self.fig.canvas.mpl_connect("button_press_event", self._on_click)
         self.fig.canvas.draw_idle()
 
     def _attach_cursor(self, ax, artists, hover_map):
-        if HAS_MPLCURSORS and artists:
-            cur = mplcursors.cursor(artists, hover=True)
-            cur.enabled = False
-            self.cursor_by_axes[ax] = cur
+        """The panel's hover labels (widgets.HoverLabels: armed by a left click, cleared by a right click), one per axes."""
+        if artists:
+            widgets.HoverLabels(ax, artists, texts=hover_map)
 
-            @cur.connect("add")
-            def _on_add(sel, hmap=hover_map):
-                txt = hmap.get(sel.artist)
-                if txt:
-                    sel.annotation.set_text(txt)
-
-    def _on_click(self, event):
-        if not HAS_MPLCURSORS:
-            return
-        if event.inaxes is None:
-            return
-        cur = self.cursor_by_axes.get(event.inaxes)
-        if cur is None:
-            return
-        if event.button == 1:
-            if not cur.enabled:
-                cur.enabled = True
-        elif event.button == 3:
-            for sel in list(cur.selections):
-                cur.remove_selection(sel)
-            cur.enabled = False
-
-    def _on_toggle(self, _label):
-        states = self.chk.get_status()
+    def _on_toggle(self, _label, states):
         self.collapse_vertical, self.collapse_horizontal = states[0], states[1]
         self.amplitude = states[2]
         self._build_ui()
@@ -507,16 +485,17 @@ class DecompWindow:
         try:
             v = float(text)
         except ValueError:
-            self.tb_thresh.set_val(f"{self.threshold:.2e}")
+            print(f"[DECOMP] area ≥: '{text}' is not a number; the box is put back to {self.threshold:.2e}.")
+            self.tb_thresh.set(f"{self.threshold:.2e}")
             return
         self.threshold = v
         self._recompute_kept()
         self._build_ui()
 
-    def _on_metal_toggle(self, _label):
+    def _on_metal_toggle(self, flag):
         # Display-only: shows/hides the metal curve. No projection ever
         # changes with this toggle.
-        self.show_metal = self.chk_metal.get_status()[0]
+        self.show_metal = bool(flag)
         self._build_ui()
 
     # ------------------------------------------------------------------
@@ -526,9 +505,9 @@ class DecompWindow:
 
         if not kept:
             # No entity passes anywhere: one axis per marker block, LDOS
-            # alone, with the annotation.
-            gs = gridspec.GridSpec(n_mark, 1, figure=self.fig,
-                                   bottom=0.20, hspace=0.7)
+            # alone, with the annotation.  automatic layout: the GridSpec
+            # fills the figure's automatic grid of cells.
+            gs = plt.gridspec.GridSpec(n_mark, 1, figure=self.fig)
             share = None
             for m in range(n_mark):
                 ax = self.fig.add_subplot(gs[m, 0], sharex=share)
@@ -548,8 +527,8 @@ class DecompWindow:
         R = 1 if self.collapse_vertical else len(offsets)
         C = 1 if self.collapse_horizontal else len(comps)
 
-        gs = gridspec.GridSpec(n_mark * R, C, figure=self.fig,
-                               bottom=0.20, hspace=0.9, wspace=0.25)
+        # automatic layout: the GridSpec fills the figure's automatic grid of cells (nothing placed by hand).
+        gs = plt.gridspec.GridSpec(n_mark * R, C, figure=self.fig)
         share = None
         for m in range(n_mark):
             for rs in range(R):
@@ -584,14 +563,13 @@ class DecompWindow:
 
                     # Titles / row labels (grid modes: column titles =
                     # component labels, row labels = offsets).
+                    # "Short: details": the short name (marker and component) shows, the
+                    # position goes to the information panel.
                     title = None
                     if rs == 0 and m == 0 and not self.collapse_horizontal:
                         title = cell_comps[0]
-                    block_title = (self._marker_title(m)
-                                   if (rs == 0 and cs == 0) else None)
-                    if block_title is not None:
-                        title = (f"{block_title}" if title is None
-                                 else f"{block_title} — {title}")
+                    if rs == 0 and cs == 0:
+                        title = self._marker_title(m, comp=title)
                     if title:
                         ax.set_title(title, fontsize=9)
                     if cs == 0 and not self.collapse_vertical:
@@ -659,9 +637,11 @@ class DecompWindow:
             lines[mline] = self._metal_hover(m)
         return lines
 
-    def _marker_title(self, m: int) -> str:
+    def _marker_title(self, m: int, comp: Optional[str] = None) -> str:
+        """The block title, "marker m [comp]: x, y Å" (the short name before ': ', the position after it)."""
         x, y = self.markers[m]
-        return f"marker {m} ({x:.3f}, {y:.3f}) Å"
+        short = f"marker {m}" + (f" {comp}" if comp else "")
+        return f"{short}: x {x:.3f} Å, y {y:.3f} Å"
 
     def _finish_axis(self, ax, m: int, title, last: bool):
         if title:

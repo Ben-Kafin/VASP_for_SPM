@@ -1,12 +1,28 @@
+"""
+Plane slices of CHGCAR_diff / LOCPOT data with the atoms drawn, for one system or two systems
+side by side.  The figures are windows of the suite's shared Qt layer (qtgui at the repository
+root: PySide6 + pyqtgraph): the panels and the colour bar sit in an automatic layout (automatic
+layout: the one rule for every window, nothing placed by hand; the bar is a narrow cell of its
+own), the toolbar's Save button writes PDF / EPS / SVG / PNG / TIFF through matplotlib.
+"""
+
 import os
 import numpy as np
-import matplotlib.pyplot as plt
-from matplotlib.ticker import FormatStrFormatter
 from scipy.interpolate import RegularGridInterpolator
-from matplotlib.patches import Patch
-from matplotlib.colors import SymLogNorm
 
 from lib import parse_CHGCAR, parse_LOCPOT, parse_poscar
+
+# The shared Qt layer (qtgui at the repository root): found by walking up from this file.
+import os as _os, sys as _sys
+_root = _os.path.dirname(_os.path.abspath(__file__))
+while not _os.path.isdir(_os.path.join(_root, 'qtgui')) and _os.path.dirname(_root) != _root:
+    _root = _os.path.dirname(_root)
+if _root not in _sys.path:
+    _sys.path.insert(0, _root)
+from qtgui import qtplot as plt
+
+DESIGN = (12, 5)         # the two-system window's design size (inches): its text zoom follows it (qtplot.window_zoom)
+DESIGN_SINGLE = (6.4, 4.8)   # the single-slice windows' design size
 
 class PlaneSlice:
     """
@@ -202,7 +218,7 @@ class PlaneSlice:
 
         newfig = False
         if ax is None:
-            fig, ax = plt.subplots(tight_layout=True)
+            fig, ax = plt.subplots(figsize=DESIGN_SINGLE)     # automatic layout: the panel fills the grid
             newfig = True
         else:
             fig = ax.figure
@@ -215,21 +231,21 @@ class PlaneSlice:
             vmin, vmax = -v, v
 
         linthresh = 0.01  # pick a threshold that makes small features visible
-        norm = SymLogNorm(linthresh=linthresh,
-                          linscale=0.5,
-                          vmin=vmin,
-                          vmax=vmax)
+        norm = plt.SymLogNorm(linthresh=linthresh,
+                              linscale=0.5,
+                              vmin=vmin,
+                              vmax=vmax)
 
         pcm = ax.pcolormesh(X, Y, data,
                             cmap=self.cmap,
                             shading='nearest',
                             norm=norm)
-        cbar = fig.colorbar(pcm)
+        cbar = fig.colorbar(pcm, ax=ax)        # a bar cell beside the panel (automatic layout)
         if 'CHG' in self.filetype:
             cbar.set_label(r'electron density / electrons $\AA^{-3}$')
         else:
             cbar.set_label('electrostatic potential / eV')
-            cbar.ax.yaxis.set_major_formatter(FormatStrFormatter('%+.4f'))
+            cbar.ax.yaxis.set_major_formatter(plt.ticker.FormatStrFormatter('%+.4f'))
 
         if show_atoms:
             atoms = self.atoms_in_slab(axis, fraction)
@@ -244,7 +260,7 @@ class PlaneSlice:
                            s=atom_size, edgecolor=atom_edgecolor,
                            zorder=5)
                 if a['elem'] not in seen:
-                    handles.append(Patch(color=color, label=a['elem']))
+                    handles.append(plt.Patch(color=color, label=a['elem']))
                     seen.add(a['elem'])
             if handles:
                 ax.legend(handles=handles, title='Elements')
@@ -252,7 +268,8 @@ class PlaneSlice:
         ax.set_aspect('equal')
         ax.set_xlabel(r'X / $\AA$')
         ax.set_ylabel(r'Z / $\AA$')
-        ax.set_title(f'Plane slice (axis={axis}, fraction={fraction:.3f})')
+        # "Short: details": the short name is shown, the details go to the info panel.
+        ax.set_title(f'Slice: axis {axis}, fraction {fraction:.3f}')
 
         if newfig:
             fig.show()
@@ -288,21 +305,21 @@ def run_cropped_view(vasp_dir,
     X, Y, D = ps.plane_slice(axis, fraction, use_interpolation)
 
     # 2) full‐data plot
-    fig, ax = plt.subplots(tight_layout=True)
+    fig, ax = plt.subplots(figsize=DESIGN_SINGLE)     # automatic layout: the panel fills the grid
     m = max(abs(np.nanmin(D)), abs(np.nanmax(D)))
-    norm = SymLogNorm(linthresh=0.01, linscale=0.5, vmin=-m, vmax=m)
+    norm = plt.SymLogNorm(linthresh=0.01, linscale=0.5, vmin=-m, vmax=m)
 
     pcm = ax.pcolormesh(X, Y, D,
                         cmap=cmap,
                         shading='nearest',
                         norm=norm)
 
-    cbar = fig.colorbar(pcm)
+    cbar = fig.colorbar(pcm, ax=ax)        # a bar cell beside the panel (automatic layout)
     if 'CHG' in filetype:
         cbar.set_label(r'electron density / electrons $\AA^{-3}$')
     else:
         cbar.set_label('electrostatic potential / eV')
-        cbar.ax.yaxis.set_major_formatter(FormatStrFormatter('%+.4f'))
+        cbar.ax.yaxis.set_major_formatter(plt.ticker.FormatStrFormatter('%+.4f'))
 
     # 3) overlay atoms + legend
     atoms = ps.atoms_in_slab(axis, fraction)
@@ -314,7 +331,7 @@ def run_cropped_view(vasp_dir,
                    s=60, edgecolor='k',
                    zorder=5)
         if a['elem'] not in seen:
-            handles.append(Patch(color=color, label=a['elem']))
+            handles.append(plt.Patch(color=color, label=a['elem']))
             seen.add(a['elem'])
 
     if show_legend and handles:
@@ -347,7 +364,8 @@ def run_cropped_view(vasp_dir,
     ax.set_aspect('equal')
     ax.set_xlabel(r'X / $\AA$')
     ax.set_ylabel(r'Z / $\AA$')
-    ax.set_title(f'Cropped view (axis={axis}, frac={fraction:.3f})')
+    # "Short: details": the short name is shown, the details go to the info panel.
+    ax.set_title(f'Cropped view: axis {axis}, fraction {fraction:.3f}')
 
     return fig, ax, pcm
 
@@ -403,15 +421,16 @@ def plot_two_slices_side_by_side(vasp_dir1,
     v = max(abs(m1_min), abs(m1_max), abs(m2_min), abs(m2_max))
     vmin, vmax = -v, v
 
-    norm = SymLogNorm(linthresh=linthresh, linscale=linscale, vmin=vmin, vmax=vmax)
+    norm = plt.SymLogNorm(linthresh=linthresh, linscale=linscale, vmin=vmin, vmax=vmax)
 
-    # prepare figure with two axes
-    fig, axes = plt.subplots(1, 2, figsize=(12, 5), tight_layout=True)
+    # prepare figure with two axes (automatic layout: the one rule for every window; the two
+    # panels fill the automatic grid, the colour bar is a narrow cell on their left)
+    fig, axes = plt.subplots(1, 2, figsize=DESIGN)
     pcs = []
-    for ax, X, Y, D, ps, axis_idx, frac, wh, lcut, ucut in [
+    for k, (ax, X, Y, D, ps, axis_idx, frac, wh, lcut, ucut) in enumerate([
             (axes[0], X1, Y1, D1, ps1, axis1, frac1, x_half_width1, lower_cut1, upper_cut1),
             (axes[1], X2, Y2, D2, ps2, axis2, frac2, x_half_width2, lower_cut2, upper_cut2),
-    ]:
+    ], start=1):
         pcm = ax.pcolormesh(X, Y, D, cmap=cmap, shading='nearest', norm=norm)
         pcs.append(pcm)
 
@@ -422,7 +441,7 @@ def plot_two_slices_side_by_side(vasp_dir1,
             color = ps._element_colors.get(a['elem'], 'grey')
             ax.scatter(a['x'], a['y'], c=color, marker='o', s=60, edgecolor='k', zorder=5)
             if a['elem'] not in seen:
-                handles.append(Patch(color=color, label=a['elem']))
+                handles.append(plt.Patch(color=color, label=a['elem']))
                 seen.add(a['elem'])
         if show_legend and handles:
             ax.legend(handles=handles, title='Elements')
@@ -453,16 +472,17 @@ def plot_two_slices_side_by_side(vasp_dir1,
         ax.set_aspect('equal')
         ax.set_xlabel(r'X / $\AA$')
         ax.set_ylabel(r'Z / $\AA$')
-        ax.set_title(f'axis={axis_idx}, frac={frac:.3f}')
+        # "Short: details": the short name is shown, the details go to the info panel.
+        ax.set_title(f'System {k}: axis {axis_idx}, fraction {frac:.3f}')
 
-    # create a dedicated left-side colorbar axes (values are [left, bottom, width, height] in figure coords)
-    cbar_ax = fig.add_axes([0.04, 0.12, 0.02, 0.76])   # tweak these numbers to taste
-    cbar = fig.colorbar(pcs[0], cax=cbar_ax)
+    # the shared colour bar on the left of the first panel, as tall as the row (a cell of the
+    # automatic layout, not a hand-placed axes)
+    cbar = fig.colorbar(pcs[0], ax=list(axes), location='left')
     if 'CHG' in filetype:
         cbar.set_label(r'electron density / electrons $\AA^{-3}$')
     else:
         cbar.set_label('electrostatic potential / eV')
-        cbar.ax.yaxis.set_major_formatter(FormatStrFormatter('%+.4f'))
+        cbar.ax.yaxis.set_major_formatter(plt.ticker.FormatStrFormatter('%+.4f'))
 
     return fig, axes, pcs
 

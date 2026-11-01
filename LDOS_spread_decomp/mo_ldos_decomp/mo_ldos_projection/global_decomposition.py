@@ -34,6 +34,13 @@ matcher run. The channels are never emulated with scalar arithmetic.
 All broadening uses the one shared _gauss_sum implementation at the live σ
 on a _curve_grid-style grid. Standalone-runnable via the stub-package
 __main__ pattern at the bottom.
+
+Window (the shared Qt layer, qtgui at the repository root): one panel in
+the figure's automatic grid (automatic layout, nothing placed by hand),
+the curves made once and given new data on every σ change, and under it
+the σ number box (controls.SigmaBox: Enter, leaving the box after an
+edit, or an arrow-key digit step applies the new σ at once) and the Save
+data button.
 """
 from __future__ import annotations
 
@@ -43,8 +50,15 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import h5py
-import matplotlib.pyplot as plt
-from matplotlib.widgets import Button, Slider, TextBox
+
+# The shared Qt layer (qtgui at the repository root): found by walking up from this file.
+import os as _os, sys as _sys
+_root = _os.path.dirname(_os.path.abspath(__file__))
+while not _os.path.isdir(_os.path.join(_root, 'qtgui')) and _os.path.dirname(_root) != _root:
+    _root = _os.path.dirname(_root)
+if _root not in _sys.path:
+    _sys.path.insert(0, _root)
+from qtgui import qtplot as plt, controls
 
 if __name__ != "__main__":
     from ._imports import (
@@ -56,7 +70,7 @@ if __name__ != "__main__":
         homo_entity_offsets,
     )
 
-# σ slider range / default (eV), VASP SIGMA convention.
+# σ box range / default (eV), VASP SIGMA convention.
 SIGMA_MIN = 0.01
 SIGMA_MAX = 1.0
 SIGMA_DEFAULT = 0.2
@@ -247,7 +261,8 @@ def plot_global_decomposition(
     Returns
     -------
     fig, state
-        The figure and the live state dict (curves, widgets, export path).
+        The figure and the live state dict (curves, the σ box and the Save
+        button under "widgets", export path).
     """
     cfg = cfg if cfg is not None else PlotConfig()
     mo_curves = mo_curves or {}
@@ -357,11 +372,11 @@ def plot_global_decomposition(
             weights=m["weights"], color=m["color"], lw=1.5, ls="-"))
 
     # ------------------------------------------------------------------
-    # Figure + widgets (σ slider with a paired two-way-synced textbox in
-    # the stm_from_dft_opt style, plus the Save-data button).
+    # Figure + controls (the σ number box, controls.SigmaBox, and the
+    # Save-data button in one row under the panel).
     # ------------------------------------------------------------------
-    fig, ax = plt.subplots(figsize=(cfg.figsize[0], 4.8))
-    fig.subplots_adjust(bottom=0.24)
+    DESIGN = (cfg.figsize[0], 4.8)      # the design size (inches): the text zoom follows the window's size relative to it
+    fig, ax = plt.subplots(figsize=DESIGN)      # automatic layout: the panel fills the figure's automatic grid
 
     state: Dict[str, Any] = {
         "sigma": float(sigma), "lines": {}, "E": E,
@@ -416,62 +431,36 @@ def plot_global_decomposition(
             ax.set_ylabel("DOS-like weight (states/eV)")
             ax.set_title("Global MO/metal⊥/residual decomposition"
                          if extended else
-                         "Global decomposition — legacy (MO curves + total)")
+                         "Global decomposition: legacy (MO curves + total)")
             ax.legend(loc="upper right", fontsize=8)
         fig.canvas.draw_idle()
 
-    # --- σ slider + two-way-synced textbox (stm_from_dft style) ---
-    ax_sld = fig.add_axes([0.28, 0.075, 0.36, 0.03])
-    sld = Slider(ax_sld, r"$\sigma$ (eV)", SIGMA_MIN, SIGMA_MAX,
-                 valinit=state["sigma"], valfmt="%.3f")
-    ax_tb = fig.add_axes([0.70, 0.07, 0.075, 0.04])
-    tb = TextBox(ax_tb, "", initial=f"{state['sigma']:.3f}")
-    guard = {"busy": False}
+    # --- the σ number box (SIGMA_MIN .. SIGMA_MAX, three decimals; a value typed outside the
+    # limits is clamped to them, as the old slider clamped it) ---
+    sigma_box = controls.SigmaBox(fig, state["sigma"], SIGMA_MIN, SIGMA_MAX)
 
     def _on_sigma(val):
-        if guard["busy"]:
-            return
-        guard["busy"] = True
-        try:
-            state["sigma"] = float(val)
-            tb.set_val(f"{state['sigma']:.3f}")
-            _draw()
-        finally:
-            guard["busy"] = False
+        state["sigma"] = float(val)
+        _draw()
 
-    def _on_text(text):
-        if guard["busy"]:
-            return
-        try:
-            v = float(text)
-        except ValueError:
-            tb.set_val(f"{state['sigma']:.3f}")
-            return
-        v = min(max(v, SIGMA_MIN), SIGMA_MAX)
-        guard["busy"] = True
-        try:
-            sld.set_val(v)          # updates slider display
-            state["sigma"] = v
-            tb.set_val(f"{v:.3f}")
-            _draw()
-        finally:
-            guard["busy"] = False
-
-    sld.on_changed(_on_sigma)
-    tb.on_submit(_on_text)
+    sigma_box.on_change(_on_sigma)
 
     # --- Save data button (matcher-style commented-header txt) ---
-    ax_btn = fig.add_axes([0.82, 0.065, 0.12, 0.05])
-    btn = Button(ax_btn, "Save data")
+    btn = controls.make(fig, 'Save data')
 
     def _save(_event=None) -> str:
         return save_decomposition_txt(state, P, cfg)
 
-    btn.on_clicked(_save)
+    btn.on_change(_save)
+
+    # automatic layout: the one rule for every window (nothing placed by hand): the σ box and the
+    # button in one row under the panel, in the figure's automatic grid.
+    fig.layout_root().addWidget(controls.widget_of(controls.row(
+        controls.box(sigma_box, title='spread'), controls.box(btn), stretch=True)))
 
     _draw(initial=True)
-    fig._mo_ldos_widgets = (sld, tb, btn)
-    state["widgets"] = (sld, tb, btn)
+    fig._mo_ldos_widgets = (sigma_box, btn)
+    state["widgets"] = (sigma_box, btn)
     state["fig"], state["ax"] = fig, ax
     state["save"] = _save
     return fig, state

@@ -12,6 +12,7 @@ import numpy as np
 import pytest
 
 import run_wfn_plane_slice as rps
+from qtgui import qtplot as plt          # the shared Qt layer (conftest puts its root on sys.path)
 
 
 LATTICE = np.diag([4.0, 5.0, 6.0])
@@ -195,7 +196,6 @@ def test_run_end_to_end_saves_png(ramp_file, norm_mode):
     assert V.shape == (21, 5)
     # the gamma widgets belong to power mode only
     assert hasattr(fig, "_power_gamma_widgets") == (norm_mode == "power")
-    import matplotlib.pyplot as plt
     plt.close(fig)
 
 
@@ -237,7 +237,6 @@ def test_run_multi_input_compare(ramp_file, tmp_path):
                                   panels[0][2])
     png = os.path.splitext(path1)[0] + "_plane_slice_compare.png"
     assert os.path.isfile(png)
-    import matplotlib.pyplot as plt
     plt.close(fig)
 
 
@@ -266,7 +265,6 @@ def test_multi_input_shared_scale_log(ramp_file, tmp_path):
     np.testing.assert_allclose(np.ma.filled(M, -1.0),
                                np.where(V_ramp > 0, V_ramp, -1.0),
                                rtol=1e-12)
-    import matplotlib.pyplot as plt
     plt.close(fig)
 
 
@@ -296,7 +294,6 @@ def test_multi_input_heterogeneous_defaults(ramp_file, tmp_path, capsys):
     # atoms all sit farther than tol from it (mesh only)
     assert len(axes[0].collections) == 4
     assert len(axes[1].collections) == 1
-    import matplotlib.pyplot as plt
     plt.close(fig)
 
 
@@ -307,23 +304,29 @@ def test_parse_cli_args():
     assert rps._parse_cli_args([]) == ([], [])
 
 
-def test_power_gamma_widgets(ramp_file):
+def test_gamma_box(ramp_file):
+    """The γ number box (controls.GammaBox) under the panels: an entry
+    applies at once to every mesh's norm (the same base re-wrapped), any
+    finite γ > 0 is accepted (above 2 included), anything else is reported
+    and the box put back."""
     path, dims = ramp_file
     fig, ax, _ = rps.run(path, [1, 3], n_s=21, n_z=5,
-                         norm_mode="power", save_png=False)
-    sld, tb = fig._power_gamma_widgets
+                         norm_mode="linear", save_png=False)
+    gb = fig._gamma_widgets
     pcm = ax.collections[0]
-    assert pcm.norm.gamma == pytest.approx(rps.power_gamma)
-    sld.set_val(1.5)
+    assert pcm.norm.gamma == pytest.approx(rps.gamma)
+    base = pcm.norm.base
+    gb._on_submit("1.5")                   # what Enter / a digit step delivers
     assert pcm.norm.gamma == pytest.approx(1.5)
-    assert tb.text == "1.50"               # box mirrors the slider
-    tb.set_val("2.75")   # above the slider range — allowed via the box
+    assert pcm.norm.base is base           # the same base norm, re-wrapped
+    assert gb.text == "1.50"               # two decimals shown
+    gb._on_submit("2.75")                  # no upper cap
     assert pcm.norm.gamma == pytest.approx(2.75)
-    assert sld.val == pytest.approx(2.0)   # slider display pegs at its max
-    assert tb.text == "2.75"               # box keeps the true gamma
+    assert gb.text == "2.75"
+    # the colour bar follows the meshes' norm
+    assert pcm.colorbar is not None and pcm.colorbar._axis._mode[1] is pcm.norm
     for bad in ("not a number", "nan", "inf", "-1", "0"):
-        tb.set_val(bad)                    # invalid: silently reverted
+        gb._on_submit(bad)                 # invalid: reported, the box put back
         assert pcm.norm.gamma == pytest.approx(2.75)
-        assert tb.text == "2.75"
-    import matplotlib.pyplot as plt
+        assert gb.text == "2.75"
     plt.close(fig)
