@@ -36,10 +36,15 @@ def pump(ms=120):
 
 
 def resize(fig, w_in, h_in):
-    """The figure at w_in x h_in inches, applied twice (the toolbar and the info dock take window height first)."""
+    """
+    The figure at w_in x h_in inches, applied twice (the toolbar and the info dock take window
+    height first), then the moment the window's own fit takes after a resize (rule 11: a window of
+    shaped panels follows them; its size is then its own, not the one asked for).
+    """
     for _ in range(2):
         fig.set_size_inches(w_in, h_in)
         pump()
+    pump(350)
 
 
 def control_rects(fig):
@@ -99,13 +104,18 @@ def overlaps(fig):
     return out
 
 
-def text_rule(fig, factor):
-    """The fonts follow the one rule at this size factor: the figure's zoom, the tick fonts, the titles, the controls."""
+def text_rule(fig, factor, requested=None):
+    """
+    The fonts follow the one rule at this size factor: the figure's zoom, the tick fonts, the
+    titles, the controls.  `requested` is the canvas size (W, H) px the window was asked for: a
+    window that sized itself to its shaped panels instead (rule 11, fitted_to_panels) is at its own
+    zoom, which the fonts must follow all the same.
+    """
     bad = []
     W, H = fig._canvas_size()
     z = plt.window_zoom(W, H, *fig._design_px)
     want = min(max(factor, plt.ZOOM_MIN), plt.ZOOM_MAX)
-    if abs(z - want) > 0.06:
+    if abs(z - want) > 0.06 and not (requested is not None and fitted_to_panels(fig, requested)):
         bad.append(('zoom', factor, (W, H), fig._design_px, z))
     if abs(fig.font_zoom - z) > 0.03 * z + 1e-9:
         bad.append(('font_zoom', fig.font_zoom, z))
@@ -135,6 +145,69 @@ def text_rule(fig, factor):
     return bad
 
 
+BAND_PX = 10          # the empty band a shaped panel may leave in its cell (rounding of the ticks' room)
+
+
+def _in_main_pane(widget):
+    """Whether a widget sits in the main pane of a controls.OrientedPanes (marked `_pane_main`)."""
+    w = widget
+    while w is not None:
+        if getattr(w, '_pane_main', False):
+            return True
+        w = w.parentWidget()
+    return False
+
+
+def empty_bands(fig):
+    """
+    Rule 11: [(title, band px)] of every visible shaped panel (an aspect-locked or box-aspect axes
+    in a layout cell) whose cell is taller than the panel's box plus its ticks and title (the row's
+    tallest, in an aligned row) by more than BAND_PX; a free panel fills its cell by construction.
+    """
+    bad = []
+    for ax in fig.axes:
+        cell = getattr(ax, '_cell', None)
+        if cell is None or not ax._visible or getattr(ax, '_is_colorbar', False):
+            continue
+        if cell.shape_ratio() is None:
+            continue
+        if _in_main_pane(cell):
+            continue                        # the main pane of an OrientedPanes: its room follows the pane rule (the cap)
+        cx, cy, cw, ch = cell.rect_px()
+        x0, y0, w, h = ax._px_rect()
+        left, top, right, bottom = cell._decor()          # the row's band when the panel is in an aligned row
+        band = ch - (h + top + bottom)
+        if band > BAND_PX:
+            bad.append((ax.get_title() or f'#{fig.axes.index(ax)}', round(band, 1)))
+    return bad
+
+
+def window_fit(fig):
+    """Rule 11: the layout's natural height for the canvas's width less the canvas's height, for a window whose panel rows are all shaped; None otherwise."""
+    lay = fig._layout
+    try:
+        if lay is None or not lay.hasHeightForWidth() or not fig._shaped_layout():
+            return None
+    except Exception:
+        return None
+    vp = fig.canvas.viewport()
+    return lay.heightForWidth(vp.width()) - vp.height()
+
+
+def fitted_to_panels(fig, requested):
+    """
+    Rule 11: whether a window asked for the canvas size `requested` (W, H) px has sized itself to
+    its shaped panels instead (Figure.fit_window): its canvas no wider than asked and its layout's
+    natural height met (window_fit within BAND_PX below, 2 px above).  A window with a free row
+    never fits itself and answers False.
+    """
+    fit = window_fit(fig)
+    if fit is None:
+        return False
+    W, H = fig._canvas_size()
+    return W <= requested[0] + 2 and -BAND_PX <= fit <= 2
+
+
 def short_labels(fig):
     """In portrait every control label with a short form shows it: the labels that do not."""
     bad = []
@@ -153,7 +226,9 @@ def check_window(fig, name, shots_dir=None, sizes=SIZES):
     """
     The window at every size of SIZES: the measurements above, a screenshot per size when
     `shots_dir` is given.  Returns {'name', 'problems': [(size, kind, detail), ...],
-    'counts': {'axes': n, 'controls': n}}.  The window is left at its design size.
+    'counts': {'axes': n, 'controls': n}}.  The window is left at its design size.  A window of
+    shaped panels may answer a size with its own (rule 11, fitted_to_panels): the text rule and
+    the portrait flag then hold for the size it took.
     """
     plt.show(block=False)
     pump(150)
@@ -167,21 +242,32 @@ def check_window(fig, name, shots_dir=None, sizes=SIZES):
         resize(fig, W0 / plt.DPI * fx, H0 / plt.DPI * fy)
         pump(100)
         factor = min(fx, fy)
-        for item in text_rule(fig, factor):
+        requested = (W0 * fx, H0 * fy)
+        for item in text_rule(fig, factor, requested):
             problems.append((label, 'text rule', item))
         for item in text_cut(fig):
             problems.append((label, 'text cut', item))
         for item in overlaps(fig):
             problems.append((label, 'overlap', item))
+        for item in empty_bands(fig):
+            problems.append((label, 'empty band', item))
         if label == 'portrait':
-            if not fig.portrait:
+            # A window of shaped panels asked for a tall narrow size takes the height its panels give
+            # that width (rule 11), which may not be portrait at all; its labels then stay long.
+            fitted = fitted_to_panels(fig, requested)
+            if not fig.portrait and not fitted:
                 problems.append((label, 'portrait flag', fig._canvas_size()))
-            for item in short_labels(fig):
-                problems.append((label, 'short label', item))
+            if fig.portrait or not fitted:
+                for item in short_labels(fig):
+                    problems.append((label, 'short label', item))
         if shots_dir:
             os.makedirs(shots_dir, exist_ok=True)
             fig.savefig(os.path.join(shots_dir, f'{name}_{label}.png'), how='screenshot')
     resize(fig, W0 / plt.DPI, H0 / plt.DPI)
+    # The window's fit at its design size (rule 11): a window of shaped panels has followed them.
+    fit = window_fit(fig)
+    if fit is not None and fit < -BAND_PX:
+        problems.append(('design', 'window fit', fit))
     return {'name': name, 'problems': problems,
             'counts': {'axes': len([a for a in fig.axes if a._visible]), 'controls': len(fig._qt_controls)}}
 
@@ -211,5 +297,5 @@ def print_report(report):
     n = len(report['problems'])
     print(f"{'PASS' if n == 0 else 'FAIL'}  {report['name']}: {report['counts']['axes']} panels, "
           f"{report['counts']['controls']} controls, {n} problem(s)")
-    for size, kind, detail in report['problems'][:40]:
+    for size, kind, detail in report['problems'][:60]:
         print(f"      {size:9s} {kind:12s} {detail}")

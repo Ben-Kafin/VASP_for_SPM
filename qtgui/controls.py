@@ -282,6 +282,166 @@ class UnderPanel(QtWidgets.QWidget):
             self.layout().setContentsMargins(left, 0, right, 0)
 
 
+class AbovePanel(UnderPanel):
+    """Items kept centred over a panel's box (a tip-height box over its topography): UnderPanel's centring, placed above the panel in its column (PanelWithBox)."""
+
+
+class PanelWithBox(QtWidgets.QWidget):
+    """
+    A shaped panel with a control box over it, one item of a qtplot.PanelRow or an OrientedPanes
+    (rule 11 of the guide): the box centred over the panel's box (AbovePanel), the panel's cell
+    below it; height_for_width and width_for_height are the cell's plus the box's height, so the
+    pair is sized as one shaped item and the box never sits between panels.
+    """
+
+    def __init__(self, ax, cell, *items, spacing=3):
+        super().__init__()
+        lay = QtWidgets.QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(spacing)
+        self.above = AbovePanel(ax, *items)
+        lay.addWidget(self.above, 0)
+        lay.addWidget(cell, 1)
+        self.cell = cell
+        self._sp = int(spacing)
+
+    def _box_h(self):
+        return 0.0 if self.above.isHidden() else float(self.above.sizeHint().height()) + self._sp
+
+    def height_for_width(self, w):
+        h = self.cell.height_for_width(w)
+        return None if h is None else h + self._box_h()
+
+    def width_for_height(self, h):
+        return self.cell.width_for_height(max(float(h) - self._box_h(), 1.0))
+
+    def hasHeightForWidth(self):
+        return self.cell.hasHeightForWidth()
+
+    def heightForWidth(self, w):
+        h = self.height_for_width(w)
+        return -1 if h is None else int(round(h))
+
+
+class OrientedPanes(QtWidgets.QWidget):
+    """
+    Two panes arranged by the main panel's shape (rule 11 of the guide: the panel the user works
+    in takes the largest size its ratio allows): `main` is a shaped widget (a PanelCell, a
+    PanelWithBox, a qtplot.RowWidget), `rest` the widget holding the other panels.  Of the two
+    arrangements, the main pane at the left with the window's full height and the main pane
+    across the top with its full width, the one that gives the main panel the larger area is
+    taken; the main pane takes what its ratio needs to fill the window's height (or width), never
+    more than `main_share` of the window along the split (0.6: the other panels keep two fifths);
+    the rest fills what is left.  Chosen again on every resize and whenever the main panel's
+    shape changes (its cell's updateGeometry reaches this widget as a layout request);
+    `hysteresis` keeps the arrangement unless the other is that much larger.  `orientation` is
+    'h' (main at the left) or 'v' (main on top).  When the cap binds (a window too narrow or too
+    low for the main panel's ratio), the main panel is as large as the cap allows and the room
+    it cannot use stays beside it; that room is not an empty band of a row (the render check
+    skips the main pane).
+    """
+
+    def __init__(self, main, rest, main_share=0.6, spacing=8, hysteresis=0.1):
+        super().__init__()
+        self.main, self.rest = main, rest
+        for w in (main, rest):
+            w.setParent(self)
+            w.show()
+        main._pane_main = True                 # the render check's mark: this panel's room follows the pane rule, not a row's
+        self.main_share, self._sp, self._hys = float(main_share), int(spacing), float(hysteresis)
+        self.orientation = None
+        pol = QtWidgets.QSizePolicy.Policy
+        self.setSizePolicy(pol.Expanding, pol.Expanding)
+        self._cb = None
+        self._pending = False
+        main.installEventFilter(self)          # the main panel's shape change (its cell's updateGeometry) reaches it as a layout request
+
+    def eventFilter(self, obj, ev):
+        if obj is self.main and ev.type() == QtCore.QEvent.Type.LayoutRequest and not self._pending:
+            self._pending = True
+            QtCore.QTimer.singleShot(0, self._arrange_later)
+        return False
+
+    def _arrange_later(self):
+        self._pending = False
+        self._arrange()
+
+    def on_arranged(self, callback):
+        """callback(orientation) after every arrangement (a window that logs or adapts to it)."""
+        self._cb = callback
+
+    def _shape(self):
+        hfw = getattr(self.main, 'height_for_width', None)
+        wfh = getattr(self.main, 'width_for_height', None)
+        if hfw is None or wfh is None:
+            return None
+        try:
+            return (hfw, wfh) if hfw(100.0) is not None else None
+        except Exception:
+            return None
+
+    def _options(self, W, H):
+        """[(area, orientation, main width, main height)] of the two arrangements at W x H."""
+        shape = self._shape()
+        if shape is None:
+            w = self.main_share * W
+            return [(w * H, 'h', w, H)]
+        hfw, wfh = shape
+        w = min(self.main_share * W, wfh(H) or W)
+        h = min(H, hfw(w) or H)
+        w = min(w, wfh(h) or w)
+        h2 = min(self.main_share * H, hfw(W) or H)
+        w2 = min(W, wfh(h2) or W)
+        h2 = min(h2, hfw(w2) or h2)
+        return [(w * h, 'h', w, h), (w2 * h2, 'v', w2, h2)]
+
+    def _arrange(self):
+        W, H = float(self.width()), float(self.height())
+        if W <= 0 or H <= 0:
+            return
+        opts = self._options(W - self._sp, H - self._sp)
+        best = max(opts, key=lambda o: o[0])
+        cur = next((o for o in opts if o[1] == self.orientation), None)
+        if cur is not None and best[1] != cur[1] and best[0] <= cur[0] * (1.0 + self._hys):
+            best = cur
+        area, orient, mw, mh = best
+        self.orientation = orient
+        if orient == 'h':
+            mw = int(round(mw))
+            self.main.setGeometry(0, 0, mw, int(H))
+            self.rest.setGeometry(mw + self._sp, 0, max(int(W) - mw - self._sp, 1), int(H))
+        else:
+            mh = int(round(mh))
+            self.main.setGeometry(0, 0, int(W), mh)
+            self.rest.setGeometry(0, mh + self._sp, int(W), max(int(H) - mh - self._sp, 1))
+        if self._cb is not None:
+            self._cb(orient)
+
+    def rearrange(self):
+        """The arrangement chosen again now (a window that changed its main panel's data)."""
+        self._arrange()
+
+    def resizeEvent(self, ev):
+        super().resizeEvent(ev)
+        self._arrange()
+
+    def showEvent(self, ev):
+        super().showEvent(ev)
+        self._arrange()
+
+    def event(self, ev):
+        if ev.type() == QtCore.QEvent.Type.LayoutRequest:
+            self._arrange()
+        return super().event(ev)
+
+    def minimumSizeHint(self):
+        a, b = self.main.minimumSizeHint(), self.rest.minimumSizeHint()
+        return QtCore.QSize(max(a.width(), b.width(), 100), max(a.height(), b.height(), 100))
+
+    def sizeHint(self):
+        return QtCore.QSize(900, 600)
+
+
 class RideBand(QtWidgets.QWidget):
     """
     A band of the window's layout beside a panel whose items ride along it at positions the window

@@ -8,8 +8,8 @@ and committed, the last step deletes this file from the repository (it stays in 
 
 - **Where the work stands**: sections 1 to 5 are done and on `main` (the conversion of every
   interactive window to the shared Qt layer `qtgui/`, verified; commits 76e35cc .. 07dcf10).
-  Section 6 (the owner's shape rule) is in progress: 6.1 done, 6.2 to 6.7 open. Continue at the
-  first `[ ]` of section 6.
+  Section 6 (the owner's shape rule) is in progress: 6.1 to 6.3 done, 6.4 to 6.7 open. Continue
+  at the first `[ ]` of section 6.
 - **Git**: develop on the branch `claude/festive-mayer-q2ig83`; after every commit push the branch
   and fast-forward `main` to it (the owner's instruction: the commits go to `main` and the history
   is recorded): `git push origin claude/festive-mayer-q2ig83 && git push origin HEAD:main`. Never
@@ -220,16 +220,26 @@ Tier 3 and Feenstra changes go into the two inactive reference files, fully comm
 
 - [x] 6.1 `tier3_decay.py` and `sim_decay_full.py` replaced by the owner's uploads, every line
   commented (`sim_decay_full.py` restores byte for byte); their README rows.
-- [ ] 6.2 The guide (`matplotlib_to_real_gui.md`, kept at the repository root from now on): rule 11,
+- [x] 6.2 The guide (`matplotlib_to_real_gui.md`, kept at the repository root from now on): rule 11,
   "panels know their shape; the window arranges itself", its layout tools and its pitfalls.
-- [ ] 6.3 The layer: a cell's height for its width from its axes' ratio (`PanelCell.height_for_width`,
+- [x] 6.3 The layer: a cell's height for its width from its axes' ratio (`PanelCell.height_for_width`,
   Qt's height-for-width); `PanelRow`, the row layout whose shaped items share one height and whose
   free items fill the rest; the automatic grid on `PanelRow`s (gridspecs without row spans);
   `Figure.fit_window` (the window sized to its panels' natural size at open and on request);
   `controls.AbovePanel`, `controls.PanelWithBox`, `controls.OrientedPanes` (the main panel's pane,
   oriented by its shape, the other panels in the second pane).  Checked by a prototype first
   (done: Qt's grid sizes a row from a square cell's width; the curve cell beside it fills that
-  height; the row below takes the rest).
+  height; the row below takes the rest).  Found on the way and fixed in the layer: at a text-zoom
+  change a row member was measured (through the row rule) before its own fonts changed and
+  `Axes._decor_px` kept that stale room as the zoom's maximum (`Figure._apply_zoom` now clears
+  every axes' memory after re-fonting them all); a panel in an aligned row (`align_row`, a colour
+  bar beside) now counts the row's tallest title and deepest x axis in its shape
+  (`PanelCell._decor`), as `Axes._px_rect` places it.  The render check: `empty_bands` (per shaped
+  panel, against the row's room; the main pane of an `OrientedPanes` is exempt, its room follows
+  the pane's cap), `window_fit`, and `fitted_to_panels` (a window of shaped panels that answered
+  a requested size with its own is checked at the size it took: the text rule and the portrait
+  flag).  Results: matcher 66/66, decomp 53/53, misc 64/64, pytest 68 pass / 58 skip / the 3
+  pre-existing failures; the simulator reports empty bands in every view until 6.4 rebuilds it.
 - [ ] 6.4 The simulator's four views on the oriented panes: pane A the placement panel(s) with the
   tip-height box above each (Topo h over Global Topo; LDOS h over Map Topo in Map, over the Line
   cluster's Topo box, over the Path stripe); pane B the rest of the view on PanelRows; the

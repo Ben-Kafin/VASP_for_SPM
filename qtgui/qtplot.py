@@ -3660,6 +3660,68 @@ class PanelCell(QtWidgets.QWidget):
             self._title_w = float(title_w)
             self.updateGeometry()
 
+    # --- the panel's shape (rule 11 of the guide: panels know their shape; the window arranges itself) ---
+
+    def shape_ratio(self):
+        """The height over width the panel asks for (its axes' locked aspect or box aspect), or None for a free panel."""
+        for obj in self._bound:
+            want = getattr(obj, '_aspect_want', None)
+            if want is not None:
+                try:
+                    r = want()
+                except Exception:
+                    r = None
+                if r is not None and np.isfinite(r) and r > 0:
+                    return float(r)
+        return None
+
+    def _decor(self):
+        """
+        The room around the panel's box, (left, top, right, bottom) px: its axes' tick axes and title
+        (Axes._decor_px); in an aligned row (Figure.align_row, a colour bar beside) the row's top and
+        bottom, since the row's boxes lie in one band, below the tallest title and above the deepest x
+        axis of the row (Axes._px_rect), and the panel's shape is its box's in that band.
+        """
+        ax = next((o for o in self._bound if hasattr(o, '_decor_px')), None)
+        if ax is None:
+            return (0.0, 0.0, 0.0, 0.0)
+        try:
+            left, top, right, bottom = ax._decor_px()
+            row = getattr(ax, '_row', None)
+            if row is not None:
+                for m in row:
+                    if m is ax or getattr(m, '_cell', None) is None or not m._visible or m.figure is not ax.figure:
+                        continue
+                    _, mt, _, mb = m._decor_px()
+                    top, bottom = max(top, mt), max(bottom, mb)
+            return (left, top, right, bottom)
+        except Exception:
+            return (0.0, 0.0, 0.0, 0.0)
+
+    def height_for_width(self, w):
+        """The cell's height for a width `w`: the box at its ratio plus the room of the tick axes and the title; None for a free panel."""
+        r = self.shape_ratio()
+        if r is None:
+            return None
+        left, top, right, bottom = self._decor()
+        return max(float(w) - left - right, 1.0) * r + top + bottom
+
+    def width_for_height(self, h):
+        """The cell's width for a height `h` (the inverse of height_for_width); None for a free panel."""
+        r = self.shape_ratio()
+        if r is None:
+            return None
+        left, top, right, bottom = self._decor()
+        return max(float(h) - top - bottom, 1.0) / r + left + right
+
+    def hasHeightForWidth(self):
+        """Qt's question: a shaped panel (not a narrow colour-bar cell, which follows its row) answers from its ratio."""
+        return self.inner_w is None and self.shape_ratio() is not None
+
+    def heightForWidth(self, w):
+        h = self.height_for_width(w) if self.inner_w is None else None
+        return -1 if h is None else int(round(h))
+
     def bind(self, obj):
         """Place `obj` (it has _request_place) in this cell from now on."""
         if obj not in self._bound:
@@ -3715,6 +3777,268 @@ class PanelCell(QtWidgets.QWidget):
         super().showEvent(ev)
         self._watch_ancestors()
         self._changed()
+
+
+class PanelRow(QtWidgets.QLayout):
+    """
+    One row of panels (rule 11 of the guide: panels know their shape; the window arranges
+    itself).  A shaped item (a PanelCell of an aspect-locked axes, a controls.PanelWithBox, a
+    RowWidget: any widget or layout with height_for_width / width_for_height answering a number)
+    takes the width its ratio gives at the row's height; a free item (a curve panel, a control)
+    takes a share of the remaining width by its stretch; a fixed item (a colour-bar cell, a box
+    with a fixed width policy) its own width.  The row's natural height (heightForWidth) is the
+    height at which every shaped item, at its nominal share of the width (its stretch among the
+    shaped and free items), is as large as that share allows: the layout above gives the row that
+    height, and no shaped item leaves an empty band above or below it.  Given more height (a
+    taller window), the shaped items grow until their widths fill the row (the free items at their
+    minimum widths); given less, they shrink to the height and the free items widen.  A free item
+    always takes the row's full height; a shaped item is centred in a row taller than it.
+    """
+
+    def __init__(self, spacing=8):
+        super().__init__()
+        self._items = []            # [QLayoutItem, stretch]
+        self._sp = int(spacing)
+        self.setContentsMargins(0, 0, 0, 0)
+
+    # --- QLayout ---
+
+    def addItem(self, item):
+        self._items.append([item, 1])
+
+    def addWidget(self, w, stretch=1):
+        w = w.qt if hasattr(w, 'qt') else w
+        super().addWidget(w)                       # addChildWidget + addItem
+        self._items[-1][1] = int(stretch)
+        self.invalidate()
+
+    def insertWidget(self, index, w, stretch=1):
+        self.addWidget(w, stretch)
+        if 0 <= index < len(self._items) - 1:
+            self._items.insert(index, self._items.pop())
+            self.invalidate()
+
+    def addLayout(self, lay, stretch=1):
+        self.addChildLayout(lay)
+        self.addItem(lay)
+        self._items[-1][1] = int(stretch)
+        self.invalidate()
+
+    def count(self):
+        return len(self._items)
+
+    def itemAt(self, i):
+        return self._items[i][0] if 0 <= i < len(self._items) else None
+
+    def takeAt(self, i):
+        if 0 <= i < len(self._items):
+            it = self._items.pop(i)[0]
+            self.invalidate()
+            return it
+        return None
+
+    def expandingDirections(self):
+        return Qt.Orientation.Horizontal | Qt.Orientation.Vertical
+
+    def hasHeightForWidth(self):
+        return any(self._shaped(it) is not None for it, _ in self._visible())
+
+    def heightForWidth(self, w):
+        return int(round(self._natural_height(float(w))))
+
+    def minimumHeightForWidth(self, w):
+        return self.minimumSize().height()
+
+    def sizeHint(self):
+        w = max(self.minimumSize().width(), 1)
+        return QtCore.QSize(int(w), int(round(self._natural_height(float(w)))))
+
+    def minimumSize(self):
+        items = self._visible()
+        w = sum(self._min_w(it) for it, _ in items) + self._sp * max(len(items) - 1, 0)
+        h = max([self._min_h(it) for it, _ in items] + [0.0])
+        m = self.contentsMargins()
+        return QtCore.QSize(int(w + m.left() + m.right()), int(h + m.top() + m.bottom()))
+
+    # --- the kinds of items ---
+
+    def _visible(self):
+        return [(it, st) for it, st in self._items if not (it.widget() is not None and it.widget().isHidden())]
+
+    @staticmethod
+    def _shaped(it):
+        """(height_for_width, width_for_height) of an item shaped now, else None."""
+        w = it.widget()
+        if w is None:
+            lay = it.layout()
+            w = lay if lay is not None and hasattr(lay, 'height_for_width') else None
+        if w is None or not hasattr(w, 'height_for_width'):
+            return None
+        try:
+            if w.height_for_width(100.0) is None:
+                return None
+        except Exception:
+            return None
+        return w.height_for_width, w.width_for_height
+
+    @staticmethod
+    def _fixed(it):
+        w = it.widget()
+        if w is None:
+            return False
+        return w.sizePolicy().horizontalPolicy() == QtWidgets.QSizePolicy.Policy.Fixed or w.maximumWidth() < 16777215
+
+    @staticmethod
+    def _min_w(it):
+        return float(max(it.minimumSize().width(), 1))
+
+    @staticmethod
+    def _min_h(it):
+        return float(max(it.minimumSize().height(), 1))
+
+    @staticmethod
+    def _fixed_w(it):
+        return float(max(it.sizeHint().width(), it.minimumSize().width()))
+
+    # --- the sizing rule ---
+
+    def _parts(self, W):
+        items = self._visible()
+        shaped = [(it, st) for it, st in items if self._shaped(it) is not None]
+        fixed = [(it, st) for it, st in items if self._shaped(it) is None and self._fixed(it)]
+        free = [(it, st) for it, st in items if self._shaped(it) is None and not self._fixed(it)]
+        avail = W - sum(self._fixed_w(it) for it, _ in fixed) - self._sp * max(len(items) - 1, 0)
+        return items, fixed, shaped, free, max(avail, 0.0)
+
+    def _natural_height(self, W):
+        """The row's natural height at width W: every shaped item at its nominal share of the width, the tightest decides."""
+        items, fixed, shaped, free, avail = self._parts(W)
+        floor = max([self._min_h(it) for it, _ in items] + [0.0])
+        if not shaped:
+            return floor
+        total = float(sum(st for _, st in shaped) + sum(st for _, st in free)) or 1.0
+        h = min(self._shaped(it)[0](max(avail * st / total, 1.0)) for it, st in shaped)
+        return max(h, floor)
+
+    def _fit_height(self, W):
+        """The largest height at which the shaped items' widths plus the free items' minimum widths fit W."""
+        items, fixed, shaped, free, avail = self._parts(W)
+        room = avail - sum(self._min_w(it) for it, _ in free)
+        lo, hi = 1.0, 1.0e6
+        for _ in range(60):
+            mid = 0.5 * (lo + hi)
+            need = sum(self._shaped(it)[1](mid) for it, _ in shaped)
+            if need <= room:
+                lo = mid
+            else:
+                hi = mid
+        return lo
+
+    def setGeometry(self, rect):
+        super().setGeometry(rect)
+        m = self.contentsMargins()
+        r = rect.adjusted(m.left(), m.top(), -m.right(), -m.bottom())
+        W, H = float(r.width()), float(r.height())
+        items, fixed, shaped, free, avail = self._parts(W)
+        if not items:
+            return
+        widths = {}
+        if shaped:
+            h = min(H, self._fit_height(W))
+            for it, _ in shaped:
+                widths[id(it)] = min(self._shaped(it)[1](h), avail)
+            rest = max(avail - sum(widths.values()), 0.0)
+        else:
+            h = H
+            rest = avail
+        tot_free = float(sum(st for _, st in free)) or 1.0
+        for it, st in free:
+            widths[id(it)] = max(rest * st / tot_free, self._min_w(it))
+        for it, _ in fixed:
+            widths[id(it)] = self._fixed_w(it)
+        total_w = sum(widths.values()) + self._sp * max(len(items) - 1, 0)
+        scale = W / total_w if total_w > W and total_w > 0 else 1.0      # nothing fits: everything scaled together
+        shaped_ids = {id(it) for it, _ in shaped}
+        x = float(r.x())
+        for it, _ in items:
+            w = widths[id(it)] * scale
+            if id(it) in shaped_ids:
+                ih = min(h, H)
+                it.setGeometry(QtCore.QRect(int(round(x)), int(round(r.y() + 0.5 * (H - ih))), int(round(w)), int(round(ih))))
+            else:
+                it.setGeometry(QtCore.QRect(int(round(x)), r.y(), int(round(w)), int(round(H))))
+            x += w + self._sp
+
+    # --- as a shaped item of a row or pane above (RowWidget, controls.OrientedPanes) ---
+
+    def height_for_width(self, w):
+        return self._natural_height(float(w)) if self.hasHeightForWidth() else None
+
+    def width_for_height(self, h):
+        items, fixed, shaped, free, avail = self._parts(1.0e9)
+        if not shaped:
+            return None
+        return (sum(self._shaped(it)[1](float(h)) for it, _ in shaped) + sum(self._fixed_w(it) for it, _ in fixed)
+                + sum(self._min_w(it) for it, _ in free) + self._sp * max(len(items) - 1, 0))
+
+
+class RowWidget(QtWidgets.QWidget):
+    """A PanelRow as one widget: a shaped item of a row or pane above it (the Map view's two topography panels side by side)."""
+
+    def __init__(self, row):
+        super().__init__()
+        self.row = row
+        self.setLayout(row)
+
+    def height_for_width(self, w):
+        return self.row.height_for_width(w)
+
+    def width_for_height(self, h):
+        return self.row.width_for_height(h)
+
+    def hasHeightForWidth(self):
+        return self.row.hasHeightForWidth()
+
+    def heightForWidth(self, w):
+        return self.row.heightForWidth(w)
+
+
+class _Slot(QtWidgets.QWidget):
+    """
+    A subplot's slot in the automatic grid: its PanelCell and the colour-bar cells put beside it
+    (Figure.colorbar) in one row; shaped as its panel is (the bars follow the row's height), so a
+    PanelRow sizes the slot from the panel's ratio.
+    """
+
+    def __init__(self, fig):
+        super().__init__()
+        lay = QtWidgets.QHBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(6)
+        self.cell = PanelCell(fig)
+        self.cell._slot = self
+        lay.addWidget(self.cell, 1)
+        self._cells = [self.cell]
+        self._col = 0
+        self._row = None
+
+    def _bars_w(self):
+        bars = [c for c in self._cells[1:] if not c.isHidden()]
+        return sum(float(c.sizeHint().width()) for c in bars) + self.layout().spacing() * len(bars)
+
+    def height_for_width(self, w):
+        return self.cell.height_for_width(max(float(w) - self._bars_w(), 1.0))
+
+    def width_for_height(self, h):
+        w = self.cell.width_for_height(h)
+        return None if w is None else w + self._bars_w()
+
+    def hasHeightForWidth(self):
+        return self.cell.hasHeightForWidth()
+
+    def heightForWidth(self, w):
+        h = self.height_for_width(w)
+        return -1 if h is None else int(round(h))
 
 
 class Axes:
@@ -3831,6 +4155,8 @@ class Axes:
         if isinstance(artist, (AxesImage, QuadMesh, ContourSet, TriContourSet)) and not self._tight:
             self._tight = True
             self.vb.setDefaultPadding(0.0)
+        if self._cell is not None and self.vb.state['aspectLocked']:
+            self._notify_shape()               # new data may change the drawn extent's ratio
         return artist
 
     def _forget(self, artist):
@@ -3933,6 +4259,7 @@ class Axes:
     def set_box_aspect(self, aspect=None):
         """matplotlib's box aspect: the box's height over its width fixed at `aspect` whatever the limits (None frees it); the box shrinks in its cell to it."""
         self._box_aspect = None if aspect is None else float(aspect)
+        self._notify_shape()
         self._request_place()
 
     def get_box_aspect(self):
@@ -3947,8 +4274,30 @@ class Axes:
             return None
         tx, ty = getattr(self, '_target_x', None), getattr(self, '_target_y', None)
         if tx is None or ty is None or not (tx[1] > tx[0] and ty[1] > ty[0]):
-            return None
+            # No limits set: the drawn data's extent (what the autoscaled view shows) gives the ratio.
+            try:
+                r = self.vb.childrenBoundingRect()
+            except Exception:
+                return None
+            if not (r.width() > 0 and r.height() > 0):
+                return None
+            return float(r.height() / r.width()) * float(self.vb.state['aspectLocked'])
         return (ty[1] - ty[0]) / (tx[1] - tx[0]) * float(self.vb.state['aspectLocked'])
+
+    def _notify_shape(self):
+        """
+        The panel's cell told when its shape (its height over its width, _aspect_want) changed,
+        so that the rows and panes above size themselves again (rule 11 of the guide: panels know
+        their shape; the window arranges itself).
+        """
+        cell = self._cell
+        if cell is None:
+            return
+        r = self._aspect_want()
+        key = None if r is None else round(float(r), 4)
+        if key != getattr(self, '_shape_told', 'never'):
+            self._shape_told = key
+            cell.updateGeometry()
 
     def _own_height(self):
         """The height (px) the box takes on its own: its cell's, shrunk to its locked aspect (adjustable 'box')."""
@@ -4118,6 +4467,7 @@ class Axes:
         self._place_pending = False
         if getattr(self.figure, '_closed', False):
             return                                     # a placement queued (a row member re-placed) after the window closed
+        self._notify_shape()
         x0, y0, w, h = self._px_rect()
         w, h = max(w, 1.0), max(h, 1.0)
         self.vb.setGeometry(QtCore.QRectF(x0, y0, w, h))
@@ -4706,6 +5056,7 @@ class Axes:
             self.vb.setAspectLocked(True, 1.0 if aspect == 'equal' else float(aspect))
         else:
             self.vb.setAspectLocked(False)
+        self._notify_shape()               # the panel's shape follows its aspect (rule 11)
 
     def _place_box_only(self):
         x0, y0, w, h = self._px_rect()
@@ -5919,8 +6270,12 @@ class Figure:
     (_design_px) is the reference of both and the size of the publication export.
     """
 
-    def __init__(self, figsize=(6.4, 4.8), num=None, embed=False):
-        """embed=True: the figure lives in another window's layout (fig.canvas is the widget; NavigationToolbar(fig) its toolbar)."""
+    def __init__(self, figsize=(6.4, 4.8), num=None, embed=False, fill_screen=False):
+        """
+        embed=True: the figure lives in another window's layout (fig.canvas is the widget;
+        NavigationToolbar(fig) its toolbar).  fill_screen=True: a working window that opens on
+        the screen's available area (rule 11), its text zoom still relative to `figsize`.
+        """
         _app()
         self._toolbars = []
         self._embedded = bool(embed)
@@ -5937,6 +6292,12 @@ class Figure:
         if not embed:
             k = screen_scale()
             w_px, h_px = w_px * k, h_px * k
+        if fill_screen and not embed:
+            scr = QtGui.QGuiApplication.primaryScreen()
+            if scr is not None:
+                av = scr.availableGeometry()
+                w_px, h_px = av.width() * 0.98, av.height() * 0.95
+        self._fill_screen = bool(fill_screen)
         self.canvas = FigureCanvas(self, w_px, h_px)
         if not self._embedded:
             # A window of its own: white panels on the window colour.
@@ -6060,6 +6421,7 @@ class Figure:
             self._apply_zoom(z)
         if self._layout is not None:
             self._fit_controls()
+            self._schedule_fit()
         for ax in self._axes:
             ax._place()
         for t in self._texts:
@@ -6089,6 +6451,11 @@ class Figure:
             cell = ax._cell
             if cell is not None and cell.inner_w is not None:
                 cell.updateGeometry()          # a narrow cell's hint (inner_w at the zoom) is announced to its layout
+        for ax in list(self._axes):
+            # A placement during the loop above (a legend refitted, a row member placed) measured the room of
+            # an axes not yet re-fonted, at the new zoom with the old fonts, and _decor_px would keep that as
+            # the zoom's maximum: the new zoom measures afresh once every text is at it.
+            ax._decor_max = None
         for t in self._texts:
             t._apply()
         if hasattr(self.manager, 'info'):
@@ -6172,8 +6539,10 @@ class Figure:
                 lay.activate()
                 m = lay.minimumSize()
                 if lay.hasHeightForWidth():
-                    # A row that wraps: the height the layout needs at this width.
-                    m = QtCore.QSize(m.width(), max(m.height(), lay.totalHeightForWidth(max(W, m.width()))))
+                    # A row of controls that wraps: the smallest height the layout needs at this width (the
+                    # panel rows count their minimum, not their natural height: a window may be shorter than
+                    # its panels ask, they shrink; rule 11's fit is Figure.fit_window's).
+                    m = QtCore.QSize(m.width(), max(m.height(), lay.totalMinimumHeightForWidth(max(W, m.width()))))
                 if fits_controls((m.width(), m.height()), (W, H), zc, self._fit_zoom):
                     self._fit_zoom = zc
                     return
@@ -6188,6 +6557,125 @@ class Figure:
             self._fit_zoom = zc
         finally:
             self._fitting = False
+
+    @staticmethod
+    def _panel_rows(lay):
+        """Every PanelRow in a layout tree (the automatic grid's rows, a window's own rows)."""
+        out = []
+        for i in range(lay.count()):
+            it = lay.itemAt(i)
+            sub = it.layout()
+            if isinstance(sub, PanelRow):
+                out.append(sub)
+            elif sub is not None:
+                out += Figure._panel_rows(sub)
+            elif it.widget() is not None and it.widget().layout() is not None and not isinstance(it.widget(), PanelCell):
+                out += Figure._panel_rows(it.widget().layout())
+        return out
+
+    @staticmethod
+    def _panel_items(lay):
+        """
+        Every panel-holding item of a layout tree as (item, shaped): a PanelRow (shaped when it has a
+        shaped item), a cell of an axes or a slot (shaped when its axes keeps a ratio); the free
+        ones absorb the window's height.  Cells without an axes (a title cell) and controls are not
+        panels.
+        """
+        out = []
+        for i in range(lay.count()):
+            it = lay.itemAt(i)
+            sub = it.layout()
+            w = it.widget()
+            if isinstance(sub, PanelRow):
+                out.append((sub, sub.hasHeightForWidth()))
+            elif sub is not None:
+                out += Figure._panel_items(sub)
+            elif isinstance(w, PanelCell):
+                if any(isinstance(o, Axes) for o in w._bound) and not w.inner_w:
+                    out.append((w, w.shape_ratio() is not None))
+            elif isinstance(w, _Slot):
+                out.append((w, w.cell.shape_ratio() is not None))
+            elif w is not None and w.layout() is not None:
+                out += Figure._panel_items(w.layout())
+        return out
+
+    def _shaped_layout(self):
+        """Whether the window's height follows its panels: every panel row and panel of its layout is shaped (none is free: a free panel absorbs the height), and there is one."""
+        lay = self._layout
+        if lay is None:
+            return False
+        items = self._panel_items(lay)
+        return bool(items) and all(shaped for _, shaped in items)
+
+    def _schedule_fit(self):
+        """The fit after a resize (rule 11: the window always adjusts), a moment after the last resize event."""
+        if self._embedded or not self._shown or getattr(self, '_fitting_window', False) or self._size_override is not None:
+            return
+        t = getattr(self, '_fit_timer', None)
+        if t is None:
+            t = self._fit_timer = QtCore.QTimer()
+            t.setSingleShot(True)
+            t.timeout.connect(self.fit_window)
+        t.start(250)
+
+    def fit_window(self):
+        """
+        The window sized to its panels (rule 11 of the guide).  For a window whose panel rows are
+        all shaped (_shaped_layout: maps, images, slices; a window with a free row of curves
+        absorbs any height and is left alone): when the layout's natural height for the canvas's
+        width (every row as tall as its shaped panels ask) is less than the canvas's height, the
+        window is made that much shorter; when it is more (the panels are limited by the height),
+        the window is made narrower until the natural height fits.  Done at the first show
+        (qtplot.show), a moment after every resize (_schedule_fit: the height follows the width
+        the user sets), and by a window after it rebuilt its panels.  Returns True when the
+        window was resized.
+        """
+        lay = self._layout
+        win = getattr(self.manager, 'window', None)
+        if lay is None or win is None or self._embedded or not self._shown or getattr(self, '_fitting_window', False):
+            return False
+        if self._size_override is not None or getattr(self, '_closed', False):
+            return False
+        try:
+            if not lay.hasHeightForWidth() or not self._shaped_layout():
+                return False
+        except Exception:
+            return False
+        self._fitting_window = True
+        resized = False
+        try:
+            # A few passes: a resize re-measures the ticks' room and the controls' wrapping, which can
+            # move the natural height a little; the loop ends when the canvas meets it (2 px).
+            for _ in range(4):
+                QtWidgets.QApplication.sendPostedEvents()
+                vp = self.canvas.viewport()
+                W, H = vp.width(), vp.height()
+                nat = lay.heightForWidth(W)
+                dw = dh = 0
+                if nat < H - 2:
+                    dh = nat - H
+                elif nat > H + 2:
+                    lo, hi = float(max(lay.minimumSize().width(), 50)), float(W)
+                    for _ in range(40):
+                        mid = 0.5 * (lo + hi)
+                        if lay.heightForWidth(int(mid)) <= H:
+                            lo = mid
+                        else:
+                            hi = mid
+                    dw = int(round(lo)) - W
+                if dw == 0 and dh == 0:
+                    break
+                before = (win.width(), win.height())
+                win.resize(max(win.width() + dw, win.minimumWidth()), max(win.height() + dh, win.minimumHeight()))
+                QtWidgets.QApplication.sendPostedEvents()
+                self._relayout()
+                QtWidgets.QApplication.sendPostedEvents()
+                if (win.width(), win.height()) == before:
+                    break                          # the window cannot change (its minimum): done
+                resized = True
+            return resized
+        finally:
+            self._fitting_window = False
 
     @contextlib.contextmanager
     def at_design_size(self):
@@ -6291,17 +6779,46 @@ class Figure:
         """
         auto = getattr(self, '_auto', None)
         if auto is not None:
-            return auto['grid']
+            return auto['rows_lay']
         if self._layout is not None:
             return None
         root = QtWidgets.QVBoxLayout()
-        grid = QtWidgets.QGridLayout()
-        grid.setHorizontalSpacing(12)
-        grid.setVerticalSpacing(10)
-        root.addLayout(grid, 1)
-        self._auto = {'root': root, 'grid': grid}
+        rows_lay = self._new_rows_layout()
+        root.addLayout(rows_lay, 1)
+        self._auto = {'root': root, 'rows_lay': rows_lay, 'rows': {}, 'grid': None}
         self.set_layout(root)
-        return grid
+        return rows_lay
+
+    @staticmethod
+    def _new_rows_layout():
+        """The column of PanelRows of the automatic grid (rule 11: every row as tall as its shaped panels ask)."""
+        lay = QtWidgets.QVBoxLayout()
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(10)
+        return lay
+
+    def _auto_row(self, r, gs):
+        """The PanelRow of gridspec row `r`, made and put in order when missing, its stretch the row's height ratio."""
+        auto = self._auto
+        rows = auto['rows']
+        if r not in rows:
+            row = PanelRow(spacing=12)
+            rows[r] = row
+            pos = sorted(rows).index(r)
+            stretch = max(int(round(1000 * gs.height_ratios[r] / max(sum(gs.height_ratios), 1e-12))), 1)
+            auto['rows_lay'].insertLayout(pos, row, stretch)
+        return rows[r]
+
+    def _auto_span_grid(self):
+        """The Qt grid a subplot spanning rows is put in (the one layout the PanelRows cannot hold), made once, after the rows."""
+        auto = self._auto
+        if auto['grid'] is None:
+            grid = QtWidgets.QGridLayout()
+            grid.setHorizontalSpacing(12)
+            grid.setVerticalSpacing(10)
+            auto['rows_lay'].addLayout(grid, 1)
+            auto['grid'] = grid
+        return auto['grid']
 
     def layout_root(self):
         """The automatic grid's outer layout (made now if needed): a script adds its own controls under (or over) its subplots here, so they are laid out with them."""
@@ -6314,33 +6831,31 @@ class Figure:
         gs = spec.get_gridspec()
         if not isinstance(gs, GridSpec):
             return None
-        grid = self._auto_grid()
-        if grid is None:
+        rows_lay = self._auto_grid()
+        if rows_lay is None:
             return None
         rows = range(gs.nrows)[spec.rows]
         cols = range(gs.ncols)[spec.cols]
-        for c in range(gs.ncols):
-            grid.setColumnStretch(c, max(int(round(1000 * gs.width_ratios[c] / max(sum(gs.width_ratios), 1e-12))), 1))
-        for r in range(gs.nrows):
-            grid.setRowStretch(r, max(int(round(1000 * gs.height_ratios[r] / max(sum(gs.height_ratios), 1e-12))), 1))
-        # A grid reused after clf() by a smaller gridspec (a window that rebuilds its panels on a
-        # toggle): a column or row beyond the new gridspec that holds nothing drops its stretch, or
-        # the empty ones would keep their share of the room.
-        for c in range(gs.ncols, grid.columnCount()):
-            if not any(grid.itemAtPosition(r, c) is not None for r in range(grid.rowCount())):
-                grid.setColumnStretch(c, 0)
-        for r in range(gs.nrows, grid.rowCount()):
-            if not any(grid.itemAtPosition(r, c) is not None for c in range(grid.columnCount())):
-                grid.setRowStretch(r, 0)
-        slot = QtWidgets.QWidget()
-        lay = QtWidgets.QHBoxLayout(slot)
-        lay.setContentsMargins(0, 0, 0, 0)
-        lay.setSpacing(6)
-        cell = PanelCell(self)
-        cell._slot = slot
-        lay.addWidget(cell, 1)
-        slot._cells = [cell]
-        grid.addWidget(slot, rows[0], cols[0], len(rows), len(cols))
+        slot = _Slot(self)
+        cell = slot.cell
+        slot._col = cols[0]
+        width_stretch = max(int(round(1000 * sum(gs.width_ratios[c] for c in cols) / max(sum(gs.width_ratios), 1e-12))), 1)
+        if len(rows) > 1:
+            # A subplot spanning rows: the Qt grid (its stretches the ratios), the one case a row of panels cannot hold.
+            grid = self._auto_span_grid()
+            for c in range(gs.ncols):
+                grid.setColumnStretch(c, max(int(round(1000 * gs.width_ratios[c] / max(sum(gs.width_ratios), 1e-12))), 1))
+            for r in range(gs.nrows):
+                grid.setRowStretch(r, max(int(round(1000 * gs.height_ratios[r] / max(sum(gs.height_ratios), 1e-12))), 1))
+            grid.addWidget(slot, rows[0], cols[0], len(rows), len(cols))
+            slot._row = grid
+        else:
+            # The row of the gridspec row: the slot at its column position among the row's slots (automatic layout; rule 11).
+            row = self._auto_row(rows[0], gs)
+            idx = sum(1 for i in range(row.count())
+                      if row.itemAt(i).widget() is not None and getattr(row.itemAt(i).widget(), '_col', -1) < cols[0])
+            row.insertWidget(idx, slot, width_stretch)
+            slot._row = row
         slot.show()
         return Axes(self, cell=cell, spec=spec, sharex=sharex, sharey=sharey)
 
@@ -6357,9 +6872,17 @@ class Figure:
             cell.deleteLater()
         if any(c._bound for c in slot._cells):
             return
-        grid = (getattr(self, '_auto', None) or {}).get('grid')
-        if grid is not None:
-            grid.removeWidget(slot)
+        row = getattr(slot, '_row', None)
+        if row is not None:
+            row.removeWidget(slot)
+            auto = getattr(self, '_auto', None)
+            if auto is not None and isinstance(row, PanelRow) and row.count() == 0:
+                # An emptied row leaves the column (its room goes to the rows left).
+                for r, lay in list(auto['rows'].items()):
+                    if lay is row:
+                        del auto['rows'][r]
+                auto['rows_lay'].removeItem(row)
+                row.deleteLater()
         slot.setParent(None)
         slot.deleteLater()
 
@@ -6650,17 +7173,15 @@ class Figure:
             self._title_cell.setVisible(False)
         auto = getattr(self, '_auto', None)
         if auto is not None:
-            # The automatic grid starts afresh: a window rebuilt with fewer rows or columns must not keep the
-            # stretches (room) of the rows it had (QGridLayout keeps every row it was ever given).
-            root, old = auto['root'], auto['grid']
+            # The automatic grid starts afresh: a window rebuilt with fewer rows or columns must not keep
+            # the rows (room) it had.
+            root, old = auto['root'], auto['rows_lay']
             idx = root.indexOf(old)
             root.removeItem(old)
             old.deleteLater()
-            grid = QtWidgets.QGridLayout()
-            grid.setHorizontalSpacing(12)
-            grid.setVerticalSpacing(10)
-            root.insertLayout(max(idx, 0), grid, 1)
-            auto['grid'] = grid
+            rows_lay = self._new_rows_layout()
+            root.insertLayout(max(idx, 0), rows_lay, 1)
+            auto.update(rows_lay=rows_lay, rows={}, grid=None)
 
     clear = clf
 
@@ -6811,16 +7332,17 @@ def _app():
     return app
 
 
-def figure(num=None, figsize=None, dpi=None, **kw):
+def figure(num=None, figsize=None, dpi=None, fill_screen=False, **kw):
     """
     pyplot's figure: the Figure given, the open figure numbered `num`, or a new window of
-    `figsize` inches (6.4 x 4.8); `dpi` is ignored (DPI).
+    `figsize` inches (6.4 x 4.8); `dpi` is ignored (DPI); fill_screen=True opens a working
+    window on the screen's available area (rule 11), `figsize` staying its design size.
     """
     if isinstance(num, Figure):
         return num
     if num is not None and num in _figures:
         return _figures[num]
-    return Figure(figsize=figsize or (6.4, 4.8), num=num)
+    return Figure(figsize=figsize or (6.4, 4.8), num=num, fill_screen=fill_screen)
 
 
 def subplots(nrows=1, ncols=1, figsize=None, sharex=False, sharey=False, squeeze=True, **kw):
@@ -6904,6 +7426,8 @@ def show(block=None):
         if not f._shown:
             f.manager.show()
             f._relayout()
+            app.processEvents()
+            f.fit_window()                 # the window sized to its panels (rule 11)
     if block is False or (block is None and _INTERACTIVE[0]):
         # block=False, or matplotlib's interactive mode (ion): the windows are shown and show returns.
         app.processEvents()
