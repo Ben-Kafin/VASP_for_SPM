@@ -1,10 +1,39 @@
 # plan.md: the Qt conversion of every interactive window
 
-The single source of truth for this update. A new session (or one whose context was compacted)
-reads this file and `git log` on the branch and continues at the first unchecked step.
+The single source of truth for this update. A new session, or one whose context was compacted,
+reads this file and `git log`, and continues at the first unchecked step. When every step is done
+and committed, the last step deletes this file from the repository (it stays in the history).
 
-Branch: `claude/festive-mayer-q2ig83`. Push with `git push -u origin claude/festive-mayer-q2ig83`.
-No pull request unless the owner asks.
+## 0. Status and how to resume
+
+- **Where the work stands**: sections 1 to 5 are done and on `main` (the conversion of every
+  interactive window to the shared Qt layer `qtgui/`, verified; commits 76e35cc .. 07dcf10).
+  Section 6 (the owner's shape rule) is in progress: 6.1 done, 6.2 to 6.7 open. Continue at the
+  first `[ ]` of section 6.
+- **Git**: develop on the branch `claude/festive-mayer-q2ig83`; after every commit push the branch
+  and fast-forward `main` to it (the owner's instruction: the commits go to `main` and the history
+  is recorded): `git push origin claude/festive-mayer-q2ig83 && git push origin HEAD:main`. Never
+  force-push, never rewrite history; if `main` has moved, merge it into the branch first. No pull
+  request unless the owner asks. Commit messages end with the session's attribution lines.
+- **Environment** (a fresh container): `pip install "PySide6<6.12" pyqtgraph scipy matplotlib
+  h5py pytest` and the system libraries `libegl1 libgl1 libxkbcommon0 libxkbcommon-x11-0
+  libdbus-1-3 libfontconfig1 libglib2.0-0 libxcb-cursor0 libopengl0` (apt); pymatgen does not
+  install here (its bibtexparser wheel fails) and is not needed by the checks (the simulator
+  check gives the LOCPOT reader a cached `LOCPOT.npy`); cupy is absent (the simulator check
+  registers numpy stand-ins for `cupy` and `cupyx.scipy.ndimage`). Everything runs offscreen with
+  `QT_QPA_PLATFORM=offscreen`.
+- **Verification commands** (from the repository root; every one must end clean):
+  `QT_QPA_PLATFORM=offscreen python3 checks/check_simulator.py`, `checks/check_decomp.py`,
+  `checks/check_matcher_plots.py`, `checks/check_misc_windows.py` (each prints "n of n checks
+  passed"), and `cd LDOS_spread_decomp/mo_ldos_decomp && QT_QPA_PLATFORM=offscreen python3 -m
+  pytest mo_ldos_projection/tests -q` (68 pass, 58 skip, the 3 pre-existing failures of
+  section 5). Screenshots land in the session's scratch folder under `shots/`.
+- **The guide** ("From a matplotlib-wired GUI to a real GUI") was uploaded by the owner; step 6.2
+  puts the updated copy at the repository root as `matplotlib_to_real_gui.md`, the one copy from
+  then on.
+- **How the work was done**: the layer and the checks by the main session; the window
+  conversions by four parallel forks of it (one per window family), each reviewed against the
+  rules below, with every layer edit kept additive and listed.
 
 Status marks: `[ ]` to do, `[~]` in progress, `[x]` done.
 
@@ -208,4 +237,7 @@ Tier 3 and Feenstra changes go into the two inactive reference files, fully comm
 - [ ] 6.5 Every other converted window on the rule (the automatic grid's rows); the render check
   measures the empty band of every row and the window's fit.
 - [ ] 6.6 Screenshots of the four views for a tall and a wide synthetic cell to the owner; READMEs;
-  commit, push.
+  commit, push (the branch and `main`).
+- [ ] 6.7 When every step above is done and committed: delete `plan.md` from the repository in a
+  commit of its own (the owner's instruction; the file stays in the git history), push the branch
+  and `main`.
