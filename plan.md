@@ -240,10 +240,16 @@ Tier 3 and Feenstra changes go into the two inactive reference files, fully comm
   a requested size with its own is checked at the size it took: the text rule and the portrait
   flag).  Results: matcher 66/66, decomp 53/53, misc 64/64, pytest 68 pass / 58 skip / the 3
   pre-existing failures; the simulator reports empty bands in every view until 6.4 rebuilds it.
-- [ ] 6.4 The simulator's four views on the oriented panes: pane A the placement panel(s) with the
+- [~] 6.4 The simulator's four views on the oriented panes: pane A the placement panel(s) with the
   tip-height box above each (Topo h over Global Topo; LDOS h over Map Topo in Map, over the Line
   cluster's Topo box, over the Path stripe); pane B the rest of the view on PanelRows; the
-  orientation and the window size recomputed on every view change and resize.
+  orientation and the window size recomputed on every view change and resize.  Layer additions
+  made for it (verified in the shape exercise, 29/29): `OrientedPanes.fit_delta` (what the window
+  can lose beside the main pane) and `Figure.fit_window` / `_fit_pane` applying it, the render
+  check's `window_fit` reading it; `PanelWithBox` over a narrow cell (the Path stripe) as a
+  fixed-width pair, `UnderPanel(follow=False)` for it.  The simulator work itself is done by a
+  fork of the session on `simulator.py` and `checks/check_simulator.py` (a tall and a wide
+  synthetic cell: orientation, boxes above their panels, no bands, screenshots).
 - [ ] 6.5 Every other converted window on the rule (the automatic grid's rows); the render check
   measures the empty band of every row and the window's fit.
 - [ ] 6.6 Screenshots of the four views for a tall and a wide synthetic cell to the owner; READMEs;

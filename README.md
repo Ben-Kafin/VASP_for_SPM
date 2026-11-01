@@ -51,6 +51,16 @@ windows:
   and every control a Qt widget in it, so nothing overlaps at any window size and a window never
   scrolls (a panel that holds only text scrolls inside itself). A spatial panel (a topography, a
   map) keeps its x:y ratio; the panels of one row share one height.
+- **Panels know their shape; the window arranges itself.** A spatial panel's cell tells the
+  layout the height its ratio needs for its width, so a row of panels is exactly as tall as its
+  spatial panels ask and the curve panels and colour bars of that row fill that height, with no
+  empty band above or below. A window whose panels are all spatial takes the size they give it
+  (shorter when the panels are wide, narrower when they are tall) at its first show and after
+  every resize. The simulator's placement panel (the topography where markers, line ends and
+  path nodes are dragged) has a pane of its own, as large as its shape allows: a cell taller
+  than wide stands at the left of the window with the other panels at its right, a wide one
+  lies across the top with the other panels below, the arrangement chosen again on every view
+  change and resize; each tip-height box sits above the topography it belongs to.
 - **One control set.** A control of a given name is the same in every window (`qtgui/widgets.py`,
   `SPECS`): the checks, the radio, the buttons, and number boxes instead of sliders. In a number
   box, select one or more digits and press Up or Down: the selected digits step by one in the place
@@ -83,7 +93,8 @@ Running a window's module as a script works as before (`python run_DFT_STM.py`, 
 Band_structure_plot.py`, ...); the layer is found from the window's own location, so the
 repository's folders must stay together. The checks under `checks/` open every window offscreen
 on synthetic inputs, resize it to its design size, half, double and taller than wide, and measure
-that no text is cut, no controls overlap and the labels follow the rules (`QT_QPA_PLATFORM=offscreen
+that no text is cut, no controls overlap, the labels follow the rules, no row leaves an empty
+band and a window of spatial panels has sized itself to them (`QT_QPA_PLATFORM=offscreen
 python checks/check_simulator.py`, `check_decomp.py`, `check_matcher_plots.py`,
 `check_misc_windows.py`).
 

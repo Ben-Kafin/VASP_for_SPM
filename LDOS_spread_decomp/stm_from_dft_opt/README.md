@@ -19,7 +19,14 @@ The window is a Qt window (PySide6 + pyqtgraph) drawn with the shared `qtgui` la
 repository root: its panels and controls sit in one automatic layout (nothing is placed by hand,
 nothing overlaps at any window size, the window never scrolls), every text follows the window's
 size, and a panel's title shows its short name with the details (bias, height, the marker) in the
-information panel docked at the bottom. The toolbar has Home, Pan, Zoom and Save; Save writes PDF,
+information panel docked at the bottom. The placement panel of every view (the Global Topo, where
+the markers, the line ends and the path nodes are dragged; in Map the Global Topo and the Map Topo
+side by side) has a pane of its own and takes the largest size its shape allows: a unit cell taller
+than wide stands at the left of the window with the other panels at its right, a wide one lies
+across the top with the other panels below, the arrangement chosen again on every view change and
+resize, and the window trims the room beside it. The Topo h box sits above the Global Topo, the
+LDOS h box above the panel its height belongs to (the Line view's Topo panel, the Path view's
+tip-height stripe, the Map Topo). The window opens on the screen's available area. The toolbar has Home, Pan, Zoom and Save; Save writes PDF,
 EPS, SVG, PNG or TIFF through matplotlib (publication files), a PNG or SVG as on screen, a
 screenshot, or the curves as CSV.
 

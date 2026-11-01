@@ -6599,6 +6599,27 @@ class Figure:
                 out += Figure._panel_items(w.layout())
         return out
 
+    @staticmethod
+    def _find_pane(lay):
+        """The first widget of a layout tree that answers fit_delta (a controls.OrientedPanes), or None."""
+        for i in range(lay.count()):
+            it = lay.itemAt(i)
+            sub, w = it.layout(), it.widget()
+            if w is not None and hasattr(w, 'fit_delta'):
+                return w
+            found = None
+            if sub is not None:
+                found = Figure._find_pane(sub)
+            elif w is not None and w.layout() is not None:
+                found = Figure._find_pane(w.layout())
+            if found is not None:
+                return found
+        return None
+
+    def _fit_pane(self):
+        """The window's oriented panes (controls.OrientedPanes) when its layout holds one: the window's fit is theirs (fit_delta)."""
+        return self._find_pane(self._layout) if self._layout is not None else None
+
     def _shaped_layout(self):
         """Whether the window's height follows its panels: every panel row and panel of its layout is shaped (none is free: a free panel absorbs the height), and there is one."""
         lay = self._layout
@@ -6625,10 +6646,12 @@ class Figure:
         absorbs any height and is left alone): when the layout's natural height for the canvas's
         width (every row as tall as its shaped panels ask) is less than the canvas's height, the
         window is made that much shorter; when it is more (the panels are limited by the height),
-        the window is made narrower until the natural height fits.  Done at the first show
-        (qtplot.show), a moment after every resize (_schedule_fit: the height follows the width
-        the user sets), and by a window after it rebuilt its panels.  Returns True when the
-        window was resized.
+        the window is made narrower until the natural height fits.  For a window of oriented
+        panes (controls.OrientedPanes, _fit_pane) the panes say what the window can lose
+        (fit_delta: the height beside a main panel at the left, the width beside one on top).
+        Done at the first show (qtplot.show), a moment after every resize (_schedule_fit: the
+        height follows the width the user sets), and by a window after it rebuilt its panels.
+        Returns True when the window was resized.
         """
         lay = self._layout
         win = getattr(self.manager, 'window', None)
@@ -6636,8 +6659,9 @@ class Figure:
             return False
         if self._size_override is not None or getattr(self, '_closed', False):
             return False
+        pane = self._fit_pane()
         try:
-            if not lay.hasHeightForWidth() or not self._shaped_layout():
+            if pane is None and (not lay.hasHeightForWidth() or not self._shaped_layout()):
                 return False
         except Exception:
             return False
@@ -6650,9 +6674,17 @@ class Figure:
                 QtWidgets.QApplication.sendPostedEvents()
                 vp = self.canvas.viewport()
                 W, H = vp.width(), vp.height()
-                nat = lay.heightForWidth(W)
                 dw = dh = 0
-                if nat < H - 2:
+                if pane is not None:
+                    pane.rearrange()
+                    pw, ph = pane.fit_delta()
+                    dw, dh = (pw if pw < -2 else 0), (ph if ph < -2 else 0)
+                    nat = H
+                else:
+                    nat = lay.heightForWidth(W)
+                if pane is not None:
+                    pass
+                elif nat < H - 2:
                     dh = nat - H
                 elif nat > H + 2:
                     lo, hi = float(max(lay.minimumSize().width(), 50)), float(W)

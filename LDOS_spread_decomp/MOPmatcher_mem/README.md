@@ -24,7 +24,8 @@ Every plot of the package is a Qt window (PySide6 + pyqtgraph) drawn with the sh
 layer at the repository root; each module finds the layer by walking up from its own file. The
 rules are the layer's: the panels fill an automatic grid of cells and the controls are real
 widgets in a strip under them (nothing is placed by hand, nothing overlaps at any window size, the
-window never scrolls); every text scales with the window's size; a panel's title shows its short
+window never scrolls, a row of panels is as tall as its spatial panels ask and a window of spatial
+panels sizes itself to them); every text scales with the window's size; a panel's title shows its short
 name and the details after the first `: ` or `, ` (the entity's energy, the component names) go to
 the information panel docked at the bottom of the window. The toolbar has Home, Pan, Zoom and
 Save; Save writes PDF, EPS, SVG, PNG or TIFF through matplotlib (publication files), a PNG or SVG

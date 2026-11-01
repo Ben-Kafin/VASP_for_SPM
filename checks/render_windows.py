@@ -183,8 +183,17 @@ def empty_bands(fig):
 
 
 def window_fit(fig):
-    """Rule 11: the layout's natural height for the canvas's width less the canvas's height, for a window whose panel rows are all shaped; None otherwise."""
+    """
+    Rule 11: how far the window is from its panels' size, in px, negative when it is larger: the
+    layout's natural height for the canvas's width less the canvas's height, for a window whose
+    panel rows are all shaped; for a window of oriented panes the smaller of the panes' fit_delta
+    (the height or width the window could lose); None for a window with a free row.
+    """
     lay = fig._layout
+    pane = fig._fit_pane()
+    if pane is not None:
+        dw, dh = pane.fit_delta()
+        return min(dw, dh)
     try:
         if lay is None or not lay.hasHeightForWidth() or not fig._shaped_layout():
             return None

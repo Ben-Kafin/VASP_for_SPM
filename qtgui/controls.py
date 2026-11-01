@@ -256,7 +256,7 @@ class UnderPanel(QtWidgets.QWidget):
     the cell with its axis labels.
     """
 
-    def __init__(self, ax, *items, spacing=3):
+    def __init__(self, ax, *items, spacing=3, follow=True):
         super().__init__()
         lay = QtWidgets.QHBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
@@ -266,7 +266,8 @@ class UnderPanel(QtWidgets.QWidget):
             lay.addWidget(_qw(it))
         lay.addStretch(1)
         self._ax = ax
-        ax.on_placed(self._follow)
+        if follow:
+            ax.on_placed(self._follow)         # follow=False: centred on the whole cell (a narrow cell, whose box is centred in it)
 
     def _follow(self):
         ax = self._ax
@@ -299,11 +300,17 @@ class PanelWithBox(QtWidgets.QWidget):
         lay = QtWidgets.QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(spacing)
-        self.above = AbovePanel(ax, *items)
+        narrow = getattr(cell, 'inner_w', None) is not None
+        self.above = AbovePanel(ax, *items, follow=not narrow)
         lay.addWidget(self.above, 0)
         lay.addWidget(cell, 1)
         self.cell = cell
         self._sp = int(spacing)
+        if narrow:
+            # Over a narrow cell (a tip-height stripe): the pair is as wide as the wider of the box and
+            # the cell, a fixed-width item of its row like the cell itself (PanelRow._fixed).
+            pol = QtWidgets.QSizePolicy.Policy
+            self.setSizePolicy(pol.Fixed, pol.Expanding)
 
     def _box_h(self):
         return 0.0 if self.above.isHidden() else float(self.above.sizeHint().height()) + self._sp
@@ -395,16 +402,37 @@ class OrientedPanes(QtWidgets.QWidget):
         h2 = min(h2, hfw(w2) or h2)
         return [(w * h, 'h', w, h), (w2 * h2, 'v', w2, h2)]
 
-    def _arrange(self):
-        W, H = float(self.width()), float(self.height())
-        if W <= 0 or H <= 0:
-            return
+    def _choose(self, W, H):
+        """(area, orientation, main width, main height) for the widget's size W x H: the larger area, the current arrangement kept within the hysteresis."""
         opts = self._options(W - self._sp, H - self._sp)
         best = max(opts, key=lambda o: o[0])
         cur = next((o for o in opts if o[1] == self.orientation), None)
         if cur is not None and best[1] != cur[1] and best[0] <= cur[0] * (1.0 + self._hys):
             best = cur
-        area, orient, mw, mh = best
+        return best
+
+    def fit_delta(self):
+        """
+        (dw, dh), each <= 0 px: how much narrower or shorter this widget could be with its main panel
+        keeping its size (rule 11: the window follows the panel; Figure.fit_window applies it to the
+        window).  With the main pane at the left ('h') the main panel spans the height the window
+        gives, unless the share cap holds it shorter: the window can lose that height (the rest pane,
+        free panels, follows).  With the main pane on top ('v') it spans the width, unless the cap
+        holds it narrower: the window can lose that width.  (0, 0) when the main panel has no shape.
+        """
+        W, H = float(self.width()), float(self.height())
+        if W <= 0 or H <= 0 or self._shape() is None:
+            return (0, 0)
+        area, orient, mw, mh = self._choose(W, H)
+        if orient == 'h':
+            return (0, min(0, int(round(mh - (H - self._sp)))))
+        return (min(0, int(round(mw - (W - self._sp)))), 0)
+
+    def _arrange(self):
+        W, H = float(self.width()), float(self.height())
+        if W <= 0 or H <= 0:
+            return
+        area, orient, mw, mh = self._choose(W, H)
         self.orientation = orient
         if orient == 'h':
             mw = int(round(mw))

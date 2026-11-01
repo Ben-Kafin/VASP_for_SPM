@@ -193,9 +193,9 @@ cell moves or resizes.
 |---|---|
 | A panel | `cell = fig.cell()`, then `fig.add_axes(cell=cell)` |
 | A row of panels sized by their shapes | `row = qtplot.PanelRow()`, `row.addWidget(cell, stretch)` (a free panel's stretch is its share of the width); `qtplot.RowWidget(row)` makes a row one shaped item of a row or pane above it |
-| The main panel's pane, oriented by its shape | `controls.OrientedPanes(main, rest, main_share=0.55)`: `main` a shaped widget (a cell, a `PanelWithBox`, a `RowWidget`), `rest` the widget holding the other panels |
-| A control box over one panel | `controls.PanelWithBox(ax, cell, box)` (the box centred over the panel's box, the pair one shaped item); `controls.AbovePanel(ax, *items)` alone for the centring |
-| The window sized to its panels | `fig.fit_window()` (done at the first show; call it after the panels were rebuilt); `plt.figure(figsize=DESIGN, fill_screen=True)` opens a working window on the screen's available area |
+| The main panel's pane, oriented by its shape | `controls.OrientedPanes(main, rest, main_share=0.6)`: `main` a shaped widget (a cell, a `PanelWithBox`, a `RowWidget`), `rest` the widget holding the other panels; `.orientation`, `.rearrange()`, `.fit_delta()` (what the window can lose beside the main pane) |
+| A control box over one panel | `controls.PanelWithBox(ax, cell, box)` (the box centred over the panel's box, the pair one shaped item; over a narrow `inner_w` cell the pair is a fixed-width item as wide as the wider of the two); `controls.AbovePanel(ax, *items)` alone for the centring |
+| The window sized to its panels | `fig.fit_window()` (done at the first show and after every resize; call it after the panels were rebuilt): a window of shaped rows loses the height its rows do not need, or width when the rows are limited by the height; a window with `OrientedPanes` loses what the panes report (`fit_delta`); `plt.figure(figsize=DESIGN, fill_screen=True)` opens a working window on the screen's available area |
 | A colour bar or ramp | `fig.cell(inner_w=px)`: as wide as the bar plus its ticks and title |
 | One height for a row of panels | `fig.align_row(*axes)` |
 | A spatial panel's ratio | `ax.set_aspect('equal')`, `ax.set_box_aspect(r)` |
