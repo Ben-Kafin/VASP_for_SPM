@@ -131,15 +131,15 @@ the one documented exception to "one scene per window" and "matplotlib off the s
 ## 4. Steps
 
 - [x] 4.1 Survey: inventory of every window, its controls, handlers and matplotlib calls.
-- [~] 4.2 The layer: `qtgui/` built from the sm4 files, sm4 parts removed, section 3.4 added,
+- [x] 4.2 The layer: `qtgui/` built from the sm4 files, sm4 parts removed, section 3.4 added,
   `HoverLabels`, `SigmaBox`, `GammaBox`, the suite's control table; a demo window renders
-  offscreen.
-- [ ] 4.3 `checks/render_windows.py`: the render-and-measure helper.
-- [ ] 4.4 The simulator and its wrapper (the worked example), `plot_dos_cursors_levels.py`.
-- [ ] 4.5 The decomposition windows: `decomp_window.py`, `topo_decomp_window.py`,
+  offscreen (commit 76e35cc).
+- [x] 4.3 `checks/render_windows.py`: the render-and-measure helper (commit 76e35cc).
+- [~] 4.4 The simulator and its wrapper (the worked example), `plot_dos_cursors_levels.py`.
+- [~] 4.5 The decomposition windows: `decomp_window.py`, `topo_decomp_window.py`,
   `global_decomposition.py`, `run_wfn_plane_slice.py`; their tests.
-- [ ] 4.6 The matcher plots: `spread_collapse.py`, `spread_plot.py`,
+- [~] 4.6 The matcher plots: `spread_collapse.py`, `spread_plot.py`,
   `state_decomposition_plot.py`, `vacupot_plotter.py`.
-- [ ] 4.7 `Band_structure_plot.py`, `forces.py`, `lv_slice_w_atoms_2system.py`.
+- [~] 4.7 `Band_structure_plot.py`, `forces.py`, `lv_slice_w_atoms_2system.py`.
 - [ ] 4.8 Verification pass (3.6) on every window; the repeated-logic scan.
 - [ ] 4.9 READMEs (root and every package touched), this plan ticked, commit, push.
