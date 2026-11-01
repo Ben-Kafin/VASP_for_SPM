@@ -2,6 +2,10 @@
 # UNUSED: this module is not imported anywhere in stm_from_dft and is not
 # exported by __init__.py. It is kept as reference for the tunneling-barrier
 # decay work that is still planned (Tier 3 decay logic, extracted reference).
+# 2026-10-29: the live simulator.py now carries this logic (the 'Tier 3' box),
+# with one difference: every column, and the topography window, includes the
+# segment from E_F to the first grid point (rho(E_F) interpolated on the DOS
+# grid), and the display channel returns the I(V) column beside dI/dV.
 # Every original line below is commented out with a leading '# '; removing
 # that prefix from every line restores the file exactly as it was.
 # ==============================================================================

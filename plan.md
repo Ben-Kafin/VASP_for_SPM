@@ -178,3 +178,34 @@ the one documented exception to "one scene per window" and "matplotlib off the s
 - **A long run-script title** in the combined matcher plot's vertical layout ("Bulk surface and
   adatom") overflows its narrow column; written "Bulk: surface and adatom" it would show its short
   name (rule 6). The run scripts' settings were not changed.
+
+## 6. The shape rule (the owner's instruction after the first delivery)
+
+The owner's words: the window must always adjust so that the row of panels is as large as, and
+takes as much of the window as, possible; the full window sizes itself; the simulator's placement
+panel (where the markers, line ends and path nodes are dragged) is too small in the Line, Path and
+Map views and must be as large as possible, oriented by its shape (some unit cells are taller than
+wide); the tip-height boxes go above the topography panel they belong to, never between panels;
+the rule goes into the guide and is then applied to every converted window.  Also: the owner's
+Tier 3 and Feenstra changes go into the two inactive reference files, fully commented.
+
+- [x] 6.1 `tier3_decay.py` and `sim_decay_full.py` replaced by the owner's uploads, every line
+  commented (`sim_decay_full.py` restores byte for byte); their README rows.
+- [ ] 6.2 The guide (`matplotlib_to_real_gui.md`, kept at the repository root from now on): rule 11,
+  "panels know their shape; the window arranges itself", its layout tools and its pitfalls.
+- [ ] 6.3 The layer: a cell's height for its width from its axes' ratio (`PanelCell.height_for_width`,
+  Qt's height-for-width); `PanelRow`, the row layout whose shaped items share one height and whose
+  free items fill the rest; the automatic grid on `PanelRow`s (gridspecs without row spans);
+  `Figure.fit_window` (the window sized to its panels' natural size at open and on request);
+  `controls.AbovePanel`, `controls.PanelWithBox`, `controls.OrientedPanes` (the main panel's pane,
+  oriented by its shape, the other panels in the second pane).  Checked by a prototype first
+  (done: Qt's grid sizes a row from a square cell's width; the curve cell beside it fills that
+  height; the row below takes the rest).
+- [ ] 6.4 The simulator's four views on the oriented panes: pane A the placement panel(s) with the
+  tip-height box above each (Topo h over Global Topo; LDOS h over Map Topo in Map, over the Line
+  cluster's Topo box, over the Path stripe); pane B the rest of the view on PanelRows; the
+  orientation and the window size recomputed on every view change and resize.
+- [ ] 6.5 Every other converted window on the rule (the automatic grid's rows); the render check
+  measures the empty band of every row and the window's fit.
+- [ ] 6.6 Screenshots of the four views for a tall and a wide synthetic cell to the owner; READMEs;
+  commit, push.

@@ -48,8 +48,8 @@ left column through `Interactive_STM_Simulator.add_control_box`.
 | `doscar_parser.py` | `SpinAwareDosParser`, `SpinMode`: DOSCAR reader for all three spin modes |
 | `locpot_manager.py` | `LocpotManager`: LOCPOT loading and `.npy` caching for all three spin modes |
 | `plot_dos_cursors_levels.py` | `DosPlotter`: DOS window with levels (total, Au / molecule, atom types, atoms, one atom's orbitals with hover labels; a click on a curve descends, a click beside the curves ascends; `m` toggles the \|m\| overlay in SOC mode) (run block at the bottom, `v_dir`) |
-| `tier3_decay.py` | UNUSED, fully commented: the Tier 3 decay model, kept as reference for future work on the tunneling barrier |
-| `sim_decay_full.py` | UNUSED, fully commented: the full-model frozen-bias decay build of the simulator, kept as reference for the same work |
+| `tier3_decay.py` | UNUSED, fully commented: the Tier 3 decay model (the frozen-bias topography and the signed I(V)-column display) as an extracted reference, with the note on how the live build carried it (the E_F segment, the I(V) column beside dI/dV); kept for future work on the tunneling barrier |
+| `sim_decay_full.py` | UNUSED, fully commented: the full build of the simulator with the 'Tier 3' box and the 'Feenstra' box (the display divided by I/V of the same point and energy, Tier 3 only), on the matplotlib GUI the simulator had before its conversion; kept as reference for the same work. The live simulator runs Tier 2 (with the optional 0-clamp) only |
 
 The two UNUSED files are not imported by `__init__.py`; removing the leading `# ` from every line
 restores them exactly.

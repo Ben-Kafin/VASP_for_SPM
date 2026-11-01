@@ -1,18 +1,22 @@
 # ==============================================================================
 # UNUSED: this module is not imported anywhere in stm_from_dft and is not
 # exported by __init__.py. It is kept as reference for the tunneling-barrier
-# decay work that is still planned (full-model frozen-bias decay build of the simulator).
-# Every original line below is commented out with a leading '# '; removing
-# that prefix from every line restores the file exactly as it was.
-# ==============================================================================
-# # -*- coding: utf-8 -*-
+# decay work that is still planned: the full build of the simulator with the
+# 'Tier 3' box (the frozen-bias topography and the signed I(V)-column display)
+# and the 'Feenstra' box (the display divided by I/V of the same point and
+# energy, Tier 3 only), on the matplotlib GUI the live simulator had before its
+# conversion to the Qt layer. The live simulator.py runs Tier 2 (with the
+# optional 0-clamp) only. Every original line below is commented out with a
+# leading '# '; removing that prefix from every line restores the file exactly
+# as it was.
+# ==============================================================================# # -*- coding: utf-8 -*-
 # """
 # Interactive STM Simulator: Multi-Tiered GPU Optimization
 # Auto-detects ISPIN=1, ISPIN=2, and NCL/SOC calculations.
-# 
+#
 # Developed by Benjamin Kafin
 # """
-# 
+#
 # import numpy as np
 # import matplotlib.pyplot as plt
 # import cupy as cp
@@ -25,19 +29,20 @@
 # from matplotlib.collections import LineCollection
 # from matplotlib.widgets import Slider, CheckButtons, Button, RadioButtons, TextBox
 # import matplotlib.gridspec as gridspec
+# import matplotlib.transforms as mtransforms
 # import matplotlib.colors as mc, colorsys
 # from matplotlib.lines import Line2D
 # import mplcursors
 # from time import time
-# 
+#
 # from .doscar_parser import SpinAwareDosParser, SpinMode
 # from .locpot_manager import LocpotManager
-# 
-# 
+#
+#
 # # --- CORE UTILITIES ---
 # def gpu_simpson(y, x):
 #     """Vectorized composite Simpson's rule (uniform spacing) for GPU parity.
-# 
+#
 #     Even sample counts use composite Simpson over the first n-1 samples plus a
 #     3-point parabolic (Cartwright) correction for the final interval.
 #     n == 2 uses the trapezoidal rule; n == 1 returns 0.
@@ -60,8 +65,39 @@
 #     core = (dx / 3.0) * cp.sum(weights * y[:, :m], axis=1)
 #     tail = (dx / 12.0) * (5.0 * y[:, -1] + 8.0 * y[:, -2] - y[:, -3])
 #     return core + tail
-# 
-# 
+#
+#
+# def gpu_simpson_weights(n, dx, dtype=cp.float32):
+#     """Quadrature weight vector reproducing gpu_simpson exactly (Tier 3).
+#
+#     Sum_i w_i*y_i equals gpu_simpson(y, x) for a uniform grid of n samples
+#     with spacing dx, branch for branch (n == 1 -> 0, n == 2 -> trapezoid,
+#     odd n -> composite Simpson, even n -> composite over n-1 plus the
+#     Cartwright tail). Used where the integrand tensor is too large to
+#     materialize per energy (the preserve_orbitals I(V) column integral).
+#     """
+#     if n == 1:
+#         return cp.zeros(1, dtype=dtype)
+#     if n == 2:
+#         return cp.full(2, dx / 2.0, dtype=dtype)
+#     w = np.zeros(n)
+#     if n % 2 == 1:
+#         ws = np.ones(n)
+#         ws[1:-1:2] = 4
+#         ws[2:-2:2] = 2
+#         w = (dx / 3.0) * ws
+#     else:
+#         m = n - 1
+#         wm = np.ones(m)
+#         wm[1:-1:2] = 4
+#         wm[2:-2:2] = 2
+#         w[:m] = (dx / 3.0) * wm
+#         w[-1] += 5.0 * dx / 12.0
+#         w[-2] += 8.0 * dx / 12.0
+#         w[-3] -= dx / 12.0
+#     return cp.asarray(w, dtype=dtype)
+#
+#
 # def gpu_chen_tunneling_factor(V, E, phi):
 #     """Vectorized Julian Chen barrier model character-for-character."""
 #     me, h, q = 9.1093837e-31, 6.62607015e-34, 1.60217663e-19
@@ -71,8 +107,8 @@
 #     term1 = cp.power(cp.maximum(0.0, phi_j - E_j + V_j), 1.5)
 #     term2 = cp.power(cp.maximum(0.0, phi_j - E_j), 1.5)
 #     return prefactor * (term1 - term2)
-# 
-# 
+#
+#
 # class Unified_STM_Simulator:
 #     def __init__(self, filepath, unit_cell_num=1):
 #         self.filepath = filepath
@@ -83,23 +119,41 @@
 #         chdir(filepath)
 #         self.dev = cp.cuda.Device(0)
 #         print("--- INITIALIZING GPU TENSOR SIMULATOR ---")
-# 
+#
 #     def _converge_tip_height(self, z_map_gpu, grid_xy_gpu, emin, emax, target_ldos,
 #                              target_threshold=0.01, topo_gain=0.5, max_iter=1000, use_decay=True,
-#                              decay_mode='instantaneous', frozen_bias=None):
-#         """Exhaustive Point-Wise Convergence Engine."""
+#                              clamp_occupied=False, decay_mode='instantaneous', frozen_bias=None,
+#                              use_energy_decay=None):
+#         """Exhaustive Point-Wise Convergence Engine.
+#
+#         decay_mode 'frozen' (Tier 3): every window state is decayed at the
+#         topography's own signed bias `frozen_bias`, the window current is the
+#         E_F segment plus the Simpson sum (one quadrature with the display's
+#         I(V)), it is signed (a negative bias gives a negative current), and
+#         the convergence ratio compares magnitudes so a negative field is never
+#         floored away. The Newton step and its 0.512*sqrt(phi) gain are the
+#         same under every model."""
+#         if use_energy_decay is not None:
+#             use_decay = use_energy_decay     # the key _decay_call_kwargs uses; same meaning as use_decay
 #         t_start = time()
 #         print("--- INITIALIZING TIP CONVERGENCE ENGINE ---")
 #         for i in range(max_iter):
 #             t0 = time()
-#             ld_1, _, a_grid = self._calculate_ldos_at_points_gpu(
-#                 cp.hstack([grid_xy_gpu, z_map_gpu[:, None]]), emin, emax,
-#                 use_energy_decay=use_decay, preserve_orbitals=False, topo_only=True,
-#                 decay_mode=decay_mode, frozen_bias=frozen_bias)
-#             # Topography always uses total LDOS — ld_1 is already combined for POL when topo_only=True.
-#             cur_ldos = gpu_simpson(ld_1, a_grid)
-#             rat = cp.maximum(cur_ldos, 1e-20) / target_ldos
-# 
+#             if decay_mode == 'frozen':
+#                 ld_1, _, a_grid, (cur_ldos, _) = self._calculate_ldos_at_points_gpu(
+#                     cp.hstack([grid_xy_gpu, z_map_gpu[:, None]]), emin, emax,
+#                     use_energy_decay=True, preserve_orbitals=False, topo_only=True,
+#                     decay_mode='frozen', frozen_bias=frozen_bias, return_current=True)
+#                 rat = cp.maximum(cp.abs(cur_ldos), 1e-20) / cp.abs(target_ldos)
+#             else:
+#                 ld_1, _, a_grid = self._calculate_ldos_at_points_gpu(
+#                     cp.hstack([grid_xy_gpu, z_map_gpu[:, None]]), emin, emax,
+#                     use_energy_decay=use_decay, preserve_orbitals=False, topo_only=True,
+#                     clamp_occupied=clamp_occupied)
+#                 # Topography always uses total LDOS — ld_1 is already combined for POL when topo_only=True.
+#                 cur_ldos = gpu_simpson(ld_1, a_grid)
+#                 rat = cp.maximum(cur_ldos, 1e-20) / target_ldos
+#
 #             active_mask = cp.abs(rat - 1.0) > target_threshold
 #             active_count = int(cp.sum(active_mask))
 #             max_error = float(cp.max(cp.abs(rat - 1.0)))
@@ -107,7 +161,7 @@
 #             print(f"   Iter {i+1:02d}: Active Pts ={active_count:4d} | Max Error ={max_error*100:6.2f}% | Z_min ={z_min:6.3f} Å | Z_max ={z_max:6.3f} Å | Range ={z_max-z_min:8.4f} Å | Time ={time()-t0:6.3f}s")
 #             if active_count == 0:
 #                 break
-# 
+#
 #             pts_active = cp.hstack([grid_xy_gpu, z_map_gpu[:, None]])[active_mask]
 #             idx_g = (cp.dot(pts_active, self.inv_lv_gpu) % 1.0).T * self.locpot_dims_gpu[:, None]
 #             pot_g = self._get_barrier_potential()
@@ -116,7 +170,7 @@
 #             z_map_gpu[active_mask] += (topo_gain / (2.0 * kappa)) * cp.log(rat[active_mask])
 #         print(f"--- CONVERGENCE COMPLETE: Total Time ={time() - t_start:6.3f}s ---")
 #         return z_map_gpu
-# 
+#
 #     def _get_barrier_potential(self):
 #         """Return the single 3D potential grid used for the tunneling barrier."""
 #         if self.spin_mode == SpinMode.COLLINEAR_POL:
@@ -124,7 +178,7 @@
 #             return self.locpot_gpu[0] + self.locpot_gpu[1]
 #         # ISPIN=1 and NCL: locpot_gpu is already the total 3D potential
 #         return self.locpot_gpu
-# 
+#
 #     def _parse_poscar(self, ifile):
 #         with open(ifile, 'r') as f:
 #             lines = f.readlines()
@@ -138,10 +192,10 @@
 #             if 'direct' in lines[start_line].lower():
 #                 coord = np.dot(coord, lv)
 #         return lv, coord, atomtypes, atomnums
-# 
+#
 #     def _unwrap_z_vacuum(self, coord):
 #         """Place every atom on the slab side of the vacuum gap in z.
-# 
+#
 #         z is the surface-normal direction and is NOT periodic for a slab: an atom
 #         whose fractional z has wrapped through the cell boundary appears at the top
 #         of the cell (in the vacuum above the slab) when it physically belongs below
@@ -169,21 +223,21 @@
 #         fz_unwrapped[fz_unwrapped > cut] -= 1.0
 #         frac[:, 2] = fz_unwrapped
 #         return np.dot(frac, self.lv)
-# 
+#
 #     def parse_vasp_outputs(self, locpot_path):
 #         poscar_path = './CONTCAR' if exists('./CONTCAR') and getsize('./CONTCAR') > 0 else './POSCAR'
 #         self.lv, self.coord, self.atomtypes, self.atomnums = self._parse_poscar(poscar_path)
 #         self.coord = self._unwrap_z_vacuum(self.coord)
-# 
+#
 #         # --- DOSCAR: auto-detects spin mode ---
 #         dos_parser = SpinAwareDosParser(join(self.filepath, 'DOSCAR'))
 #         self.energies, self.ef = dos_parser.energies, dos_parser.ef
 #         self.energies_gpu = cp.asarray(self.energies, dtype=cp.float32)
 #         self.spin_mode = dos_parser.spin_mode
 #         self.is_polarized = dos_parser.is_polarized  # backward compat (True only for COLLINEAR_POL)
-# 
+#
 #         print(f"[*] Detected spin mode: {self.spin_mode.name}")
-# 
+#
 #         # --- Orbital names ---
 #         num_cols = dos_parser.spin_up_dos.shape[2]
 #         if self.spin_mode == SpinMode.COLLINEAR_POL:
@@ -211,7 +265,7 @@
 #                      'fy3x2', 'fxyz', 'fyz2', 'fz3', 'fxz2', 'fzx2', 'fx3'],
 #             }
 #             self.orbitals = mapping_unpol.get(num_cols, [])
-# 
+#
 #         # --- Atom labels ---
 #         current_global = 1
 #         self.vesta_label_map = {}
@@ -219,11 +273,11 @@
 #             for n_rel in range(1, self.atomnums[idx] + 1):
 #                 self.vesta_label_map[current_global] = f"{t}{n_rel}"
 #                 current_global += 1
-# 
+#
 #         # --- LOCPOT: auto-detects from section count ---
 #         lpt_mgr = LocpotManager(self.filepath, spin_mode=self.spin_mode)
 #         locpot_raw = cp.array(lpt_mgr.get_data(), dtype=cp.float32)
-# 
+#
 #         if self.spin_mode == SpinMode.COLLINEAR_POL:
 #             # LocpotManager stores [V_up, V_dn].
 #             # Tunneling barrier uses TOTAL electrostatic potential = V_up + V_dn.
@@ -234,19 +288,19 @@
 #         else:
 #             # ISPIN=1 and NCL: single 3D grid (total potential)
 #             self.locpot_gpu = locpot_raw
-# 
+#
 #         self.inv_lv_gpu = cp.array(inv(self.lv), dtype=cp.float32)
 #         if self.spin_mode == SpinMode.COLLINEAR_POL:
 #             self.locpot_dims_gpu = cp.array(self.locpot_gpu.shape[-3:], dtype=cp.float32)
 #         else:
 #             self.locpot_dims_gpu = cp.array(self.locpot_gpu.shape, dtype=cp.float32)
-# 
+#
 #         self.num_total_atoms = sum(self.atomnums)
-# 
+#
 #         # --- DOS arrays on GPU ---
 #         self.dos_up_gpu = cp.array(dos_parser.get_dos_for_simulator(spin='up'), dtype=cp.float32)
 #         self.dos_up_collapsed = cp.ascontiguousarray(cp.sum(self.dos_up_gpu, axis=2))
-# 
+#
 #         if self.spin_mode == SpinMode.COLLINEAR_POL:
 #             self.dos_dn_gpu = cp.array(dos_parser.get_dos_for_simulator(spin='down'), dtype=cp.float32)
 #             self.dos_dn_collapsed = cp.ascontiguousarray(cp.sum(self.dos_dn_gpu, axis=2))
@@ -257,11 +311,11 @@
 #         else:
 #             self.dos_dn_gpu = None
 #             self.dos_dn_collapsed = None
-# 
+#
 #         # Store pristine copies for extra broadening re-derivation
 #         self._dos_up_gpu_orig = self.dos_up_gpu.copy()
 #         self._dos_dn_gpu_orig = self.dos_dn_gpu.copy() if self.dos_dn_gpu is not None else None
-# 
+#
 #         # Precompute total-ρ DOS for COLLINEAR_POL topography (avoids computing two channels and adding).
 #         # NCL_SOC: dos_up_gpu IS already ρ_total per orbital. COLLINEAR_UNPOL: single channel reuses dos_up_gpu.
 #         if self.spin_mode == SpinMode.COLLINEAR_POL:
@@ -270,12 +324,12 @@
 #         else:
 #             self.dos_total_gpu = None
 #             self.dos_total_collapsed = None
-# 
+#
 #         inv_lv = inv(self.lv)
 #         frac_coords = np.dot(self.coord, inv_lv)
 #         z_filter_mask = frac_coords[:, 2] < 0.9
 #         self.z_highest_atom = np.max(self.coord[z_filter_mask, 2])
-# 
+#
 #         coords, idx_list = [], []
 #         base_idx = np.arange(len(self.coord))
 #         for i in range(-self.unit_cell_num, self.unit_cell_num + 1):
@@ -286,16 +340,16 @@
 #         self.atom_indices_periodic_gpu = cp.array(np.concatenate(idx_list))
 #         self.map_mat_gpu = cp.zeros((self.num_total_atoms, len(self.atom_indices_periodic_gpu)), dtype=cp.float32)
 #         self.map_mat_gpu[self.atom_indices_periodic_gpu, cp.arange(len(self.atom_indices_periodic_gpu))] = 1.0
-# 
+#
 #     def _apply_extra_broadening(self):
 #         """Rebuild working DOS arrays from pristine originals with extra Gaussian broadening."""
 #         self.dos_up_gpu = self._dos_up_gpu_orig.copy()
 #         if self._dos_dn_gpu_orig is not None:
 #             self.dos_dn_gpu = self._dos_dn_gpu_orig.copy()
-# 
+#
 #         dE = self.energies[1] - self.energies[0]
 #         atom_types_exp = np.repeat(self.atomtypes, self.atomnums)
-# 
+#
 #         for atype, sigma_eV in getattr(self, 'extra_broadening', {}).items():
 #             if sigma_eV <= 0:
 #                 continue
@@ -307,137 +361,271 @@
 #             self.dos_up_gpu[idx] = cp_ndimage.gaussian_filter1d(self.dos_up_gpu[idx], sigma=sigma_pts, axis=1)
 #             if self.dos_dn_gpu is not None:
 #                 self.dos_dn_gpu[idx] = cp_ndimage.gaussian_filter1d(self.dos_dn_gpu[idx], sigma=sigma_pts, axis=1)
-# 
+#
 #         self.dos_up_collapsed = cp.ascontiguousarray(cp.sum(self.dos_up_gpu, axis=2))
 #         if self.dos_dn_gpu is not None:
 #             self.dos_dn_collapsed = cp.ascontiguousarray(cp.sum(self.dos_dn_gpu, axis=2))
-# 
+#
 #         # Refresh COLLINEAR_POL total-ρ DOS after broadening changes (NCL_SOC and UNPOL reuse dos_up_gpu).
 #         if self.spin_mode == SpinMode.COLLINEAR_POL:
 #             self.dos_total_gpu = self.dos_up_gpu + self.dos_dn_gpu
 #             self.dos_total_collapsed = cp.ascontiguousarray(cp.sum(self.dos_total_gpu, axis=2))
-# 
+#
 #     def _broadening_cache_suffix(self):
 #         """Generate cache filename suffix encoding active broadening state."""
 #         active = sorted((t, s) for t, s in getattr(self, 'extra_broadening', {}).items() if s > 0)
 #         if not active:
 #             return ""
 #         return "_broad_" + "_".join(f"{t}{s:.3f}" for t, s in active)
-# 
+#
 #     def _unit_cell_cache_suffix(self):
 #         # Periodic-image count affects every sf sum. Embed in cache filename so old caches
 #         # auto-invalidate when unit_cell_num changes.
 #         return f"_uc{getattr(self, 'unit_cell_num', 1)}"
-# 
+#
+#     def _effective_decay_model(self):
+#         """'decay_off' = Decay off; 'decay_on' = Decay on with the occupied-side
+#         0-clamp (the default); 'decay_on_noclamp' = Decay on, the original model
+#         without the clamp; 't3' = Decay on with the 'Tier 3' box on (the frozen-bias
+#         topography and the signed I(V)-column display; the clamp is ignored)."""
+#         if not getattr(self, 'use_decay', True):
+#             return 'decay_off'
+#         if getattr(self, 'tier3', False):
+#             return 't3'
+#         return 'decay_on' if getattr(self, 't2_clamp', True) else 'decay_on_noclamp'
+#
 #     def _decay_cache_suffix(self):
-#         # Converged topographies depend on the decay model used to produce them.
-#         # 'edecay_v2' = full-model decay (frozen-bias topo + anchor clamp); the
-#         # version token keeps caches from earlier decay models from loading.
-#         return "_edecay_v2" if getattr(self, 'use_decay', True) else "_nodecay"
-# 
+#         # Converged topographies depend on the decay model used to produce them;
+#         # the tag is the model name, so each of the three models has its own
+#         # caches (caches from the pre-tag unclamped model, no suffix, never match).
+#         return "_" + self._effective_decay_model()
+#
+#     def _decay_call_kwargs(self, frozen_bias=None):
+#         """The decay keyword arguments of a _calculate_ldos_at_points_gpu call
+#         under the active model. Under 't3' a topography caller (its signed
+#         stabilization bias given) gets the frozen-bias window and a display
+#         caller (no bias) the signed I(V)-column display; under every other
+#         model the present instantaneous call with the clamp flag."""
+#         if self._effective_decay_model() == 't3':
+#             if frozen_bias is not None:
+#                 return dict(use_energy_decay=True, decay_mode='frozen', frozen_bias=frozen_bias)
+#             return dict(use_energy_decay=True, decay_mode='t3_display')
+#         return dict(use_energy_decay=getattr(self, 'use_decay', True),
+#                     clamp_occupied=getattr(self, 't2_clamp', True))
+#
+#     def _fermi_bracket(self):
+#         """(k0, k_left, t): k0 the last grid index with energy <= 0, k_left the
+#         first with energy >= 0 (k_left == k0 when a grid point sits exactly at
+#         0.0, else k_left == k0 + 1), and t the interpolation weight of 0.0
+#         between energies[k0] and energies[k_left] (0 when they coincide).
+#         k0 = -1 when every grid energy is above 0; k_left = len(energies) when
+#         every grid energy is below 0."""
+#         k0 = int(np.searchsorted(self.energies, 0.0, side='right')) - 1
+#         k_left = int(np.searchsorted(self.energies, 0.0, side='left'))
+#         if k0 < 0 or k_left >= len(self.energies) or k_left == k0:
+#             return k0, k_left, 0.0
+#         e0, e1 = float(self.energies[k0]), float(self.energies[k_left])
+#         return k0, k_left, (0.0 - e0) / (e1 - e0)
+#
+#     def _dos_at_fermi(self, dos_gpu, dos_collapsed, preserve_orbitals):
+#         """ρ(E_F) from the DOS grid: the linear interpolation between the two
+#         grid points bracketing 0.0 (the point itself when one sits at 0.0), per
+#         atom and orbital (preserve_orbitals) or per atom (collapsed)."""
+#         k0, k_left, t = self._fermi_bracket()
+#         n = dos_collapsed.shape[1]
+#         ia, ib = min(max(k0, 0), n - 1), min(max(k_left, 0), n - 1)
+#         if preserve_orbitals:
+#             a, b = dos_gpu[:, ia, :], dos_gpu[:, ib, :]
+#         else:
+#             a, b = dos_collapsed[:, ia], dos_collapsed[:, ib]
+#         return a + (b - a) * t
+#
+#     def _topo_setpoint(self, ld_1, engs, bias, current=None):
+#         """The constant-current setpoint: the largest window current over the
+#         start-height grid. Under 't3' the window current is the signed value
+#         `current` (the E_F segment plus the Simpson sum, one quadrature with
+#         the display) and the setpoint is the signed value at the
+#         maximum-magnitude location; under every other model today's
+#         cp.max(gpu_simpson(ld_1, engs)), unchanged."""
+#         if self._effective_decay_model() == 't3' and current is not None:
+#             return (1.0 if bias > 0 else -1.0) * cp.max(cp.abs(current))
+#         return cp.max(gpu_simpson(ld_1, engs))
+#
 #     def _calculate_ldos_at_points_gpu(self, tip_positions, emin, emax,
 #                                       use_energy_decay=False, preserve_orbitals=False,
-#                                       topo_only=False, decay_mode='instantaneous',
-#                                       frozen_bias=None):
+#                                       topo_only=False, clamp_occupied=False,
+#                                       decay_mode='instantaneous', frozen_bias=None,
+#                                       return_current=False):
+#         """LDOS (or, under Tier 3, dI/dV) of every tip position over the grid
+#         energies in [emin, emax].
+#
+#         decay_mode (only read with use_energy_decay):
+#           'instantaneous' : today's model, each state decayed at its own bias
+#                             (with the occupied-side 0-clamp when clamp_occupied).
+#           'frozen'        : Tier 3 topography. Every window state is decayed at
+#                             the signed bias `frozen_bias` (V = |V_b|,
+#                             E = eps + max(-V_b, 0)); states on the wrong side of
+#                             E_F are dropped; no clamp.
+#           't3_display'    : Tier 3 display. For every grid energy V_j the signed
+#                             current I(V_j) is the E_F segment plus the Simpson
+#                             integral of the site-projected LDOS over the column
+#                             from E_F to V_j, every state decayed at V_j; dI/dV is
+#                             the central difference of that I(V) (one-sided at the
+#                             two ends).
+#         return_current: under 'frozen' the per-point signed window current (the
+#         E_F segment plus the Simpson sum over the window), under 't3_display'
+#         the per-point signed I(V_j) summed over atoms and orbitals, one array per
+#         channel, returned as a fourth element (I_1, I_2); None under
+#         'instantaneous'. Every present caller keeps the three-element return.
+#         """
 #         estart = np.searchsorted(self.energies, emin)
 #         eend = np.searchsorted(self.energies, emax, side='right')
 #         energy_indices = cp.arange(estart, eend)
 #         calc_energies_gpu = self.energies_gpu[estart:eend]
+#         if use_energy_decay and decay_mode == 'frozen':
+#             if frozen_bias is None:
+#                 raise ValueError("decay_mode='frozen' requires a signed frozen_bias (eV).")
+#             # Window (SPEC v3 §4.1, user ruling): 0 <= sign(V_b)*eps <= |V_b|, both
+#             # polarities reaching to and including the Fermi grid point. The slice
+#             # bounds already cap at |V_b|; drop any wrong-side state.
+#             keep = np.sign(frozen_bias) * self.energies[estart:eend] >= 0.0
+#             if not keep.all():
+#                 keep_gpu = cp.asarray(keep)
+#                 energy_indices = energy_indices[keep_gpu]
+#                 calc_energies_gpu = calc_energies_gpu[keep_gpu]
 #         num_pts, num_e = tip_positions.shape[0], len(calc_energies_gpu)
 #         tip_pos_gpu = cp.asarray(tip_positions, dtype=cp.float32)
 #         frac_coords = cp.dot(tip_pos_gpu, self.inv_lv_gpu)
-# 
+#
 #         wrapped_frac_coords = cp.empty_like(frac_coords)
 #         wrapped_frac_coords[:, :2] = frac_coords[:, :2] % 1.0
 #         wrapped_frac_coords[:, 2] = frac_coords[:, 2]
-# 
+#
 #         lv_gpu = cp.array(self.lv, dtype=cp.float32)
 #         wrapped_tip_pos_gpu = cp.dot(wrapped_frac_coords, lv_gpu)
-# 
+#
 #         grid_indices = (frac_coords % 1.0).T * self.locpot_dims_gpu[:, None]
 #         dists = cp.sqrt(cp.sum((self.periodic_coord_gpu[:, None, :] - wrapped_tip_pos_gpu[None, :, :]) ** 2, axis=2))
-# 
-#         if decay_mode == 'frozen' and frozen_bias is None:
-#             raise ValueError("decay_mode='frozen' requires a signed frozen_bias (eV).")
-# 
-#         def _leading_K(phi_local):
-#             """K [1/m] per (state, point) for the leading term."""
-#             if decay_mode == 'frozen':
-#                 # Frozen mode: one signed bias V_b for the whole evaluation.
-#                 # V = |V_b|; E = eps + max(-V_b, 0) keeps E >= 0 for every
-#                 # in-window state, so no clamp is applied here.
-#                 return gpu_chen_tunneling_factor(
-#                     abs(frozen_bias),
-#                     (calc_energies_gpu + max(-frozen_bias, 0.0))[:, None],
-#                     phi_local)
-#             # Instantaneous mode: V from each state's own energy, with E
-#             # anchored at the Fermi level so the averaging interval for
-#             # eps < 0 is [phi, phi + |eps|].
+#
+#         def _frozen_K(phi_local, v_b, eps_gpu):
+#             """§4.1 frozen mapping: V = |V_b|; E = eps + max(-V_b, 0) (>= 0 in-window)."""
 #             return gpu_chen_tunneling_factor(
-#                 cp.abs(calc_energies_gpu)[:, None],
-#                 cp.maximum(calc_energies_gpu, 0.0)[:, None],
-#                 phi_local)
-# 
-#         # Analytic background: bias-derivative of each Fermi-window state's
-#         # transmission, added to the displayed slice at each display energy.
-#         # dI/dV object only — instantaneous (display) path with decay ON.
-#         add_background = use_energy_decay and decay_mode == 'instantaneous'
-#         if add_background:
-#             me_b, h_b, q_b = 9.1093837e-31, 6.62607015e-34, 1.60217663e-19
-#             hbar_b = h_b / (2.0 * np.pi)
-#             # sqrt(2*me*q)/hbar folded into one float64 scalar so the tiny
-#             # 2*me*q product never underflows float32.
-#             kappa_pref = (2.0 * me_b * q_b) ** 0.5 / hbar_b
-#             delta_e = float(self.energies[1] - self.energies[0])
-# 
-#         def _background_terms(phi_local, e_idx):
-#             """Yield (full-grid window indices, dT/d|V| chunk) for one display energy.
-# 
-#             The background window spans the full DOSCAR grid from the point
-#             nearest the Fermi level out to and including the display energy
-#             V_j, on V_j's side — independent of the display slice. Chunked
-#             over window states only as needed for GPU memory.
-#             """
-#             v_j = float(self.energies[estart + e_idx])
-#             if v_j > 0:
-#                 bg_idx = np.nonzero((self.energies > 0.0) & (self.energies <= v_j))[0]
-#             elif v_j < 0:
-#                 bg_idx = np.nonzero((self.energies < 0.0) & (self.energies >= v_j))[0]
+#                 abs(v_b), (eps_gpu + max(-v_b, 0.0))[:, None], phi_local)
+#
+#         def _fermi_segment(phi_local, v_b, dos_gpu, dos_collapsed, rho_e1):
+#             """The E_F segment of the column at bias v_b: the trapezoid of width
+#             |E_1| between rho(E_F) and rho(E_1), E_1 the first grid point on the
+#             column's side of E_F, both samples decayed at v_b (eps = 0 and eps =
+#             E_1). `rho_e1` is the column's already-decayed E_1 sample, (num_pts,)
+#             or (num_pts, n_atoms, n_orb). Zero width when a grid point sits at 0.0."""
+#             k0, k_left, _ = self._fermi_bracket()
+#             e1 = float(self.energies[k_left]) if v_b > 0 else float(self.energies[k0])
+#             width = abs(e1)
+#             if width == 0.0:
+#                 return cp.zeros_like(rho_e1)
+#             K0 = _frozen_K(phi_local, v_b, cp.zeros(1, dtype=cp.float32)).astype(cp.float32)
+#             sf0 = cp.exp(-1.0 * dists * K0[0][None, :] * 1e-10)
+#             rho_f = self._dos_at_fermi(dos_gpu, dos_collapsed, preserve_orbitals)
+#             if preserve_orbitals:
+#                 w0 = cp.dot(self.map_mat_gpu, sf0)                      # (n_atoms, num_pts)
+#                 rho_0 = w0.T[:, :, None] * rho_f[None, :, :]            # (num_pts, n_atoms, n_orb)
 #             else:
-#                 return
+#                 rho_0 = cp.dot(sf0.T, rho_f[self.atom_indices_periodic_gpu])   # (num_pts,)
+#             return 0.5 * width * (rho_0 + rho_e1)
+#
+#         def _t3_display_channel(phi_local, dos_gpu, dos_collapsed):
+#             """§4.3 with the E_F segment: signed I(V_j) from each display grid
+#             energy's frozen column (E_F segment plus the Simpson sum over the
+#             grid points from E_F to V_j), then the numerical dI/dV (central
+#             differences, one-sided at the two display-range ends). Returns
+#             (didv, I_total) with I_total (num_pts, num_e) the current summed over
+#             atoms and orbitals."""
+#             d_e = float(self.energies[1] - self.energies[0])
 #             n_per = dists.shape[0]
 #             chunk = max(1, int(16_777_216 // max(1, n_per * num_pts)))
-#             for c0 in range(0, len(bg_idx), chunk):
-#                 idx_c = bg_idx[c0:c0 + chunk]
-#                 # Frozen arguments at V_b = V_j: V = |V_j|, E = eps + max(-V_j, 0).
-#                 E_arg = cp.asarray(self.energies[idx_c] + max(-v_j, 0.0),
-#                                    dtype=cp.float32)[:, None]
-#                 K_frozen = gpu_chen_tunneling_factor(abs(v_j), E_arg, phi_local)
-#                 # Moving-anchor barrier magnitude: upper interval end for
-#                 # V_j > 0, lower interval end for V_j < 0.
-#                 w_mov = phi_local[None, :] - E_arg + (abs(v_j) if v_j > 0 else 0.0)
-#                 kappa_mov = kappa_pref * cp.sqrt(cp.maximum(w_mov, 0.0))
-#                 dKdVabs = ((2.0 * kappa_mov - K_frozen) / abs(v_j)).astype(cp.float32)
-#                 K_f32 = K_frozen.astype(cp.float32)
-#                 dT = (-1e-10) * dists[None, :, :] * dKdVabs[:, None, :] * \
-#                     cp.exp(-K_f32[:, None, :] * dists[None, :, :] * 1e-10)
-#                 yield idx_c, dT
-# 
+#             if preserve_orbitals:
+#                 I_of_v = cp.zeros((num_pts, num_e, self.num_total_atoms, dos_gpu.shape[2]), dtype=cp.float32)
+#             else:
+#                 dos_periodic_full = dos_collapsed[self.atom_indices_periodic_gpu, :]
+#                 I_of_v = cp.zeros((num_pts, num_e), dtype=cp.float32)
+#             for e_idx in range(num_e):
+#                 v_j = float(self.energies[estart + e_idx])
+#                 # Column window (user ruling): reaches to and includes the Fermi grid
+#                 # point on both polarities: 0 <= sign(V_j)*eps <= |V_j|.
+#                 if v_j > 0:
+#                     col = np.nonzero((self.energies >= 0.0) & (self.energies <= v_j))[0]
+#                 elif v_j < 0:
+#                     col = np.nonzero((self.energies <= 0.0) & (self.energies >= v_j))[0]
+#                 else:
+#                     continue   # V_j = 0: empty column window -> I(V_j) = 0
+#                 n_col = len(col)
+#                 if n_col == 0:
+#                     continue
+#                 sgn = 1.0 if v_j > 0 else -1.0
+#                 e1_pos = 0 if v_j > 0 else n_col - 1       # the column's E_F-side end (E_1)
+#                 if preserve_orbitals:
+#                     w_col = gpu_simpson_weights(n_col, d_e)
+#                     acc = cp.zeros((num_pts, self.num_total_atoms, dos_gpu.shape[2]), dtype=cp.float32)
+#                     rho_e1 = None
+#                     for c0 in range(0, n_col, chunk):
+#                         idx_c = col[c0:c0 + chunk]
+#                         eps_c = cp.asarray(self.energies[idx_c], dtype=cp.float32)
+#                         K_c = _frozen_K(phi_local, v_j, eps_c).astype(cp.float32)
+#                         sf = cp.exp(-K_c[:, None, :] * dists[None, :, :] * 1e-10)
+#                         w_atom = cp.einsum('mn,inp->imp', self.map_mat_gpu, sf)
+#                         dos_c = dos_gpu[:, cp.asarray(idx_c), :]
+#                         acc += cp.einsum('i,imp,mio->pmo', w_col[c0:c0 + len(idx_c)], w_atom, dos_c)
+#                         if c0 <= e1_pos < c0 + len(idx_c):
+#                             i1 = e1_pos - c0
+#                             rho_e1 = w_atom[i1].T[:, :, None] * dos_c[:, i1, :][None, :, :]
+#                     acc += _fermi_segment(phi_local, v_j, dos_gpu, dos_collapsed, rho_e1)
+#                     I_of_v[:, e_idx] = sgn * acc
+#                 else:
+#                     y = cp.zeros((num_pts, n_col), dtype=cp.float32)
+#                     for c0 in range(0, n_col, chunk):
+#                         idx_c = col[c0:c0 + chunk]
+#                         eps_c = cp.asarray(self.energies[idx_c], dtype=cp.float32)
+#                         K_c = _frozen_K(phi_local, v_j, eps_c).astype(cp.float32)
+#                         sf = cp.exp(-K_c[:, None, :] * dists[None, :, :] * 1e-10)
+#                         y[:, c0:c0 + len(idx_c)] = cp.einsum(
+#                             'ai,iap->pi', dos_periodic_full[:, cp.asarray(idx_c)], sf)
+#                     seg = _fermi_segment(phi_local, v_j, dos_gpu, dos_collapsed, y[:, e1_pos])
+#                     I_of_v[:, e_idx] = sgn * (gpu_simpson(
+#                         y, cp.asarray(self.energies[col], dtype=cp.float32)) + seg)
+#             didv = cp.zeros_like(I_of_v)
+#             if num_e >= 2:
+#                 didv[:, 0] = (I_of_v[:, 1] - I_of_v[:, 0]) / d_e
+#                 didv[:, num_e - 1] = (I_of_v[:, num_e - 1] - I_of_v[:, num_e - 2]) / d_e
+#                 if num_e > 2:
+#                     didv[:, 1:num_e - 1] = (I_of_v[:, 2:] - I_of_v[:, :num_e - 2]) / (2.0 * d_e)
+#             I_total = cp.sum(I_of_v, axis=(2, 3)) if preserve_orbitals else I_of_v
+#             return didv, I_total
+#
 #         def _compute_channel(pot, dos_gpu, dos_collapsed):
+#             """Returns (ldos_or_didv, current): `current` is the per-point signed
+#             window current under 'frozen', the I(V) column total under
+#             't3_display', None under 'instantaneous'."""
 #             phi_local = cp_ndimage.map_coordinates(pot, grid_indices, order=1, mode='wrap') - self.ef
+#             if use_energy_decay and decay_mode == 't3_display':
+#                 return _t3_display_channel(phi_local, dos_gpu, dos_collapsed)
+#             frozen = use_energy_decay and decay_mode == 'frozen'
 #             if not preserve_orbitals:
 #                 output_ldos = cp.zeros((num_pts, num_e), dtype=cp.float32)
 #                 dos_periodic = dos_collapsed[self.atom_indices_periodic_gpu, :]
 #                 dos_active = dos_periodic[:, energy_indices]
 #                 if use_energy_decay:
-#                     K_all = _leading_K(phi_local)
+#                     if frozen:
+#                         K_all = _frozen_K(phi_local, frozen_bias, calc_energies_gpu)
+#                     else:
+#                         # 0-clamp (on by default; the '0-clamp' toggle): E anchored at
+#                         # the Fermi level for occupied states, moving the eps < 0
+#                         # averaging interval to [phi, phi + |eps|]. Off = the original
+#                         # decay model.
+#                         e_arg = cp.maximum(calc_energies_gpu, 0.0) if clamp_occupied else calc_energies_gpu
+#                         K_all = gpu_chen_tunneling_factor(cp.abs(calc_energies_gpu)[:, None], e_arg[:, None], phi_local)
 #                     for e_idx in range(num_e):
 #                         sf = cp.exp(-1.0 * dists * K_all[e_idx][None, :] * 1e-10)
 #                         output_ldos[:, e_idx] = cp.dot(sf.T, dos_active[:, e_idx])
-#                         if add_background:
-#                             for idx_c, dT in _background_terms(phi_local, e_idx):
-#                                 dos_bg = dos_periodic[:, cp.asarray(idx_c)]
-#                                 output_ldos[:, e_idx] += delta_e * cp.einsum('ai,iap->p', dos_bg, dT)
 #                 else:
 #                     kappa = 0.512 * cp.sqrt(cp.maximum(0.1, phi_local))
 #                     sf = cp.exp(-2.0 * kappa[None, :] * dists)
@@ -445,56 +633,70 @@
 #             else:
 #                 output_ldos = cp.zeros((num_pts, num_e, self.num_total_atoms, dos_gpu.shape[2]), dtype=cp.float32)
 #                 if use_energy_decay:
-#                     K_all = _leading_K(phi_local)
+#                     if frozen:
+#                         K_all = _frozen_K(phi_local, frozen_bias, calc_energies_gpu)
+#                     else:
+#                         e_arg = cp.maximum(calc_energies_gpu, 0.0) if clamp_occupied else calc_energies_gpu
+#                         K_all = gpu_chen_tunneling_factor(cp.abs(calc_energies_gpu)[:, None], e_arg[:, None], phi_local)
 #                     for e_idx in range(num_e):
 #                         sf = cp.exp(-1.0 * dists * K_all[e_idx][None, :] * 1e-10)
 #                         w_atom = cp.dot(self.map_mat_gpu, sf)
 #                         output_ldos[:, e_idx, :, :] = w_atom.T[:, :, None] * dos_gpu[:, energy_indices[e_idx], :][None, :, :]
-#                         if add_background:
-#                             # Identical per-(atom, energy) weighting before this
-#                             # branch's own reduction: sum periodic images per
-#                             # unit-cell atom, then carry per orbital channel.
-#                             for idx_c, dT in _background_terms(phi_local, e_idx):
-#                                 w_bg = cp.einsum('mn,inp->imp', self.map_mat_gpu, dT)
-#                                 dos_bg = dos_gpu[:, cp.asarray(idx_c), :]
-#                                 output_ldos[:, e_idx, :, :] += delta_e * cp.einsum('imp,mio->pmo', w_bg, dos_bg)
 #                 else:
 #                     kappa = 0.512 * cp.sqrt(cp.maximum(0.1, phi_local))
 #                     sf = cp.exp(-2.0 * kappa[None, :] * dists)
 #                     w_atom = cp.dot(self.map_mat_gpu, sf)
 #                     output_ldos = w_atom.T[:, None, :, None] * dos_gpu[:, energy_indices, :].transpose(1, 0, 2)[None, :, :, :]
-#             return output_ldos
-# 
+#             current = None
+#             if frozen and num_e > 0:
+#                 # The window current: the E_F segment plus the Simpson sum over the
+#                 # window's grid points, one quadrature with the display's I(V); signed.
+#                 e1_pos = 0 if frozen_bias > 0 else num_e - 1
+#                 sgn = 1.0 if frozen_bias > 0 else -1.0
+#                 if preserve_orbitals:
+#                     rho_e1 = output_ldos[:, e1_pos]
+#                     seg = _fermi_segment(phi_local, frozen_bias, dos_gpu, dos_collapsed, rho_e1)
+#                     core = gpu_simpson(output_ldos.reshape(num_pts, num_e, -1).transpose(0, 2, 1).reshape(-1, num_e),
+#                                        calc_energies_gpu).reshape(num_pts, self.num_total_atoms, dos_gpu.shape[2])
+#                     current = sgn * cp.sum(core + seg, axis=(1, 2))
+#                 else:
+#                     seg = _fermi_segment(phi_local, frozen_bias, dos_gpu, dos_collapsed, output_ldos[:, e1_pos])
+#                     current = sgn * (gpu_simpson(output_ldos, calc_energies_gpu) + seg)
+#             return output_ldos, current
+#
 #         # All modes use total potential for the barrier
 #         barrier_pot = self._get_barrier_potential()
-# 
+#
+#         def _pack(ch1, ch2):
+#             """The three-element return, or four with return_current."""
+#             (ld_1, I_1) = ch1
+#             (ld_2, I_2) = ch2 if ch2 is not None else (None, None)
+#             if return_current:
+#                 return ld_1, ld_2, calc_energies_gpu, (I_1, I_2)
+#             return ld_1, ld_2, calc_energies_gpu
+#
 #         if topo_only:
 #             # Topography only needs ρ_total. Skip the second (magnetization) channel that
 #             # _converge_tip_height / topo callers ignore — 2× speedup for NCL_SOC and POL.
 #             if self.spin_mode == SpinMode.COLLINEAR_POL:
 #                 # Use precomputed (dos_up + dos_dn) instead of computing two channels and adding.
-#                 return (_compute_channel(barrier_pot, self.dos_total_gpu, self.dos_total_collapsed),
-#                         None, calc_energies_gpu)
+#                 return _pack(_compute_channel(barrier_pot, self.dos_total_gpu, self.dos_total_collapsed), None)
 #             # NCL_SOC: dos_up_gpu IS already ρ_total per orbital.
 #             # COLLINEAR_UNPOL: dos_up_gpu IS the single channel.
-#             return (_compute_channel(barrier_pot, self.dos_up_gpu, self.dos_up_collapsed),
-#                     None, calc_energies_gpu)
-# 
+#             return _pack(_compute_channel(barrier_pot, self.dos_up_gpu, self.dos_up_collapsed), None)
+#
 #         if self.spin_mode == SpinMode.COLLINEAR_POL:
 #             # Collinear polarized: two channels (up, down), both against total barrier
-#             return (_compute_channel(barrier_pot, self.dos_up_gpu, self.dos_up_collapsed),
-#                     _compute_channel(barrier_pot, self.dos_dn_gpu, self.dos_dn_collapsed),
-#                     calc_energies_gpu)
+#             return _pack(_compute_channel(barrier_pot, self.dos_up_gpu, self.dos_up_collapsed),
+#                          _compute_channel(barrier_pot, self.dos_dn_gpu, self.dos_dn_collapsed))
 #         elif self.spin_mode == SpinMode.NCL_SOC:
 #             # NCL: channel 1 = total DOS, channel 2 = |m| DOS
-#             return (_compute_channel(barrier_pot, self.dos_up_gpu, self.dos_up_collapsed),
-#                     _compute_channel(barrier_pot, self.dos_dn_gpu, self.dos_dn_collapsed),
-#                     calc_energies_gpu)
+#             return _pack(_compute_channel(barrier_pot, self.dos_up_gpu, self.dos_up_collapsed),
+#                          _compute_channel(barrier_pot, self.dos_dn_gpu, self.dos_dn_collapsed))
 #         else:
 #             # Unpolarized: single channel
-#             return (_compute_channel(barrier_pot, self.dos_up_gpu, self.dos_up_collapsed),
-#                     None, calc_energies_gpu)
-# 
+#             return _pack(_compute_channel(barrier_pot, self.dos_up_gpu, self.dos_up_collapsed), None)
+#
 #     # ------------------------------------------------------------------
 #     # _combine_ldos: central dispatch for how channels are combined at display time
 #     # ------------------------------------------------------------------
@@ -504,7 +706,7 @@
 #             return ld_1 + ld_2
 #         # NCL and unpol: ld_1 is already the total
 #         return ld_1
-# 
+#
 #     def _combine_ldos_display(self, ld_1, ld_2, show_mag):
 #         """Combine channels for display, respecting show_mag toggle."""
 #         if not show_mag or ld_2 is None:
@@ -514,16 +716,16 @@
 #         if self.spin_mode == SpinMode.NCL_SOC:
 #             return ld_2           # |m| (unsigned, always ≥ 0)
 #         return ld_1
-# 
+#
 #     def _mag_is_signed(self):
 #         """Whether the magnetization display data is signed (needs bwr) or not."""
 #         return self.spin_mode == SpinMode.COLLINEAR_POL
-# 
+#
 #     def _has_mag_channel(self):
 #         """Whether this spin mode supports the Mag checkbox."""
 #         return self.spin_mode in (SpinMode.COLLINEAR_POL, SpinMode.NCL_SOC)
-# 
-# 
+#
+#
 # class Interactive_STM_Simulator(Unified_STM_Simulator):
 #     def __init__(self, filepath, erange, ldos_height, cmap_topo, unit_cell_num=1):
 #         super().__init__(filepath, unit_cell_num=unit_cell_num)
@@ -534,6 +736,9 @@
 #         self.is_running, self.normalize, self.show_mag = False, False, False
 #         self.show_atoms, self.show_unit_cell = True, False
 #         self.use_decay = True
+#         self.t2_clamp = True     # occupied-side 0-clamp within the decay model (on by default)
+#         self.tier3 = False       # 'Tier 3' box: the frozen-bias topography and the signed I(V)-column display (needs Decay on)
+#         self.feenstra = False    # 'Feenstra' box: the display divided by I/V of the same point and energy (Tier 3 only; display only)
 #         self.reuse_cache = True
 #         self.show_decay_toggle = True
 #         self.display_cells = 1
@@ -546,7 +751,7 @@
 #         # colormap toward the minimum; >1 compresses the low end). Live-controlled
 #         # by the bottom-row slider.
 #         self.ldos_gamma = 1.0
-# 
+#
 #         self.m_colors = ['#1f77b4', '#2ca02c', '#9467bd', '#00ced1', '#e377c2',
 #                          '#17becf', '#bcbd22', '#7f7f7f', '#8c564b', '#d62728']
 #         self.marker_ratios = [0.25, 0.75]
@@ -559,14 +764,19 @@
 #         self._type_color_map = {'Au': 'orange', 'N': 'blue', 'C': 'brown', 'H': 'grey'}
 #         self.extra_broadening = {t: 0.0 for t in self.atomtypes}
 #         self._broadening_topo_dirty = False
-# 
+#
 #         self.cached_p1, self.cached_p2 = None, None
 #         self.cached_emin, self.cached_emax = None, None
 #         self.cached_d_topo_line, self.cached_d_topo_map, self.cached_d_ldos = None, None, None
 #         self.cached_bias_energy_line, self.cached_bias_energy_map, self.cached_nepts = None, None, None
 #         self.cached_ld_up, self.cached_ld_dn, self.cached_eg = None, None, None
 #         self.cached_marker_coords, self.cached_spec_ldos = None, None
-# 
+#         # Tier 3 only: the signed total current I(V) behind the display arrays
+#         # (cached_iv for the Line / Path points or the Map grid per target energy,
+#         # cached_spec_iv for the Single Point / Map markers); None under every
+#         # other model. The 'Feenstra' division reads them at display time.
+#         self.cached_iv, self.cached_spec_iv = None, None
+#
 #         # --- Path mode state ---
 #         self.path = None                  # initial seed: all atom-index lists [[154],...] OR all [x,y] coords; no mix
 #         self.path_extend = False          # toggle: extend ends to first local cell wall
@@ -575,23 +785,25 @@
 #         self.cached_path_extend = None
 #         # Registry of (slider, textbox, fmt) for two-way slider<->textbox sync
 #         self._slider_textboxes = []
-# 
+#
 #     def run_interactive(self, grid_res=64, topo_bias=0.2, topo_height=2.5,
 #                         ldos_bias_sign='neg', use_decay=True,
 #                         show_decay_toggle=True, reuse_cache=True,
 #                         line_endpoints=None, marker_positions=None, extra_broadening=None,
-#                         path=None, path_extend=False):
+#                         path=None, path_extend=False, tier3=False, feenstra=False):
 #         if topo_bias is None or topo_bias == 0:
 #             raise ValueError(f"topo_bias must be a nonzero bias voltage in volts; received {topo_bias!r}.")
 #         self.ldos_bias_sign = ldos_bias_sign
 #         self.use_decay = use_decay
+#         self.tier3 = bool(tier3)          # Tier 3 decay (frozen-bias topography, signed I(V)-column display); needs use_decay
+#         self.feenstra = bool(feenstra)    # the display divided by I/V (Tier 3 only; display only, like 'Norm')
 #         self.reuse_cache = reuse_cache
 #         self.show_decay_toggle = bool(show_decay_toggle)
 #         if line_endpoints is not None:
 #             self.p1, self.p2 = np.array(line_endpoints[0], dtype=float), np.array(line_endpoints[1], dtype=float)
 #         elif self.p1 is None:
 #             self.p1, self.p2 = np.array([0.0, 0.0]), self.lv[0, :2] + self.lv[1, :2]
-# 
+#
 #         if marker_positions is not None:
 #             self.marker_coords = [list(pt) for pt in marker_positions]
 #             v = self.p2 - self.p1
@@ -602,7 +814,7 @@
 #                 self.marker_ratios = list(np.linspace(0.1, 0.9, len(marker_positions)))
 #         self.global_topo_bias = topo_bias
 #         self.topo_height = topo_height
-# 
+#
 #         # --- Path mode seeding ---
 #         self.path_extend = path_extend
 #         if path is not None:
@@ -624,10 +836,10 @@
 #             self.path_nodes = [np.array([0.0, 0.0]),
 #                                0.5 * (self.lv[0, :2] + self.lv[1, :2]),
 #                                self.lv[0, :2] + self.lv[1, :2]]
-# 
+#
 #         # --- Tip-height slider range: 0 .. (cell-top Z minus highest atom Z) ---
 #         self.tip_height_max = float(self.lv[2, 2] - self.z_highest_atom)
-# 
+#
 #         # Initialize extra broadening
 #         self.extra_broadening = {t: 0.0 for t in self.atomtypes}
 #         if extra_broadening is not None:
@@ -635,7 +847,7 @@
 #                 if t in self.extra_broadening:
 #                     self.extra_broadening[t] = sigma
 #         self._apply_extra_broadening()
-# 
+#
 #         print("\n--- Phase 1: Global Topography Pre-Calculation ---")
 #         grid_xy = (np.meshgrid(np.linspace(0, 1, grid_res), np.linspace(0, 1, grid_res))[0].ravel()[:, None] * self.lv[0, :2]) + \
 #                   (np.meshgrid(np.linspace(0, 1, grid_res), np.linspace(0, 1, grid_res))[1].ravel()[:, None] * self.lv[1, :2])
@@ -649,15 +861,13 @@
 #             z_map_gpu = cp.array(self.current_z_map, dtype=cp.float32)
 #         else:
 #             print(f"[*] Cache not found. Calculating Global Topography: {cache_name}")
-#             ld_1, _, init_engs = self._calculate_ldos_at_points_gpu(
+#             dk = self._decay_call_kwargs(frozen_bias=topo_bias)
+#             ld_1, _, init_engs, (I_1, _) = self._calculate_ldos_at_points_gpu(
 #                 cp.hstack([grid_xy_gpu, z_fixed[:, None]]), t_emin, t_emax,
-#                 use_energy_decay=self.use_decay, preserve_orbitals=False, topo_only=True,
-#                 decay_mode='frozen', frozen_bias=topo_bias)
-#             target_setp = cp.max(gpu_simpson(ld_1, init_engs))
+#                 preserve_orbitals=False, topo_only=True, return_current=True, **dk)
+#             target_setp = self._topo_setpoint(ld_1, init_engs, topo_bias, current=I_1)
 #             print(f"[*] Global Setpoint LDOS: {float(target_setp):.6e}")
-#             z_map_gpu = self._converge_tip_height(z_fixed, grid_xy_gpu, t_emin, t_emax, target_setp,
-#                                                   use_decay=self.use_decay,
-#                                                   decay_mode='frozen', frozen_bias=topo_bias)
+#             z_map_gpu = self._converge_tip_height(z_fixed, grid_xy_gpu, t_emin, t_emax, target_setp, **dk)
 #             self.current_z_map = cp.asnumpy(z_map_gpu)
 #             np.save(cache_name, self.current_z_map)
 #         self.grid_xy = grid_xy
@@ -666,7 +876,40 @@
 #         self.fig = plt.figure(figsize=(20, 14))
 #         self._build_ui()
 #         plt.show()
-# 
+#
+#     def _total_current(self, I_1, I_2):
+#         """The signed total current behind a display call (Tier 3): I_up + I_dn
+#         for COLLINEAR_POL, channel 1 otherwise (NCL_SOC's channel 2 is |m|);
+#         None when the call carried no current (every model but 't3')."""
+#         if I_1 is None:
+#             return None
+#         if self.spin_mode == SpinMode.COLLINEAR_POL and I_2 is not None:
+#             return I_1 + I_2
+#         return I_1
+#
+#     def _feenstra_active(self):
+#         """The 'Feenstra' division applies: the box is on and the model is 't3'
+#         (under every other model the box is recorded and inactive)."""
+#         return bool(getattr(self, 'feenstra', False)) and self._effective_decay_model() == 't3'
+#
+#     @staticmethod
+#     def _feenstra_denominator(iv, energies):
+#         """I/V per point and energy from the cached signed current, V the display
+#         grid energy in volts; nothing else (no broadening, no 0 V subtraction, no
+#         interpolation). NaN where V == 0 (I == 0 there by construction)."""
+#         e = np.asarray(energies, dtype=np.float64)
+#         with np.errstate(divide='ignore', invalid='ignore'):
+#             return np.asarray(iv, dtype=np.float64) / e[None, :]
+#
+#     def _apply_feenstra(self, arr, iv, energies):
+#         """`arr` (pts, num_e, ...) divided along its energy axis by the point's
+#         I/V: every partition of a point is divided by the same total I/V, so the
+#         partitions stay additive."""
+#         d = self._feenstra_denominator(iv, energies)
+#         shape = (d.shape[0], d.shape[1]) + (1,) * (np.ndim(arr) - 2)
+#         with np.errstate(divide='ignore', invalid='ignore'):
+#             return np.asarray(arr, dtype=np.float64) / d.reshape(shape)
+#
 #     def _get_partitions(self, f_ldos_raw):
 #         partitions = []
 #         if f_ldos_raw is not None:
@@ -710,21 +953,21 @@
 #                                 orb_data = np.sum(f_ldos_raw[:, :, e_idx, col_idx], axis=2)
 #                                 partitions.append((f"{self.active_element} {orb}", orb_data))
 #         return partitions
-# 
+#
 #     def _build_path_xy(self):
 #         """Build resampled path sample points from the current draggable nodes.
-# 
+#
 #         Reuses only the path logic: indices->XY (done at seed time), optional
 #         directional end-extension to the first local unit-cell wall, and
 #         arc-length resampling to self.npts uniform points.
-# 
+#
 #         Returns (p_xy, p_dist, p_len, verts).
 #         """
 #         verts = [np.asarray(n, dtype=float) for n in self.path_nodes]
-# 
+#
 #         if self.path_extend and len(verts) >= 2:
 #             inv2 = inv(self.lv)[:2, :2]   # 2x2 XY fractional transform
-# 
+#
 #             def _wall_crossing(p0, d):
 #                 # smallest t>0 where ray p0 + t*d crosses a local cell wall
 #                 f0 = p0 @ inv2
@@ -741,14 +984,14 @@
 #                 if not ts:
 #                     return None
 #                 return p0 + min(ts) * d
-# 
+#
 #             start_ext = _wall_crossing(verts[0], verts[0] - verts[1])
 #             end_ext = _wall_crossing(verts[-1], verts[-1] - verts[-2])
 #             if start_ext is not None:
 #                 verts = [start_ext] + verts
 #             if end_ext is not None:
 #                 verts = verts + [end_ext]
-# 
+#
 #         verts = np.array(verts)
 #         seg = np.linalg.norm(np.diff(verts, axis=0), axis=1)
 #         cum = np.concatenate([[0.0], np.cumsum(seg)])
@@ -759,10 +1002,10 @@
 #         p_xy = np.column_stack([px, py])
 #         p_dist = np.linspace(0, p_len, self.npts)
 #         return p_xy, p_dist, p_len, verts
-# 
+#
 #     def _set_textbox_text(self, box, s):
 #         """Set a TextBox's displayed text WITHOUT calling set_val().
-# 
+#
 #         matplotlib's TextBox.set_val() triggers cursor re-rendering
 #         (_rendercursor -> get_window_extent -> fig.dpi), which raises
 #         'NoneType has no attribute dpi' when called re-entrantly from within an
@@ -776,10 +1019,10 @@
 #                 self.fig.canvas.draw_idle()
 #         except Exception:
 #             pass
-# 
+#
 #     def _add_slider_textbox(self, slider, rect, fmt="{:.3f}"):
 #         """Attach an editable text box mirroring a slider's value.
-# 
+#
 #         Two-way: typing a complete number (Enter) clamps to the slider range and
 #         calls slider.set_val (which fires the slider's existing on_changed).
 #         Incomplete/partial input (empty, '-', '+', '.', '-.') is treated as
@@ -792,7 +1035,7 @@
 #             pass
 #         ax_tb = plt.axes(rect)
 #         tb = TextBox(ax_tb, "", initial=fmt.format(slider.val))
-# 
+#
 #         def _submit(text, s=slider, box=tb, f=fmt):
 #             # Guard the whole body so a raised exception can never leave the
 #             # TextBox holding the canvas mouse grab (which would lock out every
@@ -821,11 +1064,11 @@
 #                         cv.release_mouse(box.ax)
 #                 except Exception:
 #                     pass
-# 
+#
 #         tb.on_submit(_submit)
 #         self._slider_textboxes.append((slider, tb, fmt))
 #         return tb
-# 
+#
 #     def _sync_textboxes(self):
 #         """Refresh every slider's text box to reflect the current slider value."""
 #         for s, box, fmt in self._slider_textboxes:
@@ -835,7 +1078,7 @@
 #                     self._set_textbox_text(box, cur)
 #             except Exception:
 #                 pass
-# 
+#
 #     def _layout_bottom_row(self, entries):
 #         """Evenly distribute the active-mode bottom-row sliders across the full
 #         figure width. `entries` is a list of (slider, has_textbox, fmt). Each
@@ -866,10 +1109,10 @@
 #                 self._add_slider_textbox(slider, [sx + sld_w + tb_gap, y0, tb_w, h], fmt=fmt)
 #             else:
 #                 slider.ax.set_position([sx, y0, usable, h])
-# 
+#
 #     def _build_slider_column(self, cell, label, valinit, on_rerun):
 #         """Build a vertical height-slider control as ONE gridspec column.
-# 
+#
 #         `cell` is a SubplotSpec (a single column of the top-row gridspec). The
 #         column is subdivided vertically into slider (top) / textbox (middle) /
 #         Rerun button (bottom), so the whole control is one entity in the grid and
@@ -890,7 +1133,7 @@
 #             pass
 #         ax_tb.set_navigate(False)
 #         tb = TextBox(ax_tb, "", initial="{:.3f}".format(sld.val))
-# 
+#
 #         def _submit(text, s=sld, box=tb, f="{:.3f}"):
 #             try:
 #                 stripped = (text or "").strip()
@@ -912,17 +1155,17 @@
 #                         cv.release_mouse(box.ax)
 #                 except Exception:
 #                     pass
-# 
+#
 #         tb.on_submit(_submit)
 #         self._slider_textboxes.append((sld, tb, "{:.3f}"))
 #         btn = Button(ax_btn, 'Rerun', color='lightgray', hovercolor='lime')
 #         btn.on_clicked(on_rerun)
 #         return sld, tb, btn
-# 
+#
 #     def _disconnect_stale_widgets(self):
 #         """Disconnect canvas event callbacks of all widgets from the PREVIOUS
 #         build before the figure is cleared.
-# 
+#
 #         fig.clf() detaches widget artists (their .figure becomes None) but does
 #         NOT remove the canvas-level event handlers that matplotlib widgets
 #         register (TextBox._click, Slider/Button press handlers, etc.). Those
@@ -953,7 +1196,7 @@
 #                 w.disconnect_events()
 #             except Exception:
 #                 pass
-# 
+#
 #     def _build_ui(self):
 #         # Tear down the previous build's widget event handlers BEFORE clearing the
 #         # figure, so no stale click handler can fire on a detached (figure=None)
@@ -974,19 +1217,36 @@
 #         _radio_labels = ('Single Point', 'Line', 'Path', 'Map')
 #         self.ui_radio = RadioButtons(ax_radio, _radio_labels, active=list(_radio_labels).index(self.mode))
 #         self.ui_radio.on_clicked(self._on_mode_change)
-# 
+#
 #         self.btn_run = Button(plt.axes([0.02, 0.02, 0.05, 0.06]), 'RUN', color='lightgray', hovercolor='lime')
 #         # One list defines every checkbox: label and the attribute it drives.
 #         # CheckButtons construction and the click handler both iterate this list.
+#         # '0-clamp' sits directly under 'Decay' as its sub-option (the occupied-
+#         # side 0-clamp of the decay model, on by default). Its label is indented
+#         # and it stays visible whether or not Decay is on.
+#         # 'Tier 3' sits under '0-clamp' with the same indent: Decay's other
+#         # sub-option (the frozen-bias topography and the signed I(V)-column
+#         # display; the clamp is ignored while it is on). 'Feenstra' follows
+#         # 'Norm': the display divided by I/V, Tier 3 only, display only.
 #         toggle_defs = [('Atoms', 'show_atoms'), ('Decay', 'use_decay'),
-#                        ('Norm', 'normalize'), ('Mag', 'show_mag'),
+#                        ('0-clamp', 't2_clamp'), ('Tier 3', 'tier3'),
+#                        ('Norm', 'normalize'), ('Feenstra', 'feenstra'),
+#                        ('Mag', 'show_mag'),
 #                        ('Cell', 'show_unit_cell'), ('Extend', 'path_extend')]
 #         if not getattr(self, 'show_decay_toggle', True):
-#             toggle_defs = [d for d in toggle_defs if d[0] != 'Decay']
+#             toggle_defs = [d for d in toggle_defs if d[0] not in ('Decay', '0-clamp', 'Tier 3')]
 #         self._toggle_defs = toggle_defs
-#         self.chk = CheckButtons(plt.axes([0.08, 0.02, 0.12, 0.092]),
+#         # The axes grows with the row count so the row spacing stays that of the
+#         # original six-row group (0.092) and seven-row group (0.105).
+#         n_rows = len(toggle_defs)
+#         chk_h = {6: 0.092, 7: 0.105}.get(n_rows, 0.015 * n_rows)
+#         self.chk = CheckButtons(plt.axes([0.08, 0.02, 0.12, chk_h]),
 #                                 [label for label, _ in toggle_defs],
 #                                 [getattr(self, attr) for _, attr in toggle_defs])
+#         # Tab-like indent of the '0-clamp' and 'Tier 3' labels under 'Decay'.
+#         for lbl, (label, _) in zip(self.chk.labels, toggle_defs):
+#             if label in ('0-clamp', 'Tier 3'):
+#                 lbl.set_x(lbl.get_position()[0] + 0.10)
 #         self.s_cell = Slider(plt.axes([0.22, 0.05, 0.1, 0.03]), 'Cells', 0, 4, valinit=self.display_cells, valstep=1)
 #         self.s_emin = Slider(plt.axes([0.50, 0.05, 0.17, 0.02]), 'E Min', -5.0, 5.0, valinit=self.erange[0])
 #         self.s_emax = Slider(plt.axes([0.50, 0.02, 0.17, 0.02]), 'E Max', -5.0, 5.0, valinit=self.erange[1])
@@ -996,7 +1256,7 @@
 #         # (no recompute) on change.
 #         self.s_ldos_gamma = Slider(plt.axes([0.50, 0.08, 0.17, 0.02]), 'LDOS γ', 0.1, 2.0,
 #                                    valinit=self.ldos_gamma, valstep=0.05)
-# 
+#
 #         # Extra Broadening UI. Each σ slider is only VISIBLE when its checkbox is
 #         # checked (toggled live in _on_broadening_change), and is raised above the
 #         # plots in zorder so it is never hidden behind one when shown.
@@ -1021,7 +1281,7 @@
 #             ax_s.set_visible(broad_chk_init[i])
 #             tb.ax.set_visible(broad_chk_init[i])
 #         self.chk_broad.on_clicked(self._on_broadening_change)
-# 
+#
 #         if self.mode == 'Single Point':
 #             # Columns: Global Topo | Topo h | Partitioned LDOS (no LDOS-topo)
 #             self.gs = gridspec.GridSpec(1, 3, width_ratios=[1, 0.22, 1], wspace=0.30)
@@ -1033,7 +1293,7 @@
 #             # Global-topo height slider as its own gridspec column.
 #             self.s_topo_h, _, self.btn_topo_rerun = self._build_slider_column(
 #                 self.gs[0, 1], 'Topo h', self.topo_height, self._on_topo_height_rerun)
-# 
+#
 #         elif self.mode in ('Line', 'Path'):
 #             self.gs = gridspec.GridSpec(3, 1, height_ratios=[1, 1, 0.15], hspace=0.35)
 #             # Top row columns: Global Topo | Topo h | LDOS h | (LDOS-topo cluster).
@@ -1071,7 +1331,7 @@
 #                 self.top_gs[1], 'Topo h', self.topo_height, self._on_topo_height_rerun)
 #             self.s_ldos_h, _, self.btn_ldos_rerun = self._build_slider_column(
 #                 self.top_gs[2], 'LDOS h', self.ldos_height, self._on_ldos_height_rerun)
-# 
+#
 #         elif self.mode == 'Map':
 #             # Top row columns: Global Topo | Topo h | LDOS h | Map Topo | Part. LDOS
 #             # Bottom row spans all columns. Topo plots keep set_aspect('equal') so
@@ -1093,7 +1353,7 @@
 #                 self.gs[0, 1], 'Topo h', self.topo_height, self._on_topo_height_rerun)
 #             self.s_ldos_h, _, self.btn_ldos_rerun = self._build_slider_column(
 #                 self.gs[0, 2], 'LDOS h', self.ldos_height, self._on_ldos_height_rerun)
-# 
+#
 #         self.fig.canvas.mpl_connect('pick_event', self._on_pick)
 #         self.fig.canvas.mpl_connect('motion_notify_event', self._on_motion)
 #         self.fig.canvas.mpl_connect('button_release_event', self._on_rel)
@@ -1105,7 +1365,7 @@
 #         # Gamma only re-colors the heatmaps; the cache logic skips recompute since
 #         # gamma touches none of the needs_* conditions, so _on_ui_change is cheap.
 #         self.s_ldos_gamma.on_changed(self._on_ui_change)
-# 
+#
 #         # Evenly distribute the bottom-row sliders active in THIS mode across the
 #         # full figure width, each with an adjacent (non-overlapping) text box.
 #         # Order is left-to-right. Only widgets that exist for the current mode
@@ -1120,19 +1380,19 @@
 #         bottom_entries.append((self.s_emax, True, "{:.3f}"))
 #         bottom_entries.append((self.s_ldos_gamma, True, "{:.2f}"))
 #         self._layout_bottom_row(bottom_entries)
-# 
+#
 #         self.cached_emin, self.cached_emax = None, None
 #         self._update_all(full_refresh=True)
-# 
+#
 #     # ---- The remaining UI callbacks and _update_all are character-identical ----
 #     # ---- to the original, except show_mag display logic uses the new helpers ----
-# 
+#
 #     def _on_mode_change(self, label):
 #         self.mode = label
 #         self.active_marker_idx = 0
 #         self.plot_level = 0
 #         self._build_ui()
-# 
+#
 #     def _toggle_run(self, event):
 #         self.is_running = not self.is_running
 #         self.btn_run.label.set_text('STOP' if self.is_running else 'RUN')
@@ -1160,7 +1420,7 @@
 #                 print("\n--- Marker Positions (copy-paste into run_interactive) ---")
 #                 pos_str = ", ".join(f"[{p[0]:.6f}, {p[1]:.6f}]" for p in self.marker_coords)
 #                 print(f"marker_positions=[{pos_str}]")
-# 
+#
 #     def _recompute_global_topo(self):
 #         """Re-run Phase 1 global topography with current broadened DOS (cache-aware)."""
 #         grid_res = int(np.sqrt(len(self.grid_xy)))
@@ -1172,19 +1432,17 @@
 #             print(f"[*] Calculating Global Topography with broadening: {cache_name}")
 #             t_emin, t_emax = sorted([0.0, self.global_topo_bias])
 #             z_fixed = cp.full(self.grid_xy_gpu.shape[0], self.z_highest_atom + self.topo_height, dtype=cp.float32)
-#             ld_1, _, init_engs = self._calculate_ldos_at_points_gpu(
+#             dk = self._decay_call_kwargs(frozen_bias=self.global_topo_bias)
+#             ld_1, _, init_engs, (I_1, _) = self._calculate_ldos_at_points_gpu(
 #                 cp.hstack([self.grid_xy_gpu, z_fixed[:, None]]), t_emin, t_emax,
-#                 use_energy_decay=self.use_decay, preserve_orbitals=False, topo_only=True,
-#                 decay_mode='frozen', frozen_bias=self.global_topo_bias)
-#             target_setp = cp.max(gpu_simpson(ld_1, init_engs))
+#                 preserve_orbitals=False, topo_only=True, return_current=True, **dk)
+#             target_setp = self._topo_setpoint(ld_1, init_engs, self.global_topo_bias, current=I_1)
 #             print(f"[*] Global Setpoint LDOS: {float(target_setp):.6e}")
-#             z_map_gpu = self._converge_tip_height(z_fixed, self.grid_xy_gpu, t_emin, t_emax, target_setp,
-#                                                   use_decay=self.use_decay,
-#                                                   decay_mode='frozen', frozen_bias=self.global_topo_bias)
+#             z_map_gpu = self._converge_tip_height(z_fixed, self.grid_xy_gpu, t_emin, t_emax, target_setp, **dk)
 #             self.current_z_map = cp.asnumpy(z_map_gpu)
 #             np.save(cache_name, self.current_z_map)
 #         self.global_z_map = self.current_z_map.copy()
-# 
+#
 #     def _on_topo_height_rerun(self, event):
 #         """Apply the global-topo tip-height slider and recompute the global topo.
 #         Static-label, single-action button. Does nothing unless the main RUN
@@ -1197,7 +1455,7 @@
 #         self._recompute_global_topo()
 #         self._broadening_topo_dirty = False
 #         self._update_all(full_refresh=True)
-# 
+#
 #     def _on_ldos_height_rerun(self, event):
 #         """Apply the LDOS-topo tip-height slider and recompute LDOS topo.
 #         Static-label, single-action button. Does nothing unless the main RUN
@@ -1216,8 +1474,9 @@
 #         self.cached_emin = self.cached_emax = None
 #         self.cached_ld_up = self.cached_ld_dn = None
 #         self.cached_marker_coords = self.cached_spec_ldos = None
+#         self.cached_iv = self.cached_spec_iv = None
 #         self._update_all(full_refresh=True)
-# 
+#
 #     def _on_broadening_change(self, val):
 #         states = self.chk_broad.get_status()
 #         for i, t in enumerate(self.atomtypes):
@@ -1236,14 +1495,18 @@
 #         self.cached_bias_energy_line = self.cached_bias_energy_map = None
 #         self.cached_marker_coords = self.cached_spec_ldos = None
 #         self.cached_ld_up = self.cached_ld_dn = None
+#         self.cached_iv = self.cached_spec_iv = None
 #         self._broadening_topo_dirty = True
 #         if self.is_running:
 #             self._recompute_global_topo()
 #             self._broadening_topo_dirty = False
 #             self._update_all(full_refresh=True)
-# 
+#
 #     def _on_ui_change(self, val):
 #         prev_decay = self.use_decay
+#         prev_clamp = self.t2_clamp
+#         prev_tier3 = self.tier3
+#         prev_feenstra = self.feenstra
 #         prev_path_extend = self.path_extend
 #         states = self.chk.get_status()
 #         for (label, attr), state in zip(self._toggle_defs, states):
@@ -1252,9 +1515,29 @@
 #         if hasattr(self, 's_ldos_gamma'):
 #             self.ldos_gamma = float(self.s_ldos_gamma.val)
 #         self._sync_textboxes()
-# 
-#         # Decay toggle OR path-extend toggle: invalidate caches and recompute.
-#         if (self.use_decay != prev_decay) or (self.path_extend != prev_path_extend):
+#
+#         # 0-clamp toggled while Decay is off, or while Tier 3 is on (the clamp is
+#         # ignored under Tier 3): it only takes effect once it is in force, so
+#         # record the state and do nothing else (no recompute, no redraw).
+#         clamp_changed = (self.t2_clamp != prev_clamp)
+#         if clamp_changed and (not self.use_decay or self.tier3):
+#             return
+#         # Tier 3 toggled while Decay is off: the same, it needs Decay on.
+#         tier3_changed = (self.tier3 != prev_tier3)
+#         if tier3_changed and not self.use_decay:
+#             return
+#         # Feenstra toggled while the model is not Tier 3: recorded, inactive.
+#         feenstra_changed = (self.feenstra != prev_feenstra)
+#         if feenstra_changed and self._effective_decay_model() != 't3':
+#             return
+#
+#         # Decay toggle, 0-clamp toggle (with Decay on, Tier 3 off), Tier 3 toggle
+#         # (with Decay on), or path-extend toggle: invalidate caches and recompute.
+#         # A Feenstra toggle is display only: it falls through to the redraw at the
+#         # end, as 'Norm' does.
+#         decay_model_changed = ((self.use_decay != prev_decay) or (clamp_changed and self.use_decay)
+#                                or (tier3_changed and self.use_decay))
+#         if decay_model_changed or (self.path_extend != prev_path_extend):
 #             self.cached_p1 = self.cached_p2 = None
 #             self.cached_path_nodes = None
 #             self.cached_emin = self.cached_emax = None
@@ -1263,9 +1546,10 @@
 #             self.cached_bias_energy_line = self.cached_bias_energy_map = None
 #             self.cached_marker_coords = self.cached_spec_ldos = None
 #             self.cached_ld_up = self.cached_ld_dn = None
-#             # Only the decay toggle changes the global topo (recompute, or load
-#             # the decay-tagged cache); path-extend does not.
-#             if self.use_decay != prev_decay:
+#             self.cached_iv = self.cached_spec_iv = None
+#             # Only a decay-model change alters the global topo (recompute, or
+#             # load the model-tagged cache); path-extend does not.
+#             if decay_model_changed:
 #                 self._broadening_topo_dirty = True
 #                 if self.is_running:
 #                     self._recompute_global_topo()
@@ -1273,7 +1557,7 @@
 #             if self.is_running:
 #                 self._update_all(full_refresh=True)
 #             return
-# 
+#
 #         # Path Pts slider: adjust number of draggable path nodes.
 #         if self.mode == 'Path' and hasattr(self, 's_path_pts'):
 #             new_nodes = int(self.s_path_pts.val)
@@ -1289,7 +1573,7 @@
 #                 else:
 #                     self.path_nodes = self.path_nodes[:new_nodes]
 #                 self.cached_path_nodes = None
-# 
+#
 #         new_count = int(self.s_num_marks.val)
 #         if self.mode in ('Line', 'Path'):
 #             if new_count != len(self.marker_ratios):
@@ -1306,9 +1590,9 @@
 #                 else:
 #                     self.marker_coords = self.marker_coords[:new_count]
 #                 self.cached_marker_coords = None
-# 
+#
 #         self._update_all(full_refresh=True)
-# 
+#
 #     def _update_all(self, full_refresh=False):
 #         if full_refresh:
 #             self.ax_map.clear()
@@ -1317,7 +1601,7 @@
 #                 self.ax_map_global.clear()
 #             t_ax = self.ax_map_global if self.mode == 'Map' else self.ax_map
 #             z_data = self.global_z_map
-# 
+#
 #             for i in range(-n, n + 1):
 #                 for j in range(-n, n + 1):
 #                     off = i * self.lv[0, :2] + j * self.lv[1, :2]
@@ -1337,7 +1621,7 @@
 #                 t_ax.plot(cell_pts[:, 0], cell_pts[:, 1], color='cyan', lw=2.0, ls='-', zorder=4, label='Unit Cell')
 #                 if self.mode == 'Map':
 #                     self.ax_map.plot(cell_pts[:, 0], cell_pts[:, 1], color='cyan', lw=2.0, ls='-', zorder=4, label='Unit Cell')
-# 
+#
 #             t_ax.set_aspect('equal')
 #             t_ax.set_title(f"Global Topo\nBias: {self.global_topo_bias} V\nHeight: {self.topo_height} Å")
 #             if self.mode == 'Map':
@@ -1350,7 +1634,7 @@
 #                 else:
 #                     self.ax_map.add_collection(self.path_pts)
 #             self.ax_map.add_collection(self.marks)
-# 
+#
 #         if self.mode == 'Line':
 #             v = self.p2 - self.p1
 #             p_len = norm(v)
@@ -1370,49 +1654,48 @@
 #         else:
 #             self.marks.set_offsets(self.marker_coords)
 #             self.marks.set_facecolors(self.m_colors[:len(self.marker_coords)])
-# 
+#
 #         if not self.is_running:
 #             self.fig.canvas.draw_idle()
 #             return
-# 
+#
 #         if getattr(self, '_broadening_topo_dirty', False):
 #             self._recompute_global_topo()
 #             self._broadening_topo_dirty = False
 #             self._update_all(full_refresh=True)
 #             return
-# 
+#
 #         bias_e = self.s_emin.val if str(self.ldos_bias_sign).lower() in ['neg', '-', 'negative'] else self.s_emax.val
 #         nepts = int(self.s_nepts.val) if hasattr(self, 's_nepts') else None
-#         needs_topo = ((self.mode == 'Line' and (self.cached_p1 is None or not np.array_equal(self.p1, self.cached_p1) or not np.array_equal(self.p2, self.cached_p2) or self.cached_bias_energy_line != bias_e or self.cached_d_topo_line != self.use_decay)) or
-#                       (self.mode == 'Path' and (self.cached_path_nodes is None or not np.array_equal(np.array(self.path_nodes), self.cached_path_nodes) or self.cached_path_extend != self.path_extend or self.cached_bias_energy_line != bias_e or self.cached_d_topo_line != self.use_decay)) or
-#                       (self.mode == 'Map' and (self.cached_bias_energy_map != bias_e or self.cached_d_topo_map != self.use_decay)))
+#         decay_model = self._effective_decay_model()
+#         needs_topo = ((self.mode == 'Line' and (self.cached_p1 is None or not np.array_equal(self.p1, self.cached_p1) or not np.array_equal(self.p2, self.cached_p2) or self.cached_bias_energy_line != bias_e or self.cached_d_topo_line != decay_model)) or
+#                       (self.mode == 'Path' and (self.cached_path_nodes is None or not np.array_equal(np.array(self.path_nodes), self.cached_path_nodes) or self.cached_path_extend != self.path_extend or self.cached_bias_energy_line != bias_e or self.cached_d_topo_line != decay_model)) or
+#                       (self.mode == 'Map' and (self.cached_bias_energy_map != bias_e or self.cached_d_topo_map != decay_model)))
 #         needs_ldos = (needs_topo or self.cached_emin != self.s_emin.val or self.cached_emax != self.s_emax.val or
-#                       self.cached_d_ldos != self.use_decay or getattr(self, 'cached_mode', None) != self.mode or
+#                       self.cached_d_ldos != decay_model or getattr(self, 'cached_mode', None) != self.mode or
 #                       (self.mode == 'Map' and self.cached_nepts != nepts))
 #         needs_spec = (needs_ldos or (self.mode in ['Single Point', 'Map'] and (self.cached_marker_coords is None or not np.array_equal(self.marker_coords, self.cached_marker_coords))))
-# 
+#
 #         if needs_topo:
 #             if bias_e == 0:
 #                 raise ValueError("Stabilization bias is 0: set a nonzero E Min or E Max (per ldos_bias_sign) before the constant-current window can be built.")
 #             if self.mode in ('Line', 'Path'):
 #                 l_emin, l_emax = sorted([0.0, bias_e])
 #                 p_xy_gpu = cp.array(p_xy, dtype=cp.float32)
-#                 ld_1, _, l_engs = self._calculate_ldos_at_points_gpu(
+#                 dk = self._decay_call_kwargs(frozen_bias=bias_e)
+#                 ld_1, _, l_engs, (I_1, _) = self._calculate_ldos_at_points_gpu(
 #                     cp.hstack([p_xy_gpu, cp.full((self.npts, 1), self.z_highest_atom + self.ldos_height, dtype=cp.float32)]),
-#                     l_emin, l_emax, use_energy_decay=self.use_decay, preserve_orbitals=False, topo_only=True,
-#                     decay_mode='frozen', frozen_bias=bias_e)
-#                 target = cp.max(gpu_simpson(ld_1, l_engs))
+#                     l_emin, l_emax, preserve_orbitals=False, topo_only=True, return_current=True, **dk)
+#                 target = self._topo_setpoint(ld_1, l_engs, bias_e, current=I_1)
 #                 print(f"[*] Path Setpoint LDOS: {float(target):.6e}")
-#                 z_line = self._converge_tip_height(cp.full(self.npts, self.z_highest_atom + self.ldos_height, dtype=cp.float32), p_xy_gpu, l_emin, l_emax, target,
-#                                                    use_decay=self.use_decay,
-#                                                    decay_mode='frozen', frozen_bias=bias_e)
+#                 z_line = self._converge_tip_height(cp.full(self.npts, self.z_highest_atom + self.ldos_height, dtype=cp.float32), p_xy_gpu, l_emin, l_emax, target, **dk)
 #                 self.current_z_line = cp.asnumpy(z_line)
 #                 if self.mode == 'Line':
 #                     self.cached_p1, self.cached_p2 = self.p1.copy(), self.p2.copy()
 #                 else:
 #                     self.cached_path_nodes = np.array(self.path_nodes).copy()
 #                     self.cached_path_extend = self.path_extend
-#                 self.cached_bias_energy_line, self.cached_d_topo_line = bias_e, self.use_decay
+#                 self.cached_bias_energy_line, self.cached_d_topo_line = bias_e, decay_model
 #             elif self.mode == 'Map':
 #                 t_emin, t_emax = sorted([0.0, bias_e])
 #                 grid_res = int(np.sqrt(len(self.grid_xy)))
@@ -1423,18 +1706,16 @@
 #                 else:
 #                     print(f"[*] Cache not found. Calculating LDOS Topography: {ldos_cache_name}")
 #                     z_fixed = cp.full(self.grid_xy_gpu.shape[0], self.z_highest_atom + self.ldos_height, dtype=cp.float32)
-#                     ld_1, _, init_engs = self._calculate_ldos_at_points_gpu(
+#                     dk = self._decay_call_kwargs(frozen_bias=bias_e)
+#                     ld_1, _, init_engs, (I_1, _) = self._calculate_ldos_at_points_gpu(
 #                         cp.hstack([self.grid_xy_gpu, z_fixed[:, None]]), t_emin, t_emax,
-#                         use_energy_decay=self.use_decay, preserve_orbitals=False, topo_only=True,
-#                         decay_mode='frozen', frozen_bias=bias_e)
-#                     target_setp = cp.max(gpu_simpson(ld_1, init_engs))
+#                         preserve_orbitals=False, topo_only=True, return_current=True, **dk)
+#                     target_setp = self._topo_setpoint(ld_1, init_engs, bias_e, current=I_1)
 #                     print(f"[*] Map Local Setpoint LDOS: {float(target_setp):.6e}")
-#                     z_map_gpu = self._converge_tip_height(z_fixed, self.grid_xy_gpu, t_emin, t_emax, target_setp,
-#                                                           use_decay=self.use_decay,
-#                                                           decay_mode='frozen', frozen_bias=bias_e)
+#                     z_map_gpu = self._converge_tip_height(z_fixed, self.grid_xy_gpu, t_emin, t_emax, target_setp, **dk)
 #                     self.current_z_map = cp.asnumpy(z_map_gpu)
 #                     np.save(ldos_cache_name, self.current_z_map)
-#                 self.cached_bias_energy_map, self.cached_d_topo_map = bias_e, self.use_decay
+#                 self.cached_bias_energy_map, self.cached_d_topo_map = bias_e, decay_model
 #                 self.ax_map.clear()
 #                 n = int(self.s_cell.val)
 #                 for i in range(-n, n + 1):
@@ -1443,41 +1724,48 @@
 #                         self.ax_map.tricontourf(self.grid_xy[:, 0] + off[0], self.grid_xy[:, 1] + off[1], self.current_z_map, levels=60, cmap=self.cmap_topo, zorder=1)
 #                 self.ax_map.set_aspect('equal')
 #                 self.ax_map.add_collection(self.marks)
-# 
+#
 #         if needs_ldos:
+#             iv_tot = None       # Tier 3: the signed total current behind the display arrays
 #             if self.mode in ('Line', 'Path'):
-#                 ld_up, ld_dn, eg = self._calculate_ldos_at_points_gpu(
+#                 ld_up, ld_dn, eg, (I_1, I_2) = self._calculate_ldos_at_points_gpu(
 #                     np.hstack([p_xy, self.current_z_line[:, None]]),
 #                     self.s_emin.val, self.s_emax.val,
-#                     use_energy_decay=self.use_decay, preserve_orbitals=True)
+#                     preserve_orbitals=True, return_current=True, **self._decay_call_kwargs())
+#                 iv_tot = self._total_current(I_1, I_2)
 #             elif self.mode == 'Map':
 #                 self.map_e_targets = np.linspace(self.s_emin.val, self.s_emax.val, nepts)
 #                 eg = cp.array(self.energies[np.searchsorted(self.energies, self.s_emin.val):np.searchsorted(self.energies, self.s_emax.val, side='right')])
-#                 ld_up_list, ld_dn_list = [], []
+#                 ld_up_list, ld_dn_list, iv_list = [], [], []
 #                 grid_z = cp.hstack([self.grid_xy_gpu, cp.array(self.current_z_map)[:, None]])
 #                 for t_e in self.map_e_targets:
 #                     e_idx = np.searchsorted(self.energies, t_e)
-#                     t_up, t_dn, _ = self._calculate_ldos_at_points_gpu(
+#                     t_up, t_dn, _, (t_I1, t_I2) = self._calculate_ldos_at_points_gpu(
 #                         grid_z, self.energies[e_idx],
 #                         self.energies[min(e_idx + 1, len(self.energies) - 1)] + 1e-6,
-#                         use_energy_decay=self.use_decay, preserve_orbitals=True)
+#                         preserve_orbitals=True, return_current=True, **self._decay_call_kwargs())
 #                     ld_up_list.append(t_up[:, 0:1])
 #                     if t_dn is not None:
 #                         ld_dn_list.append(t_dn[:, 0:1])
+#                     t_I = self._total_current(t_I1, t_I2)
+#                     if t_I is not None:
+#                         iv_list.append(t_I[:, 0:1])
 #                 ld_up = cp.concatenate(ld_up_list, axis=1)
 #                 ld_dn = cp.concatenate(ld_dn_list, axis=1) if ld_dn_list else None
+#                 iv_tot = cp.concatenate(iv_list, axis=1) if iv_list else None
 #             else:
 #                 eg = cp.array(self.energies[np.searchsorted(self.energies, self.s_emin.val):np.searchsorted(self.energies, self.s_emax.val, side='right')])
 #                 ld_up, ld_dn = None, None
-# 
+#
 #             if ld_up is not None:
 #                 self.cached_ld_up = cp.asnumpy(ld_up)
 #                 self.cached_ld_dn = cp.asnumpy(ld_dn) if ld_dn is not None else None
+#                 self.cached_iv = cp.asnumpy(iv_tot) if iv_tot is not None else None
 #             self.cached_eg = cp.asnumpy(eg)
 #             self.cached_emin, self.cached_emax = self.s_emin.val, self.s_emax.val
-#             self.cached_d_ldos, self.cached_nepts = self.use_decay, nepts
+#             self.cached_d_ldos, self.cached_nepts = decay_model, nepts
 #             self.cached_mode = self.mode
-# 
+#
 #         if needs_spec and self.mode in ['Single Point', 'Map']:
 #             m_coords = np.array(self.marker_coords)
 #             z_marks = []
@@ -1490,64 +1778,78 @@
 #                 dist_sq = (self.grid_xy[:, 0] - wrapped_pt[0]) ** 2 + (self.grid_xy[:, 1] - wrapped_pt[1]) ** 2
 #                 z_marks.append(self.current_z_map[np.argmin(dist_sq)])
 #             z_marks = np.array(z_marks)
-# 
+#
 #             pt_gpu = cp.array(np.hstack([m_coords, z_marks[:, None]]), dtype=cp.float32)
-#             s_up, s_dn, _ = self._calculate_ldos_at_points_gpu(
+#             s_up, s_dn, _, (s_I1, s_I2) = self._calculate_ldos_at_points_gpu(
 #                 pt_gpu, self.s_emin.val, self.s_emax.val,
-#                 use_energy_decay=self.use_decay, preserve_orbitals=True)
+#                 preserve_orbitals=True, return_current=True, **self._decay_call_kwargs())
 #             s_up_np = cp.asnumpy(s_up)
 #             s_dn_np = cp.asnumpy(s_dn) if s_dn is not None else None
-# 
+#             s_I = self._total_current(s_I1, s_I2)
+#
 #             spec_ldos = self._combine_ldos_display(s_up_np, s_dn_np, self.show_mag)
 #             self.cached_spec_ldos = spec_ldos
+#             self.cached_spec_iv = cp.asnumpy(s_I) if s_I is not None else None
 #             self.cached_marker_coords = np.array(self.marker_coords).copy()
-# 
+#
 #         if self.mode in ['Line', 'Path', 'Map'] and self.cached_ld_up is not None:
 #             f_up = self.cached_ld_up.copy()
 #             f_dn = self.cached_ld_dn.copy() if self.cached_ld_dn is not None else None
 #             f_ldos_raw = self._combine_ldos_display(f_up, f_dn, self.show_mag)
+#             if self._feenstra_active() and self.cached_iv is not None:
+#                 # 'Feenstra' (Tier 3, display only): every partition of a point divided
+#                 # by that point's I/V at each energy. 'Norm', when also on, then acts on
+#                 # the ratio below, as it acts on the LDOS today.
+#                 f_ldos_raw = self._apply_feenstra(
+#                     f_ldos_raw, self.cached_iv,
+#                     self.map_e_targets if self.mode == 'Map' else self.cached_eg)
 #             partitions = self._get_partitions(f_ldos_raw)
 #         else:
 #             f_ldos_raw = None
 #             partitions = []
-# 
+#
+#         # The marker spectra for display: the ratio under 'Feenstra', else as cached.
+#         spec_disp = self.cached_spec_ldos
+#         if spec_disp is not None and self._feenstra_active() and self.cached_spec_iv is not None:
+#             spec_disp = self._apply_feenstra(spec_disp, self.cached_spec_iv, self.cached_eg)
+#
 #         # --- Determine whether mag data is signed (for colormap selection) ---
 #         mag_signed = self._mag_is_signed()
 #         has_mag = self._has_mag_channel()
 #         use_diverging = self.show_mag and has_mag and mag_signed
-# 
+#
 #         if self.mode in ('Line', 'Path'):
 #             active_idx = int(self.marker_ratios[min(self.active_marker_idx, len(self.marker_ratios) - 1)] * (self.npts - 1))
 #             active_ldos = f_ldos_raw[active_idx] if f_ldos_raw is not None else np.zeros_like(self.cached_spec_ldos[0])
 #         else:
 #             active_idx = min(self.active_marker_idx, len(self.marker_coords) - 1)
-#             active_ldos = self.cached_spec_ldos[active_idx]
-# 
+#             active_ldos = spec_disp[active_idx]
+#
 #         self.ax_spec.clear()
-# 
+#
 #         def _orbit_base(orb):
 #             if orb.endswith('_up'):
 #                 return orb[:-3]
 #             elif orb.endswith('_down'):
 #                 return orb[:-5]
 #             return orb
-# 
+#
 #         def _lighten_color(color, amount=0.3):
 #             c = mc.to_rgb(color)
 #             h, l, s = colorsys.rgb_to_hls(*c)
 #             return colorsys.hls_to_rgb(h, min(1, l + amount * (1 - l)), s)
-# 
+#
 #         unique_bases = sorted(set(_orbit_base(o) for o in self.orbitals))
 #         styles = ['-', '--', ':', '-.'] + [(0, (3 + i, 2)) for i in range(max(0, len(unique_bases) - 4))]
 #         linestyle_map = dict(zip(unique_bases, styles))
 #         S = 0.25
-# 
+#
 #         active_ldos_norm = active_ldos.copy()
 #         if self.normalize:
 #             total_for_norm = np.sum(active_ldos_norm, axis=(1, 2))
 #             norm_factor = (simpson(total_for_norm, x=self.cached_eg) + 1e-15)
 #             active_ldos_norm /= norm_factor
-# 
+#
 #         if self.plot_level == 0:
 #             if self.mode in ('Line', 'Path'):
 #                 for i, r in enumerate(self.marker_ratios):
@@ -1560,7 +1862,7 @@
 #                     self.ax_spec.plot(self.cached_eg, t_y, color=color, lw=2.5, picker=True, pickradius=5, label=f'marker_{i}')
 #             else:
 #                 for i, pt in enumerate(self.marker_coords):
-#                     c_ldos = self.cached_spec_ldos[i].copy()
+#                     c_ldos = spec_disp[i].copy()
 #                     t_y = np.sum(c_ldos, axis=(1, 2))
 #                     if self.normalize:
 #                         t_y /= (simpson(t_y, x=self.cached_eg) + 1e-15)
@@ -1621,23 +1923,26 @@
 #             leg1 = self.ax_spec.legend([Line2D([0], [0], color=self._type_color_map.get(t, 'grey'), lw=2) for t in self.atomtypes], self.atomtypes, title="Atom Types", loc='upper right', frameon=False)
 #             self.ax_spec.add_artist(leg1)
 #             self.ax_spec.legend([Line2D([0], [0], color='black', linestyle=linestyle_map[b], lw=1.5) for b in unique_bases], unique_bases, title="Orbitals", loc='upper left', frameon=False)
-# 
+#
 #         lines = self.ax_spec.get_lines()
-#         active_maxes = [np.max(l.get_ydata()) for l in lines if l.get_visible() and l.get_alpha() == 1.0]
+#         _ymax = np.nanmax if self._feenstra_active() else np.max     # the ratio is NaN at a grid point exactly at 0 V
+#         active_maxes = [_ymax(l.get_ydata()) for l in lines if l.get_visible() and l.get_alpha() == 1.0]
 #         if active_maxes:
 #             self.ax_spec.set_ylim(0, max(active_maxes) * 1.1)
-# 
+#
 #         p_dist_val = p_dist[active_idx] if self.mode in ('Line', 'Path') else f"[{self.marker_coords[active_idx][0]:.1f}, {self.marker_coords[active_idx][1]:.1f}]"
 #         self.ax_spec.set(title=f"Partitioned LDOS (Marker {self.active_marker_idx}: {p_dist_val} Å)", xlabel="Energy (eV)")
+#         if self._feenstra_active():
+#             self.ax_spec.set_ylabel("(dI/dV)/(I/V)")
 #         if self.mode in ('Line', 'Path'):
 #             self.ax_spec.set_box_aspect(1)
-# 
+#
 #         if self.mode == 'Map':
 #             if not hasattr(self, 'map_e_targets') or len(self.map_e_targets) != nepts or full_refresh:
 #                 self.map_e_targets = np.linspace(self.s_emin.val, self.s_emax.val, nepts)
 #             for i, e_val in enumerate(self.map_e_targets):
 #                 self.ax_spec.axvline(x=e_val, color='black', linestyle='-', lw=2, picker=5, label=f'emarker_{i}')
-# 
+#
 #         if self.mode in ('Line', 'Path'):
 #             if hasattr(self, 'line_decomp_axes'):
 #                 for ax in self.line_decomp_axes:
@@ -1658,16 +1963,16 @@
 #                 self.cax = None
 #             import matplotlib.ticker as ticker
 #             self.line_decomp_axes = []
-# 
+#
 #             processed_partitions = []
 #             global_vmax = 0.0
-# 
+#
 #             if self.normalize and f_ldos_raw is not None:
 #                 total_ldos_line = np.sum(f_ldos_raw, axis=(2, 3))
 #                 norm_denom_line = simpson(total_ldos_line, x=self.cached_eg, axis=1)[:, None] + 1e-15
 #             else:
 #                 norm_denom_line = 1.0
-# 
+#
 #             for p_label, p_data in partitions:
 #                 t_data = p_data.copy()
 #                 if self.normalize:
@@ -1678,7 +1983,7 @@
 #                     global_vmax = v_max
 #             if global_vmax == 0:
 #                 global_vmax = 1e-15
-# 
+#
 #             num_p = max(1, len(partitions))
 #             # In Line mode the cluster leads with the 'Topo' box + spacer columns
 #             # (offset 3) then stripe at index 2. In Path mode the 'Topo' box is
@@ -1699,21 +2004,21 @@
 #                 lgs = gridspec.GridSpecFromSubplotSpec(1, 2 + num_p * 3, subplot_spec=self.top_gs[3], width_ratios=w_ratios, wspace=0.0)
 #                 stripe_idx = 0
 #                 decomp_base = 2
-# 
+#
 #             if self.mode == 'Line':
 #                 # Line Topo panel (the unwrapped 'Topo' corridor) — Line mode only.
 #                 self.ax_line_topo = self.fig.add_subplot(lgs[0])
 #                 self.line_decomp_axes.append(self.ax_line_topo)
-# 
+#
 #                 ax_spacer = self.fig.add_subplot(lgs[1])
 #                 ax_spacer.axis('off')
 #                 self.line_decomp_axes.append(ax_spacer)
-# 
+#
 #                 v_line = self.p2 - self.p1
 #                 v_hat = v_line / p_len
 #                 v_perp = np.array([-v_hat[1], v_hat[0]])
 #                 half_w = p_len / 2.0
-# 
+#
 #                 n_tile = max(int(self.s_cell.val), 1) + 1
 #                 margin = p_len * 0.15
 #                 all_rx, all_ry, all_z = [], [], []
@@ -1731,7 +2036,7 @@
 #                         all_z.append(self.global_z_map[mask])
 #                 all_rx, all_ry, all_z = np.concatenate(all_rx), np.concatenate(all_ry), np.concatenate(all_z)
 #                 self.ax_line_topo.tricontourf(all_rx, all_ry, all_z, levels=60, cmap=self.cmap_topo, zorder=1)
-# 
+#
 #                 if self.show_atoms:
 #                     tr = np.repeat(self.atomtypes, self.atomnums)
 #                     for t_idx, t_name in enumerate(self.atomtypes):
@@ -1749,15 +2054,15 @@
 #                                 a_ry_all.append(a_ry[vis])
 #                         if a_rx_all:
 #                             self.ax_line_topo.scatter(np.concatenate(a_rx_all), np.concatenate(a_ry_all), s=10, color=plt.cm.tab10(t_idx / 10), alpha=0.3, zorder=2)
-# 
+#
 #                 self.ax_line_topo.plot([0, 0], [0, p_len], color='red', ls='--', lw=2.0, zorder=6)
 #                 self.ax_line_topo.scatter([0], [0], c='white', edgecolors='red', s=60, zorder=8)
 #                 self.ax_line_topo.scatter([0], [p_len], c='white', edgecolors='red', s=60, zorder=8)
-# 
+#
 #                 for i, r in enumerate(self.marker_ratios):
 #                     color = self.m_colors[i % len(self.m_colors)]
 #                     self.ax_line_topo.scatter([0], [r * p_len], c=color, edgecolors='black', s=80, zorder=10)
-# 
+#
 #                 self.ax_line_topo.set_xlim(-half_w, half_w)
 #                 self.ax_line_topo.set_ylim(0, p_len)
 #                 self.ax_line_topo.set_box_aspect(1)
@@ -1766,7 +2071,7 @@
 #                 self.ax_line_topo.set_title("Topo", fontsize=10)
 #             else:
 #                 self.ax_line_topo = None
-# 
+#
 #             # Topo stripe
 #             self.ax_stripe = self.fig.add_subplot(lgs[stripe_idx])
 #             self.line_decomp_axes.append(self.ax_stripe)
@@ -1781,33 +2086,36 @@
 #             self.ax_stripe.set_xticks([])
 #             self.ax_prof.plot(p_dist, self.current_z_line, 'k-', lw=1.5)
 #             self.ax_prof.set(ylabel="Height (Å)", title="Tip Height", xlabel="Dist (Å)")
-# 
+#
+#             first_ax_l = None
 #             for p_idx, (p_label, t_data) in enumerate(processed_partitions):
 #                 ax_l = self.fig.add_subplot(lgs[decomp_base + p_idx * 3])
 #                 cax_l = self.fig.add_subplot(lgs[decomp_base + 1 + p_idx * 3])
 #                 self.line_decomp_axes.extend([ax_l, cax_l])
-# 
+#                 if p_idx == 0:
+#                     first_ax_l = ax_l
+#
 #                 v_max = np.max(np.abs(t_data)) if self.show_dcmp_norm else global_vmax
 #                 if v_max == 0:
 #                     v_max = 1e-15
-# 
+#
 #                 if use_diverging:
 #                     mesh = ax_l.pcolormesh(self.cached_eg, p_dist, t_data, cmap='bwr', shading='auto', vmin=-v_max, vmax=v_max)
 #                 elif self.show_mag and has_mag:
 #                     # NCL: |m| is non-negative, use sequential colormap
 #                     mesh = ax_l.pcolormesh(self.cached_eg, p_dist, t_data, cmap='hot', shading='auto', norm=mc.PowerNorm(self.ldos_gamma, vmin=0, vmax=v_max))
 #                 else:
-#                     mesh = ax_l.pcolormesh(self.cached_eg, p_dist, t_data, cmap='jet', shading='auto', norm=mc.PowerNorm(self.ldos_gamma, vmin=0, vmax=v_max))
-# 
+#                     mesh = ax_l.pcolormesh(self.cached_eg, p_dist, t_data, cmap='nipy_spectral', shading='auto', norm=mc.PowerNorm(self.ldos_gamma, vmin=0, vmax=v_max))
+#
 #                 ax_l.set_box_aspect(1)
 #                 ax_l.set_anchor('W')
-# 
+#
 #                 if self.plot_level >= 3:
 #                     ax_l.set_title(p_label.split()[-1], fontsize=10)
 #                 else:
 #                     ax_l.set_title(f"LDOS: {p_label}", fontsize=10)
 #                 ax_l.set_yticks([])
-# 
+#
 #                 if self.show_dcmp_norm or p_idx == num_p - 1:
 #                     cb = self.fig.colorbar(mesh, cax=cax_l)
 #                     exp = int(np.floor(np.log10(v_max)))
@@ -1816,7 +2124,7 @@
 #                 else:
 #                     cax_l.axis('off')
 #                 cax_l.set_anchor('W')
-# 
+#
 #                 for i, r in enumerate(self.marker_ratios):
 #                     idx = int(r * (self.npts - 1))
 #                     color = self.m_colors[i % len(self.m_colors)]
@@ -1825,13 +2133,27 @@
 #                     ax_l.axhline(y=p_dist[idx], color=color, ls='--', lw=2, alpha=0.7, picker=5, label=f'marker_{i}')
 #                     if p_idx == 0:
 #                         self.ax_stripe.axhline(y=p_dist[idx], color=color, ls='--', lw=2, alpha=0.7, picker=5, label=f'marker_{i}')
-# 
+#
+#             # Keep the topo stripe the same rendered height as the LDOS heatmap at
+#             # any window size. The heatmaps carry set_box_aspect(1), so their box
+#             # shrinks with the window aspect, while the stripe has no aspect and
+#             # would otherwise fill the whole gridspec cell height. The locator is
+#             # re-evaluated on every draw (so it follows resizes): the stripe keeps
+#             # its own x/width and takes the first heatmap's y0/height.
+#             if first_ax_l is not None:
+#                 def _stripe_locator(ax, renderer, heat=first_ax_l):
+#                     heat.apply_aspect()
+#                     hp = heat.get_position(original=False)
+#                     sp = ax.get_position(original=True)
+#                     return mtransforms.Bbox.from_bounds(sp.x0, hp.y0, sp.width, hp.height)
+#                 self.ax_stripe.set_axes_locator(_stripe_locator)
+#
 #             if self.plot_level >= 3:
 #                 ax_super = self.fig.add_subplot(self.top_gs[3])
 #                 ax_super.axis('off')
 #                 ax_super.set_title(f"LDOS: {self.active_element}", fontsize=12, pad=20)
 #                 self.line_decomp_axes.append(ax_super)
-# 
+#
 #         elif self.mode == 'Map':
 #             num_p = max(1, len(partitions))
 #             h_topo = max(1.0, 3.5 - float(num_p))
@@ -1839,7 +2161,7 @@
 #             self.ax_map_global.set_subplotspec(self.gs[0, 0])
 #             self.ax_map.set_subplotspec(self.gs[0, 3])
 #             self.ax_spec.set_subplotspec(self.gs[0, 4])
-# 
+#
 #             if len(self.map_axes) != nepts * num_p or full_refresh:
 #                 if getattr(self, 'cax_list', None):
 #                     for cax in self.cax_list:
@@ -1859,11 +2181,11 @@
 #                         self.cax_list.append(self.fig.add_subplot(sub_gs[r, nepts]))
 #                 if not self.show_dcmp_norm:
 #                     self.cax_list.append(self.fig.add_subplot(sub_gs[:, nepts]))
-# 
+#
 #             if not hasattr(self, 'map_e_targets') or len(self.map_e_targets) != nepts or full_refresh:
 #                 self.map_e_targets = np.linspace(self.s_emin.val, self.s_emax.val, nepts)
 #             m_coords_np = np.array(self.marker_coords)
-# 
+#
 #             processed_partitions = []
 #             global_vmax = 0.0
 #             if self.normalize and f_ldos_raw is not None:
@@ -1872,7 +2194,7 @@
 #                 norm_denom_map = simpson(total_ldos_map[:, s_idx], x=self.map_e_targets[s_idx], axis=1)[:, None] + 1e-15
 #             else:
 #                 norm_denom_map = 1.0
-# 
+#
 #             for p_label, p_data in partitions:
 #                 t_data = p_data.copy()
 #                 if self.normalize:
@@ -1884,7 +2206,7 @@
 #                     global_vmax = v_max
 #             if global_vmax == 0:
 #                 global_vmax = 1e-15
-# 
+#
 #             import matplotlib.ticker as ticker
 #             for p_idx, (p_label, t_data) in enumerate(processed_partitions):
 #                 v_max = np.max(np.abs(t_data)) if self.show_dcmp_norm else global_vmax
@@ -1902,7 +2224,7 @@
 #                             elif self.show_mag and has_mag:
 #                                 mesh = ax.tricontourf(self.grid_xy[:, 0] + off[0], self.grid_xy[:, 1] + off[1], slice_data, levels=40, cmap='hot', norm=mc.PowerNorm(self.ldos_gamma, vmin=0, vmax=v_max))
 #                             else:
-#                                 mesh = ax.tricontourf(self.grid_xy[:, 0] + off[0], self.grid_xy[:, 1] + off[1], slice_data, levels=40, cmap='jet', norm=mc.PowerNorm(self.ldos_gamma, vmin=0, vmax=v_max))
+#                                 mesh = ax.tricontourf(self.grid_xy[:, 0] + off[0], self.grid_xy[:, 1] + off[1], slice_data, levels=40, cmap='nipy_spectral', norm=mc.PowerNorm(self.ldos_gamma, vmin=0, vmax=v_max))
 #                     ax.scatter(m_coords_np[:, 0], m_coords_np[:, 1], color=self.m_colors[:len(m_coords_np)], s=30, edgecolors='white', zorder=5)
 #                     title_str = f"E = {target_e:.3f} eV" if p_idx == 0 else ""
 #                     if self.plot_level >= 3:
@@ -1915,11 +2237,11 @@
 #                     ax.set_aspect('equal')
 #                     ax.set_xticks([])
 #                     ax.set_yticks([])
-# 
+#
 #                 if self.show_dcmp_norm:
 #                     cax = self.cax_list[p_idx]
 #                     cax.clear()
-#                     cmap_choice = 'bwr' if use_diverging else ('hot' if (self.show_mag and has_mag) else 'jet')
+#                     cmap_choice = 'bwr' if use_diverging else ('hot' if (self.show_mag and has_mag) else 'nipy_spectral')
 #                     norm_choice = mc.Normalize(vmin=-v_max, vmax=v_max) if use_diverging else mc.Normalize(vmin=0, vmax=v_max)
 #                     sm = plt.cm.ScalarMappable(cmap=cmap_choice, norm=norm_choice)
 #                     sm.set_array([])
@@ -1927,11 +2249,11 @@
 #                     exp = int(np.floor(np.log10(v_max)))
 #                     cb.ax.yaxis.set_major_formatter(ticker.FuncFormatter(lambda x, pos, e=exp: f"{x / (10 ** e):.1f}"))
 #                     cax.set_title(f"1e{exp}", fontsize=10)
-# 
+#
 #             if not self.show_dcmp_norm and len(processed_partitions) > 0:
 #                 cax = self.cax_list[0]
 #                 cax.clear()
-#                 cmap_choice = 'bwr' if use_diverging else ('hot' if (self.show_mag and has_mag) else 'jet')
+#                 cmap_choice = 'bwr' if use_diverging else ('hot' if (self.show_mag and has_mag) else 'nipy_spectral')
 #                 norm_choice = mc.Normalize(vmin=-global_vmax, vmax=global_vmax) if use_diverging else mc.Normalize(vmin=0, vmax=global_vmax)
 #                 sm = plt.cm.ScalarMappable(cmap=cmap_choice, norm=norm_choice)
 #                 sm.set_array([])
@@ -1939,29 +2261,31 @@
 #                 exp = int(np.floor(np.log10(global_vmax)))
 #                 cb.ax.yaxis.set_major_formatter(ticker.FuncFormatter(lambda x, pos, e=exp: f"{x / (10 ** e):.1f}"))
 #                 cax.set_title(f"1e{exp}", fontsize=10)
-# 
+#
 #             if self.plot_level >= 3:
 #                 ax_super = self.fig.add_subplot(self.gs[1, :])
 #                 ax_super.axis('off')
 #                 ax_super.set_title(f"LDOS: {self.active_element}", fontsize=12, pad=25)
 #                 self.map_axes.append(ax_super)
-# 
+#
 #         self.fig.canvas.draw_idle()
-# 
+#
 #     def _redraw_map_slice(self, i):
 #         target_e = self.map_e_targets[i]
 #         f_up = self.cached_ld_up.copy()
 #         f_dn = self.cached_ld_dn.copy() if self.cached_ld_dn is not None else None
 #         f_ldos_raw = self._combine_ldos_display(f_up, f_dn, self.show_mag)
+#         if self._feenstra_active() and self.cached_iv is not None:
+#             f_ldos_raw = self._apply_feenstra(f_ldos_raw, self.cached_iv, self.map_e_targets)
 #         partitions = self._get_partitions(f_ldos_raw)
-# 
+#
 #         mag_signed = self._mag_is_signed()
 #         has_mag = self._has_mag_channel()
 #         use_diverging = self.show_mag and has_mag and mag_signed
-# 
+#
 #         m_coords_np = np.array(self.marker_coords)
 #         nepts = len(self.map_e_targets)
-# 
+#
 #         processed_partitions = []
 #         global_vmax = 0.0
 #         if self.normalize and f_ldos_raw is not None:
@@ -1970,7 +2294,7 @@
 #             norm_denom_map = simpson(total_ldos_map[:, s_idx], x=self.map_e_targets[s_idx], axis=1)[:, None] + 1e-15
 #         else:
 #             norm_denom_map = 1.0
-# 
+#
 #         for p_label, p_data in partitions:
 #             t_data = p_data.copy()
 #             if self.normalize:
@@ -1982,7 +2306,7 @@
 #                 global_vmax = v_max
 #         if global_vmax == 0:
 #             global_vmax = 1e-15
-# 
+#
 #         for p_idx, (p_label, t_data) in enumerate(processed_partitions):
 #             ax = self.map_axes[p_idx * nepts + i]
 #             ax.clear()
@@ -1998,7 +2322,7 @@
 #                     elif self.show_mag and has_mag:
 #                         ax.tricontourf(self.grid_xy[:, 0] + off[0], self.grid_xy[:, 1] + off[1], slice_data, levels=40, cmap='hot', norm=mc.PowerNorm(self.ldos_gamma, vmin=0, vmax=v_max))
 #                     else:
-#                         ax.tricontourf(self.grid_xy[:, 0] + off[0], self.grid_xy[:, 1] + off[1], slice_data, levels=40, cmap='jet', norm=mc.PowerNorm(self.ldos_gamma, vmin=0, vmax=v_max))
+#                         ax.tricontourf(self.grid_xy[:, 0] + off[0], self.grid_xy[:, 1] + off[1], slice_data, levels=40, cmap='nipy_spectral', norm=mc.PowerNorm(self.ldos_gamma, vmin=0, vmax=v_max))
 #             ax.scatter(m_coords_np[:, 0], m_coords_np[:, 1], color=self.m_colors[:len(m_coords_np)], s=30, edgecolors='white', zorder=5)
 #             title_str = f"E = {target_e:.3f} eV" if p_idx == 0 else ""
 #             if self.plot_level >= 3:
@@ -2011,7 +2335,7 @@
 #             ax.set_aspect('equal')
 #             ax.set_xticks([])
 #             ax.set_yticks([])
-# 
+#
 #     def _on_pick(self, event):
 #         if event.artist == getattr(self, 'ends', None) and self.mode == 'Line':
 #             self.active_obj = ('end', event.ind[0])
@@ -2043,7 +2367,7 @@
 #             self.active_obj = ('mark_dynamic', int(event.artist.get_label().split('_')[1]))
 #             self.active_marker_idx = int(event.artist.get_label().split('_')[1])
 #             self._update_all()
-# 
+#
 #     def _on_press(self, event):
 #         if event.inaxes == self.ax_spec:
 #             if self.fig.canvas.manager.toolbar.mode == "" and not event.dblclick:
@@ -2052,7 +2376,7 @@
 #                     self.plot_level = max(0, self.plot_level - 1)
 #         if self.fig.canvas.manager.toolbar.mode == "":
 #             self._update_all()
-# 
+#
 #     def _get_element_by_index_helper(self, a):
 #         curr = 0
 #         for idx, count in enumerate(self.atomnums):
@@ -2060,7 +2384,7 @@
 #                 return self.atomtypes[idx]
 #             curr += count
 #         return 'grey'
-# 
+#
 #     def _on_motion(self, event):
 #         if self.active_obj is None or event.xdata is None:
 #             return
@@ -2071,7 +2395,7 @@
 #             _, _, p_len, _ = self._build_path_xy()
 #         else:
 #             p_len = 1.0
-# 
+#
 #         if t_obj == 'end' and self.mode == 'Line':
 #             if idx == 0:
 #                 self.p1 = np.array([event.xdata, event.ydata])
@@ -2108,7 +2432,7 @@
 #             self.fig.canvas.draw_idle()
 #             return
 #         self._update_all()
-# 
+#
 #     def _on_rel(self, event):
 #         if self.active_obj is not None and self.active_obj[0] == 'emarker':
 #             idx = self.active_obj[1]
@@ -2118,13 +2442,16 @@
 #             if e_idx >= len(self.energies):
 #                 e_idx = len(self.energies) - 1
 #             grid_z = cp.hstack([self.grid_xy_gpu, cp.array(self.current_z_map)[:, None]])
-#             t_up, t_dn, _ = self._calculate_ldos_at_points_gpu(
+#             t_up, t_dn, _, (t_I1, t_I2) = self._calculate_ldos_at_points_gpu(
 #                 grid_z, self.energies[e_idx],
 #                 self.energies[min(e_idx + 1, len(self.energies) - 1)] + 1e-6,
-#                 use_energy_decay=self.use_decay, preserve_orbitals=True)
+#                 preserve_orbitals=True, return_current=True, **self._decay_call_kwargs())
 #             self.cached_ld_up[:, idx:idx + 1] = cp.asnumpy(t_up[:, 0:1])
 #             if t_dn is not None and self.cached_ld_dn is not None:
 #                 self.cached_ld_dn[:, idx:idx + 1] = cp.asnumpy(t_dn[:, 0:1])
+#             t_I = self._total_current(t_I1, t_I2)
+#             if t_I is not None and self.cached_iv is not None:
+#                 self.cached_iv[:, idx:idx + 1] = cp.asnumpy(t_I[:, 0:1])
 #             self._redraw_map_slice(idx)
 #             self.fig.canvas.draw_idle()
 #         self.active_obj = None
