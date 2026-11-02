@@ -53,18 +53,29 @@ slower has failed.
    the shared drawing functions.
 10. **Comments name the rule they follow, and the README stays current.** Every layout block
     carries a comment such as `# automatic layout: the one rule for every window`.
-11. **Panels know their shape; the window arranges itself.** A spatial panel's cell tells the
-    layout the height its x:y ratio needs for the width it is given (Qt's height-for-width), so a
-    row of panels is exactly as tall as its spatial panels ask, the curve panels and colour bars
-    of that row fill that height, and no row leaves an empty band above or below its panels.
-    Given more room, the panels grow until their widths fill the row; given less, they shrink
-    together. The main panel of a window (the one the user works in: a map where markers are
-    dragged) takes the largest size its ratio allows and its arrangement follows its shape:
-    taller than wide, it stands at the left with the other panels at its right; wider than tall,
-    it lies across the top with the other panels below; the arrangement is chosen again on every
-    resize and whenever the data's shape changes. The window opens filling the screen's available
-    area when it is a working window, and in every case sizes itself to its panels (shorter when
-    the panels are limited by the width, narrower when they are limited by the height).
+11. **Panels know their shape; the window arranges itself.** Every plotted panel is a first-class
+    citizen: the plots fill the window, a spatial panel keeps its x:y ratio, no plotted panel is
+    ever shrunk to make room for another, and what the layout minimizes is the blank space and the
+    controls' footprint. A spatial panel's cell tells the layout the height its ratio needs for
+    the width it is given (Qt's height-for-width), so a row of panels is exactly as tall as its
+    spatial panels ask, the curve panels and colour bars of that row fill that height, and no row
+    leaves an empty band above or below its panels; given more room the panels grow until their
+    widths fill the row, given less they shrink together. The window's shaped groups (a map with
+    its boxes, a row of heatmaps, a block of energy maps) and its curve panels are arranged by one
+    rule: every candidate arrangement (the groups in one row across the top with the curves below,
+    one group at the left and the other over the curves at its right, one across the top and the
+    other beside the curves below it, both stacked at the left with the curves at the right, the
+    three side by side, the three stacked) is sized at the window's size, each group as large as
+    its ratio allows in its region and the curves keeping a readable share, and the arrangement
+    with the best score is taken: the smallest group's scale (its size against the size it would
+    have alone in the window) less the blank fraction, so that no group is squeezed for another
+    and blank space costs. A block of equal maps wraps into the rows that make the maps largest.
+    The arrangement is chosen again on every resize, every rebuild and whenever a panel's shape
+    changes, a crop included: cropping the map the user works in to a tall strip turns the layout
+    tall, to a wide strip wide. The window opens filling the screen's available area when it is a
+    working window, and in every case trims the blank strips at its edges that no panel reaches
+    (shorter when the panels are limited by the width, narrower when they are limited by the
+    height).
 
 ## 2. The architecture
 
@@ -99,10 +110,12 @@ answers the layout's height-for-width question from that ratio plus the room of 
 title, and tells the layout again whenever the ratio changes (new limits, new data). In an
 aligned row (`fig.align_row`, a colour bar beside a panel) the room counted is the row's: the
 boxes of a row lie in one band, below the tallest title and above the deepest x axis, so a
-panel's shape is its box's in that band. A row of
-cells (`PanelRow`) sizes its shaped cells from the row's height and gives the free cells the
-rest; a column of such rows gives every row the height it asks for. That is all a window has to
-know: it puts cells in rows, and the rows and the window follow the panels.
+panel's shape is its box's in that band (a control box over a member counts: the band starts
+under it). A row of cells (`PanelRow`) sizes its shaped cells from the row's height and gives the
+free cells the rest; a column of such rows gives every row the height it asks for; an
+`Arrangement` places the shaped groups and the curve panels by the score of rule 11. That is all
+a window has to know: it names its shaped groups and its curve panels, and the arrangement, the
+rows and the window follow the panels.
 
 ## 3. The anatomy of a window
 
@@ -114,12 +127,13 @@ From top to bottom:
 2. **The canvas, holding the window's one layout:**
    1. **Top row.** The window's own name or title, its mode controls, and the pipeline box at the
       right.
-   2. **Panel grid.** Rows of cells (`PanelRow`s), or two panes when the window has a main panel
-      (`OrientedPanes`: the main panel's pane and the pane of the other panels, oriented by the
-      main panel's shape). A colour bar or ramp is a narrow cell beside its panel. A control that
-      belongs to one panel sits directly under it (or over it: a tip-height box over its
-      topography), centred on the panel's box. A box that rides along a cursor sits in a band
-      beside the panel.
+   2. **Panel grid.** Rows of cells (`PanelRow`s); a window with spatial groups and curve panels
+      arranges them with `Arrangement` (rule 11: the groups as large as their shapes allow, the
+      curves in the room left, the blank space minimized; `OrientedPanes` is the one-group case).
+      A colour bar or ramp is a narrow cell beside its panel. A control that belongs to one panel
+      sits directly under it (or over it: a tip-height box over its topography), centred on the
+      panel's box. A box that rides along a cursor sits in a band beside the panel (`RideBand`; a
+      `CropPanel` is a panel with its boxes above and its cursor bands).
    3. **Control strip.** Groups of controls in box frames, left to right in the old program's
       order. The strip wraps onto more rows in a narrow window.
    4. **Text panels.** Help text and readouts, each scrolling inside itself.
@@ -193,7 +207,12 @@ cell moves or resizes.
 |---|---|
 | A panel | `cell = fig.cell()`, then `fig.add_axes(cell=cell)` |
 | A row of panels sized by their shapes | `row = qtplot.PanelRow()`, `row.addWidget(cell, stretch)` (a free panel's stretch is its share of the width); `qtplot.RowWidget(row)` makes a row one shaped item of a row or pane above it |
-| The main panel's pane, oriented by its shape | `controls.OrientedPanes(main, rest, main_share=0.6)`: `main` a shaped widget (a cell, a `PanelWithBox`, a `RowWidget`), `rest` the widget holding the other panels; `.orientation`, `.rearrange()`, `.fit_delta()` (what the window can lose beside the main pane) |
+| The shaped groups and the curve panels arranged by rule 11 | `controls.Arrangement([group, group], free, free_share=0.22)`: the groups shaped widgets (a `CropPanel` or `PanelWithBox`, a `RowWidget`, a `MapBlock`, a `Titled` group), `free` the widget of the curve panels (a cell, a `FlipBox`); `.layout_name`, `.scales()`, `.blank_fraction()`, `.explain()`, `.rearrange()`, `.fit_delta()` |
+| One main panel and the rest | `controls.OrientedPanes(main, rest, main_share=0.6)`: the one-group case; `.orientation`, `.rearrange()`, `.fit_delta()` |
+| Curve panels beside or over each other by their room | `controls.FlipBox((cell, stretch), ...)`: a row when wider than tall, a column when taller |
+| A block of equal maps that wraps | `controls.MapBlock(fig)`, `block.set_groups([(cells, bar_or_None), ...], shared_bar=None)`: the maps per row chosen for the largest maps that fit (`.cols`) |
+| A label over a group | `controls.Titled(group, label)` |
+| The panel the user crops | `controls.CropPanel(ax, cell, *boxes)`: the boxes above, `band_x` over and `band_y` beside the cell for the cursor boxes (`band.add(key, box)`, `band.set_pos(key, px)` from `ax.on_placed`); the cursors are `axvline` / `axhline` with a picker, the shade `axvspan` / `axhspan` |
 | A control box over one panel | `controls.PanelWithBox(ax, cell, box)` (the box centred over the panel's box, the pair one shaped item; over a narrow `inner_w` cell the pair is a fixed-width item as wide as the wider of the two); `controls.AbovePanel(ax, *items)` alone for the centring |
 | The window sized to its panels | `fig.fit_window()` (done at the first show and after every resize; call it after the panels were rebuilt): a window of shaped rows loses the height its rows do not need, or width when the rows are limited by the height; a window with `OrientedPanes` loses what the panes report (`fit_delta`); `plt.figure(figsize=DESIGN, fill_screen=True)` opens a working window on the screen's available area |
 | A colour bar or ramp | `fig.cell(inner_w=px)`: as wide as the bar plus its ticks and title |
@@ -396,8 +415,11 @@ information panel into a file search.
 8. **Shorten the titles** and send the details to the information panel.
 9. **Do the performance pass** of section 7.
 10. **Do the shape pass** of rule 11: every spatial panel's cell shaped, every row a `PanelRow`,
-    the main panel in `OrientedPanes`, the boxes that belong to a panel over or under it, the
-    window fitted; render the window at several shapes and look for empty bands.
+    the shaped groups and the curve panels in an `Arrangement` (a block of equal maps a `MapBlock`,
+    curve panels a `FlipBox`), the boxes that belong to a panel over or under it, the panel the
+    user crops a `CropPanel` with its cursors, the window fitted; render the window at several
+    shapes and with a tall and a wide data set, read the arrangement's scales and blank fraction,
+    and look for empty bands.
 11. **Convert every other window and every standalone drawing** the same way.
 12. **Verify** with section 11 before calling it done.
 13. **Update the comments and the README.**
@@ -431,8 +453,11 @@ Adapt the control table and the shared groups to the new program, and keep the r
 | The window freezes while files load | Reading on the main thread | Worker processes with a timer placing results |
 | Dragging lags behind the mouse | Every motion event redraws | Coalesce motion and redraw on idle |
 | Empty bands above and below a row of square panels | The grid gives the row a share of the height by stretch; the panels keep their ratio inside a cell too tall for their width | The cells report height-for-width and the row is a `PanelRow` (rule 11) |
-| A tall unit cell's map is a small panel in a wide window | The map sits in a row across the window; its height is bounded by the row | `OrientedPanes`: the map stands at the left with the window's full height when it is taller than wide |
-| A curve panel shrinks to the height of the small map beside it | Rule 7 applied to a row the map does not dominate | The map in its own pane (`OrientedPanes`); the curve panels fill the other pane |
+| A tall unit cell's map is a small panel in a wide window | The map sits in a row across the window; its height is bounded by the row | `Arrangement`: the map stands at the left with the window's full height when it is taller than wide |
+| A curve panel shrinks to the height of the small map beside it | Rule 7 applied to a row the map does not dominate | The map a shaped group of the `Arrangement`; the curve panels fill the room left |
+| The heatmaps come out as small as a control box while one map fills the window | One panel was maximized and the others left the remainder | Every plotted panel is a group of the `Arrangement`; the score (the smallest group's scale less the blank) keeps them all large |
+| Five wide maps in one row are tiny in a wide, short region | A fixed grid of one row per partition | `MapBlock`: the maps wrap into the rows that make them largest |
+| A cropped map keeps the old layout | The crop changed the limits but not the shape the layout saw | `set_xlim` / `set_ylim` announce the new shape; the arrangement follows (a tall crop, a tall layout) |
 
 ## 11. Verifying a conversion
 
@@ -440,9 +465,11 @@ Adapt the control table and the shared groups to the new program, and keep the r
    Look for overlap, cut text and empty frames.
    Measure every row's empty band (the row's height less the tallest panel box in it, beyond the
    ticks and title) and the window's fit (its natural height against its height): both within a
-   few pixels (rule 11). For a window with a main panel, check that the arrangement flips with
-   the panel's shape (a tall and a wide synthetic data set) and that the main panel's box fills
-   its pane.
+   few pixels (rule 11). For a window with shaped groups, check with a tall and a wide synthetic
+   data set that the arrangement follows the shapes, that its blank fraction is small (the
+   simulator's check asks for less than 15 %) and that no group is below about half of its size
+   alone (`Arrangement.scales()`), that every box sits above the panel it belongs to, and that a
+   crop of the working panel changes the arrangement.
 2. **Check no text is cut:** every label's text width fits its widget at each size.
 3. **Check overlap:** no two control rectangles intersect, and no control enters a panel's box.
 4. **Check the numbers** against the old program on the same files.

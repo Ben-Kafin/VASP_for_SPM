@@ -622,7 +622,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         self.grid_xy = grid_xy
         self.global_z_map = self.current_z_map.copy()
         self.grid_xy_gpu = grid_xy_gpu
-        self.fig = plt.figure(figsize=DESIGN)
+        self.fig = plt.figure(figsize=DESIGN, fill_screen=True)   # opened on the screen; the panes then size it (rule 11)
         self._make_controls()
         self._build_ui()
         plt.show()
@@ -784,6 +784,28 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         self.btn_ldos_rerun.on_change(self._on_ldos_height_rerun)
         self._box_topo_h = controls.box(self.s_topo_h, self.btn_topo_rerun, orient='v', title='Topo h')
         self._box_ldos_h = controls.box(self.s_ldos_h, self.btn_ldos_rerun, orient='v', title='LDOS h')
+        # The crop of the placement topo (the topo with the atom overlays where the markers, line ends
+        # and path nodes are placed), as the sm4_Browser Line window crops its heatmap: two draggable
+        # cursors per axis, the area outside each pair shaded, a box riding with each cursor in a band
+        # above (x) and right of (y) the panel, 'Crop' applying the ranges between the cursors as the
+        # panel's limits and 'Uncrop' restoring the full extent.  A crop changes the panel's shape, so
+        # the arrangement and the window follow it (rule 11).
+        self.btn_crop = controls.make(fig, 'Crop')
+        self.btn_crop.on_change(self._on_crop)
+        self.btn_uncrop = controls.make(fig, 'Uncrop')
+        self.btn_uncrop.on_change(self._on_uncrop)
+        self._box_crop = controls.box(self.btn_crop, self.btn_uncrop, orient='v', title='crop')
+        self._cursor_boxes = {}
+        for axis in ('x', 'y'):
+            for k, part in enumerate(('lo', 'hi')):
+                box = controls.make(fig, f'{axis} {part}', value='')
+                box.on_change(lambda text, axis=axis, k=k: self._on_cursor_box(axis, k, text))
+                self._cursor_boxes[(axis, k)] = box
+        self.crop_x = self.crop_y = None           # the applied crop, (lo, hi) Å per axis; None = the full extent of the drawn cells
+        self._cursors = None                       # {'x': [lo, hi], 'y': [lo, hi]}, set at the first draw
+        self._cursor_artists, self._shade_artists = [], []
+        self._crop_ax = None                       # the placement topo's axes (the cursors live on it)
+        self._crop_panel = None                    # its CropPanel (the bands the boxes ride in)
         # The label over the Line / Path cluster and the Map rows ('LDOS', or 'LDOS: <element>' at the atom levels).
         self._cluster_label = controls.Label(fig, text='LDOS', fs=10)
 
@@ -803,7 +825,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
             controls.box(self.btn_run, self.chk))
         left_w = controls.widget_of(self._left_column)
         left_w.setSizePolicy(QtWidgets.QSizePolicy.Policy.Fixed, QtWidgets.QSizePolicy.Policy.Preferred)
-        self._panel_area = QtWidgets.QVBoxLayout()         # the panels of the view (_build_ui fills it)
+        self._panel_area = QtWidgets.QVBoxLayout()         # the view's arrangement (controls.Arrangement; _build_ui fills it)
         self._panel_area.setContentsMargins(0, 0, 0, 0)
         self._panel_area.setSpacing(6)
         main = QtWidgets.QHBoxLayout()
@@ -828,8 +850,10 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         for w in self._extra_boxes:
             self._hook_layout.addWidget(w)
         self._panel_cells = []
-        self._cluster_grid = None
-        self._map_grid = None
+        self._arrangement = None                           # the view's controls.Arrangement (the shaped groups and the curve panels)
+        self._cluster_row = None                           # Line / Path: the heatmap row's PanelRow (rebuilt per refresh)
+        self._map_block = None                             # Map: the energy maps' wrapping block (controls.MapBlock)
+        self._map_cells = []                               # Map: the cells in the block (rebuilt when the counts change)
         self.line_decomp_axes = []
         self.map_axes = []
         self.cax_list = []
@@ -861,13 +885,57 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         self._panel_cells.append(cell)
         return self.fig.add_axes(cell=cell)
 
-    def _grid_panel(self, grid, row, col, stretch=1, inner_w=None, rowspan=1):
-        """A panel in a grid layout at (row, col): a new cell (a colour bar's cell when inner_w), its axes returned (automatic layout)."""
+    def _pair(self, box, inner_w=None):
+        """
+        A new panel with the control box `box` above it (controls.PanelWithBox: the box belongs to
+        the panel and is sized with it, never between panels; rule 11 of the guide): (axes, pair).
+        A narrow cell (inner_w: the Path stripe) makes the pair a fixed-width item of its row.
+        """
         cell = self.fig.cell(inner_w=inner_w)
-        grid.addWidget(cell, row, col, rowspan, 1)
-        grid.setColumnStretch(col, 0 if inner_w is not None else stretch)
         self._panel_cells.append(cell)
-        return self.fig.add_axes(cell=cell)
+        ax = self.fig.add_axes(cell=cell)
+        pair = controls.PanelWithBox(ax, cell, box)
+        box.show()                                 # detached (hidden) since the last build
+        return ax, pair
+
+    def _panel_with_box(self, layout, box, stretch=1, inner_w=None):
+        """A panel with its control box above it (_pair) added to a row with `stretch`, its axes returned."""
+        ax, pair = self._pair(box, inner_w=inner_w)
+        layout.addWidget(pair, 0 if inner_w is not None else stretch)
+        return ax
+
+    def _placement(self):
+        """
+        The placement topo in its crop panel (controls.CropPanel): the Topo h box and the Crop /
+        Uncrop buttons above it, the x-cursor boxes riding in the band under them, the y-cursor
+        boxes in the band at its right; (axes, panel).  The boxes follow the panel wherever it is
+        placed (Axes.on_placed).
+        """
+        cell = self.fig.cell()
+        self._panel_cells.append(cell)
+        ax = self.fig.add_axes(cell=cell)
+        panel = controls.CropPanel(ax, cell, self._box_topo_h, self._box_crop)
+        self._box_topo_h.show()
+        self._box_crop.show()
+        for (axis, k), box in self._cursor_boxes.items():
+            (panel.band_x if axis == 'x' else panel.band_y).add((axis, k), box)
+        ax.on_placed(self._place_cursor_boxes)
+        self._crop_ax, self._crop_panel = ax, panel
+        return ax, panel
+
+    def _cell_axes(self):
+        """A free panel on its own (the curve panels the arrangement gives the remaining room): (axes, cell)."""
+        cell = self.fig.cell()
+        self._panel_cells.append(cell)
+        return self.fig.add_axes(cell=cell), cell
+
+    @staticmethod
+    def _detach(*widgets):
+        """The reused widgets (the tip-height boxes, the cluster's label) taken out of the pair or layout about to be deleted: hidden and parentless until the next build puts them back and shows them."""
+        for w in widgets:
+            if w is not None:
+                w.hide()
+                w.setParent(None)
 
     @staticmethod
     def _empty_layout(lay, keep=()):
@@ -887,10 +955,10 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
                 sub.deleteLater()
 
     def _kept_widgets(self):
-        return (self._box_topo_h, self._box_ldos_h, self._cluster_label.qt)
+        return (self._box_topo_h, self._box_ldos_h, self._cluster_label.qt, self._box_crop) + tuple(b.qt for b in self._cursor_boxes.values())
 
     def _clear_cluster(self):
-        """The Line / Path cluster's axes removed and its grid emptied (it is rebuilt per refresh)."""
+        """The Line / Path cluster's axes removed and its row emptied (it is rebuilt per refresh); the LDOS h box detached from its pair first."""
         for ax in list(self.line_decomp_axes):
             if ax in self.fig.axes:
                 ax.remove()
@@ -900,37 +968,58 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
             if ax is not None and ax in self.fig.axes:
                 ax.remove()
             setattr(self, name, None)
-        self._empty_layout(self._cluster_grid, self._kept_widgets())
+        self._detach(self._box_ldos_h)
+        self._empty_layout(self._cluster_row, self._kept_widgets())
 
-    def _clear_map_grid(self):
-        """The Map rows' axes removed and their grid emptied (they are rebuilt when the counts change)."""
+    def _clear_map_rows(self):
+        """The Map rows' axes removed and their cells deleted out of the block (they are rebuilt when the counts change)."""
         for ax in list(self.map_axes) + list(getattr(self, 'cax_list', None) or []):
             if ax in self.fig.axes:
                 ax.remove()
         self.map_axes = []
         self.cax_list = []
-        self._empty_layout(self._map_grid, self._kept_widgets())
+        for c in self._map_cells:
+            c.setParent(None)
+            c.deleteLater()
+        self._map_cells = []
+        if self._map_block is not None:
+            self._map_block.set_groups([], None)
 
     def _clear_panels(self):
-        """Every panel of the view removed: its axes, its cells and the layouts of the panel area; the reused boxes detached."""
+        """Every panel of the view removed: its axes, its cells, the panes of the panel area; the reused boxes and label detached first."""
         self._clear_cluster()
-        self._clear_map_grid()
+        self._clear_map_rows()
         for ax in list(self.fig.axes):
             ax.remove()
+        self._detach(*self._kept_widgets())
         self._empty_layout(self._panel_area, self._kept_widgets())
+        self._arrangement = None
+        self._crop_ax = self._crop_panel = None
+        self._cursor_artists, self._shade_artists = [], []
         self._panel_cells = []
-        self._cluster_grid = None
-        self._map_grid = None
+        self._cluster_row = None
+        self._map_block = None
+        self._map_cells = []
         if getattr(self, 'cursor', None) is not None:
             self.cursor.remove()
             self.cursor = None
 
     def _build_ui(self):
         """
-        The panels of the current view built as cells of the panel area, the controls of the view
-        shown and the others hidden, then _update_all(full_refresh=True).  Called at the first
-        show and on every view change; the controls themselves are made once (_make_controls).
-        automatic layout: the one rule for every window (nothing placed by hand).
+        The panels of the current view arranged by the one rule (controls.Arrangement; rule 11 of
+        the guide as the owner stated it: every plotted panel is a first-class citizen, the plots
+        fill the window, spatial panels keep their ratio, no plotted panel is shrunk to make room,
+        blank space and the controls' footprint are what is minimized).  The shaped groups of a
+        view: the placement topo in its crop panel (Topo h, Crop / Uncrop and the cursor boxes
+        above and beside it); in Line / Path the heatmap row (its label over it); in Map the
+        Global Topo and Map Topo pair (their boxes above) and the energy maps' wrapping block.  The
+        curve panels (Tip Height and Partitioned LDOS, beside or over each other by their room;
+        the spectrum alone in Single Point and Map) take the room left.  The arrangement is chosen
+        again and the window trimmed (Figure.fit_window) on every view change, rebuild, crop and
+        resize.  The controls of the view are shown and the others hidden, then
+        _update_all(full_refresh=True).  Called at the first show and on every view change; the
+        controls themselves are made once (_make_controls).  automatic layout: the one rule for
+        every window (nothing placed by hand).
         """
         fig = self.fig
         self._clear_panels()
@@ -943,41 +1032,24 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
             self.s_path_pts.set(len(self.path_nodes))
         if mode == 'Map':
             self.s_nepts.set(5 if self.cached_nepts is None else self.cached_nepts)
-        Align = QtCore.Qt.AlignmentFlag
         if mode == 'Single Point':
-            # Columns: Global Topo | Topo h | Partitioned LDOS (no LDOS-topo)
-            row = QtWidgets.QHBoxLayout()
-            row.setSpacing(10)
-            self.ax_map = self._panel(row, stretch=10)
-            row.addWidget(self._box_topo_h, 0, Align.AlignVCenter)
-            self.ax_spec = self._panel(row, stretch=10)
-            self._panel_area.addLayout(row, 1)
+            # The placement topo; the Partitioned LDOS takes the room left.
+            self.ax_map, topo = self._placement()
+            self.ax_spec, spec_cell = self._cell_axes()
+            groups, free = [topo], spec_cell
             self.marks = self.ax_map.scatter([], [], s=150, edgecolors='black', zorder=15, picker=5)
-            fig.align_row(self.ax_map, self.ax_spec)
         elif mode in ('Line', 'Path'):
-            # Top row: Global Topo | Topo h | LDOS h | the cluster (its label over its grid); bottom
-            # row: the tip-height profile | the spectrum.  The cluster's grid is what _update_all
-            # rebuilds each refresh; the two height boxes are placed once here.
-            top = QtWidgets.QHBoxLayout()
-            top.setSpacing(10)
-            self.ax_map = self._panel(top, stretch=10)
-            top.addWidget(self._box_topo_h, 0, Align.AlignVCenter)
-            top.addWidget(self._box_ldos_h, 0, Align.AlignVCenter)
-            cluster_col = QtWidgets.QVBoxLayout()
-            cluster_col.setContentsMargins(0, 0, 0, 0)
-            cluster_col.setSpacing(2)
-            cluster_col.addWidget(self._cluster_label.qt, 0, Align.AlignHCenter)
-            self._cluster_grid = QtWidgets.QGridLayout()
-            self._cluster_grid.setContentsMargins(0, 0, 0, 0)
-            self._cluster_grid.setHorizontalSpacing(4)
-            cluster_col.addLayout(self._cluster_grid, 1)
-            top.addLayout(cluster_col, 25)
-            bottom = QtWidgets.QHBoxLayout()
-            bottom.setSpacing(10)
-            self.ax_prof = self._panel(bottom, stretch=25)
-            self.ax_spec = self._panel(bottom, stretch=10)
-            self._panel_area.addLayout(top, 1)
-            self._panel_area.addLayout(bottom, 1)
+            # The placement topo; the heatmap row (rebuilt by _update_all each refresh, the LDOS h box
+            # above the Line Topo panel or above the Path stripe) under its label; the Tip Height
+            # profile and the spectrum in the room left, side by side or stacked by that room's shape.
+            self.ax_map, topo = self._placement()
+            self._cluster_row = plt.PanelRow(spacing=4)
+            cluster = controls.Titled(plt.RowWidget(self._cluster_row), self._cluster_label.qt)
+            self.ax_prof, prof_cell = self._cell_axes()
+            self.ax_spec, spec_cell = self._cell_axes()
+            groups, free = [topo, cluster], controls.FlipBox((prof_cell, 25), (spec_cell, 10), spacing=10)
+            # Until RUN builds the row, the LDOS h box stands in it alone: reachable, and between no panels.
+            self._cluster_row.addWidget(self._box_ldos_h, 0)
             self.line_art, = self.ax_map.plot([], [], 'r--', lw=2.5, zorder=5)
             if mode == 'Line':
                 self.ends = self.ax_map.scatter([], [], c='white', edgecolors='red', s=100, zorder=10, picker=5)
@@ -986,38 +1058,198 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
             self.marks = self.ax_map.scatter([], [], s=150, edgecolors='black', zorder=15, picker=5)
             self.ax_line_topo = self.ax_stripe = self.ax_ldos = self.cax = None
         elif mode == 'Map':
-            # Top row: Global Topo | Topo h | LDOS h | Map Topo | Partitioned LDOS; under it the
-            # rows of energy maps (their label over their grid).  The topo panels keep
-            # set_aspect('equal'), so the height boxes do not distort them.
-            top = QtWidgets.QHBoxLayout()
-            top.setSpacing(10)
-            self.ax_map_global = self._panel(top, stretch=10)
-            top.addWidget(self._box_topo_h, 0, Align.AlignVCenter)
-            top.addWidget(self._box_ldos_h, 0, Align.AlignVCenter)
-            self.ax_map = self._panel(top, stretch=10)
-            self.ax_spec = self._panel(top, stretch=40)
-            rows_col = QtWidgets.QVBoxLayout()
-            rows_col.setContentsMargins(0, 0, 0, 0)
-            rows_col.setSpacing(2)
-            rows_col.addWidget(self._cluster_label.qt, 0, Align.AlignHCenter)
-            self._map_grid = QtWidgets.QGridLayout()
-            self._map_grid.setContentsMargins(0, 0, 0, 0)
-            self._map_grid.setHorizontalSpacing(4)
-            self._map_grid.setVerticalSpacing(4)
-            rows_col.addLayout(self._map_grid, 1)
-            self._panel_area.addLayout(top, 25)
-            self._panel_area.addLayout(rows_col, 10)
+            # The Global Topo (the crop panel) and the Map Topo (LDOS h above it) side by side as one
+            # shaped row; the energy maps as a wrapping block under its label (rebuilt by _update_all
+            # when the counts change); the spectrum in the room left.  The topo panels keep
+            # set_aspect('equal') and take the same crop.
+            row = plt.PanelRow(spacing=10)
+            self.ax_map_global, topo = self._placement()
+            row.addWidget(topo, 10)
+            self.ax_map = self._panel_with_box(row, self._box_ldos_h, stretch=10)
+            topos = plt.RowWidget(row)
+            self._map_block = controls.MapBlock(fig, spacing=4)
+            maps = controls.Titled(self._map_block, self._cluster_label.qt)
+            self.ax_spec, spec_cell = self._cell_axes()
+            groups, free = [topos, maps], spec_cell
             self.map_axes = []
             self.cax_list = []
             self.marks = self.ax_map.scatter([], [], s=150, edgecolors='black', zorder=15, picker=5)
-            fig.align_row(self.ax_map_global, self.ax_map, self.ax_spec)
-        self._box_ldos_h.setVisible(mode != 'Single Point')
+            fig.align_row(self.ax_map_global, self.ax_map)
+        self._arrangement = controls.Arrangement(groups, free, spacing=8)
+        self._panel_area.addWidget(self._arrangement, 1)
         self._box_topo_h.setVisible(True)
+        self._box_ldos_h.setVisible(mode != 'Single Point')
         self._cluster_label.show(mode != 'Single Point')
         self._cluster_label.set_text('LDOS')
 
         self.cached_emin, self.cached_emax = None, None
         self._update_all(full_refresh=True)
+        self._rearrange()
+
+    def _rearrange(self):
+        """The arrangement chosen again for the panels as they now are, and the window trimmed to them (rule 11)."""
+        if self._arrangement is not None:
+            self._arrangement.rearrange()
+        self.fig.fit_window()
+
+    # --- the crop of the placement topo (as the sm4_Browser Line window's crop cursors) ---
+
+    CURSOR_COLOR = '#303030'
+    SHADE_COLOR = '#808080'
+    SHADE_ALPHA = 0.45
+
+    def _full_extent(self):
+        """((x lo, x hi), (y lo, y hi)) of the drawn cells: the unit cell at every offset of the Cells count."""
+        n = int(self.s_cell.val) if getattr(self, 's_cell', None) is not None else 0
+        a, b = self.lv[0, :2], self.lv[1, :2]
+        corners = np.array([[0.0, 0.0], a, b, a + b])
+        pts = np.concatenate([corners + np.asarray(off) for off in self._cell_offsets(n)])
+        return (float(pts[:, 0].min()), float(pts[:, 0].max())), (float(pts[:, 1].min()), float(pts[:, 1].max()))
+
+    def _axis_extent(self, axis):
+        """The cursor axis's full range as cropped: the applied crop, else the drawn cells' extent."""
+        rng = self.crop_x if axis == 'x' else self.crop_y
+        if rng is not None:
+            return float(rng[0]), float(rng[1])
+        ex, ey = self._full_extent()
+        return ex if axis == 'x' else ey
+
+    def _reset_cursors(self):
+        """Every cursor at its axis's end (the full ranges as cropped)."""
+        self._cursors = {'x': list(self._axis_extent('x')), 'y': list(self._axis_extent('y'))}
+
+    def _cursor_value(self, axis, k, v):
+        """A value for cursor k (0 the lower, 1 the upper) made valid: inside the axis's extent, the pair keeping 2 % of the extent between them."""
+        lo_ext, hi_ext = self._axis_extent(axis)
+        v = float(np.clip(float(v), lo_ext, hi_ext))
+        other = float(self._cursors[axis][1 - k])
+        gap = 0.02 * max(hi_ext - lo_ext, 1e-9)
+        v = min(v, other - gap) if k == 0 else max(v, other + gap)
+        return float(np.clip(v, lo_ext, hi_ext))
+
+    def _set_cursor(self, axis, k, v):
+        """Cursor k of axis 'x' / 'y' moved to v (made valid); the lines, the shades and the boxes follow."""
+        if self._cursors is None:
+            self._reset_cursors()
+        self._cursors[axis][k] = self._cursor_value(axis, k, v)
+        self._draw_cursors()
+
+    @staticmethod
+    def _cursor_text(v):
+        return f"{v:.2f}"
+
+    def _on_cursor_box(self, axis, k, text):
+        """A cursor's box: the typed value moves the cursor there (made valid); a text that is not a number is reported and the box put back."""
+        try:
+            v = float(str(text).strip())
+            if not np.isfinite(v):
+                raise ValueError("not finite")
+        except ValueError:
+            print(f"{axis} cursor: '{text}' is not a number; the box is put back.")
+            self._place_cursor_boxes()
+            return
+        self._set_cursor(axis, k, v)
+
+    def _draw_cursors(self):
+        """
+        The crop cursors on the placement topo: two vertical lines at the x cursors and two
+        horizontal ones at the y cursors (draggable; a press on one is theirs before any marker's),
+        the grey shade outside each pair, and the boxes riding with them (_place_cursor_boxes).
+        Every cursor is first made valid for the current extent.
+        """
+        ax = self._crop_ax
+        if ax is None or ax not in self.fig.axes:
+            return
+        if self._cursors is None:
+            self._reset_cursors()
+        for axis in ('x', 'y'):
+            for k in (0, 1):
+                self._cursors[axis][k] = self._cursor_value(axis, k, self._cursors[axis][k])
+        for a in self._cursor_artists + self._shade_artists:
+            try:
+                a.remove()
+            except Exception:
+                pass
+        self._cursor_artists, self._shade_artists = [], []
+        for axis in ('x', 'y'):
+            lo_ext, hi_ext = self._axis_extent(axis)
+            lo, hi = self._cursors[axis]
+            span = ax.axvspan if axis == 'x' else ax.axhspan
+            for a, b in ((lo_ext, lo), (hi, hi_ext)):
+                if b > a:
+                    self._shade_artists.append(span(a, b, color=self.SHADE_COLOR, alpha=self.SHADE_ALPHA, zorder=1.5))
+            line = ax.axvline if axis == 'x' else ax.axhline
+            for k, v in enumerate((lo, hi)):
+                self._cursor_artists.append(line(v, color=self.CURSOR_COLOR, ls='-', lw=1.8, alpha=0.9,
+                                                 label=f'_cursor_{axis}_{k}', picker=6, zorder=14))
+        self._place_cursor_boxes()
+        self.fig.canvas.draw_idle()
+
+    def _place_cursor_boxes(self):
+        """The cursor boxes filled and moved onto their cursors: the x ones in the band over the panel, the y ones in the band at its right (controls.RideBand)."""
+        ax, panel = self._crop_ax, self._crop_panel
+        if ax is None or panel is None or self._cursors is None or ax not in self.fig.axes:
+            return
+        x0, y0, w, h = ax._px_rect()
+        xl0, xl1 = ax.get_xlim()
+        yl0, yl1 = ax.get_ylim()
+        for (axis, k), box in self._cursor_boxes.items():
+            v = float(self._cursors[axis][k])
+            box.set(self._cursor_text(v))
+            if axis == 'x':
+                f = (v - xl0) / (xl1 - xl0) if xl1 != xl0 else 0.5
+                panel.band_x.set_pos((axis, k), x0 + w * float(np.clip(f, 0.0, 1.0)))
+            else:
+                f = (v - yl0) / (yl1 - yl0) if yl1 != yl0 else 0.5
+                panel.band_y.set_pos((axis, k), y0 + h * (1.0 - float(np.clip(f, 0.0, 1.0))))
+
+    def _crop_ranges(self):
+        """(x range, y range) the cursors mean for a crop: a pair left at its axis's ends keeps that axis's crop as it is."""
+        out = []
+        for axis in ('x', 'y'):
+            lo_ext, hi_ext = self._axis_extent(axis)
+            lo, hi = self._cursors[axis]
+            tol = 1e-9 * max(abs(hi_ext - lo_ext), 1.0)
+            full = abs(lo - lo_ext) <= tol and abs(hi - hi_ext) <= tol
+            cur = self.crop_x if axis == 'x' else self.crop_y
+            out.append(cur if full else (float(lo), float(hi)))
+        return out[0], out[1]
+
+    def _apply_crop(self):
+        """The placement topo's limits at the applied crop (both axes; the full extent where there is none); in Map the Map Topo takes the same."""
+        (ex, ey) = self._full_extent()
+        x_rng = self.crop_x if self.crop_x is not None else ex
+        y_rng = self.crop_y if self.crop_y is not None else ey
+        axes = [self._crop_ax]
+        if self.mode == 'Map' and getattr(self, 'ax_map', None) is not None:
+            axes.append(self.ax_map)
+        for ax in axes:
+            if ax is not None and ax in self.fig.axes:
+                ax.set_xlim(*x_rng)
+                ax.set_ylim(*y_rng)
+
+    def _on_crop(self, event=None):
+        """'Crop': what lies between the cursors is kept, on both axes; the cursors then sit at the new edges; the arrangement and the window follow the new shape."""
+        if self._crop_ax is None:
+            return
+        if self._cursors is None:
+            self._reset_cursors()
+        self.crop_x, self.crop_y = self._crop_ranges()
+        self._apply_crop()
+        self._reset_cursors()
+        self._draw_cursors()
+        self._rearrange()
+
+    def _on_uncrop(self, event=None):
+        """'Uncrop': the full extent of the drawn cells again, the cursors back at the ends."""
+        if self.crop_x is None and self.crop_y is None:
+            print("Uncrop: nothing is cropped.")
+        self.crop_x = self.crop_y = None
+        if self._crop_ax is not None:
+            self._apply_crop()
+            self._reset_cursors()
+            self._draw_cursors()
+            self._rearrange()
 
     def _draw_map_slice(self, ax, slice_data, v_max, use_diverging, has_mag):
         """One energy map on `ax`: the slice over the 2 x 2 cells drawn (one raster at four offsets), the colour scale of the view."""
@@ -1029,17 +1261,6 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         else:
             ax.tricontourf(self.grid_xy[:, 0], self.grid_xy[:, 1], slice_data, levels=40, cmap='nipy_spectral', norm=plt.PowerNorm(self.ldos_gamma, vmin=0, vmax=v_max), offsets=offs)
         ax.set_aspect('equal')
-        self._pin_limits(ax)
-
-    @staticmethod
-    def _pin_limits(ax):
-        """
-        The limits of a map panel fixed at the extent of what it draws (the autoscaled range),
-        so that its equal aspect shrinks the box to the data's shape (matplotlib's adjustable
-        'box') instead of widening the range to the cell's shape.
-        """
-        ax.set_xlim(*ax.get_xlim())
-        ax.set_ylim(*ax.get_ylim())
 
     def _cell_offsets_2x2(self):
         """The offsets of the 2 x 2 cells an energy map shows (the cell and its three neighbours along +a and +b)."""
@@ -1236,9 +1457,10 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         The window redrawn for its state: the maps (full_refresh), the markers, then, while
         running, the computations the state asks for (needs_topo / needs_ldos / needs_spec, the
         same functions as before) and the panels of the view.  The Line / Path cluster and the Map
-        rows are rebuilt as cells of their own sub-layouts (automatic layout: the one rule for
-        every window); the periodic images of a map are one raster drawn at every cell offset
-        (tricontourf offsets=: moved, never re-imaged).
+        rows are rebuilt as cells of their own PanelRows in the rest pane (automatic layout: the
+        one rule for every window; rule 11: the rows size themselves from the panels), after which
+        the panes are arranged again and the window trimmed; the periodic images of a map are one
+        raster drawn at every cell offset (tricontourf offsets=: moved, never re-imaged).
         """
         if full_refresh:
             self.ax_map.clear()
@@ -1270,11 +1492,9 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
                     self.ax_map.plot(cell_pts[:, 0], cell_pts[:, 1], color='cyan', lw=2.0, ls='-', zorder=4, label='Unit Cell')
 
             t_ax.set_aspect('equal')
-            self._pin_limits(t_ax)
             t_ax.set_title(f"Global Topo: bias {self.global_topo_bias} V, height {self.topo_height} Å")
             if self.mode == 'Map':
                 self.ax_map.set_aspect('equal')
-                self._pin_limits(self.ax_map)
                 self.ax_map.set_title(f"Map Topo: bias {self.s_emin.val if str(self.ldos_bias_sign).lower() in ['neg', '-', 'negative'] else self.s_emax.val} V, height {self.ldos_height} Å")
             if self.mode in ('Line', 'Path'):
                 self.ax_map.add_line(self.line_art)
@@ -1283,6 +1503,9 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
                 else:
                     self.ax_map.add_collection(self.path_pts)
             self.ax_map.add_collection(self.marks)
+            # The crop (the placement topo's limits) and its cursors, drawn afresh on the cleared panel.
+            self._apply_crop()
+            self._draw_cursors()
 
         if self.mode == 'Line':
             v = self.p2 - self.p1
@@ -1371,8 +1594,8 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
                 n = int(self.s_cell.val)
                 self.ax_map.tricontourf(self.grid_xy[:, 0], self.grid_xy[:, 1], self.current_z_map, levels=60, cmap=self.cmap_topo, zorder=1, offsets=self._cell_offsets(n))
                 self.ax_map.set_aspect('equal')
-                self._pin_limits(self.ax_map)
                 self.ax_map.add_collection(self.marks)
+                self._apply_crop()                 # the Map Topo takes the placement topo's crop
 
         if needs_ldos:
             if self.mode in ('Line', 'Path'):
@@ -1562,8 +1785,8 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
 
         p_dist_val = p_dist[active_idx] if self.mode in ('Line', 'Path') else f"[{self.marker_coords[active_idx][0]:.1f}, {self.marker_coords[active_idx][1]:.1f}]"
         self.ax_spec.set(title=f"Partitioned LDOS: marker {self.active_marker_idx} at {p_dist_val} Å", xlabel="Energy (eV)")
-        if self.mode in ('Line', 'Path'):
-            self.ax_spec.set_box_aspect(1)
+        # (The spectrum no longer keeps a square box in Line / Path: a curve panel fills the room the
+        # arrangement gives it, so no blank is left around it; rule 11.)
 
         if self.mode == 'Map':
             if not hasattr(self, 'map_e_targets') or len(self.map_e_targets) != nepts or full_refresh:
@@ -1596,16 +1819,15 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
                 global_vmax = 1e-15
 
             num_p = max(1, len(partitions))
-            # The cluster's cells, left to right (automatic layout: the one rule for every window):
-            # the 'Topo' box (Line only), the tip-height stripe, one heatmap per partition with a
-            # colour bar after each (show_dcmp_norm) or after the last.
-            grid = self._cluster_grid
-            col = 0
+            # The cluster's row, left to right (a PanelRow: its shaped panels share one height; rule
+            # 11): the 'Topo' panel with the LDOS h box above it (Line only), the tip-height stripe
+            # (with the LDOS h box above it in Path), one heatmap per partition with a colour bar
+            # after each (show_dcmp_norm) or after the last.
+            row = self._cluster_row
             if self.mode == 'Line':
-                # Line Topo panel (the unwrapped 'Topo' corridor) — Line mode only.
-                self.ax_line_topo = self._grid_panel(grid, 0, col, stretch=10)
+                # Line Topo panel (the unwrapped 'Topo' corridor) — Line mode only; the LDOS h box above it.
+                self.ax_line_topo = self._panel_with_box(row, self._box_ldos_h, stretch=10)
                 self.line_decomp_axes.append(self.ax_line_topo)
-                col += 1
 
                 v_line = self.p2 - self.p1
                 v_hat = v_line / p_len
@@ -1665,10 +1887,12 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
             else:
                 self.ax_line_topo = None
 
-            # Topo stripe: a narrow cell as wide as its 40-point stroke and its tick axis.
-            self.ax_stripe = self._grid_panel(grid, 0, col, inner_w=58)
+            # Topo stripe: a narrow cell as wide as its 40-point stroke and its tick axis; in Path the LDOS h box above it.
+            if self.mode == 'Path':
+                self.ax_stripe = self._panel_with_box(row, self._box_ldos_h, inner_w=58)
+            else:
+                self.ax_stripe = self._panel(row, inner_w=58)
             self.line_decomp_axes.append(self.ax_stripe)
-            col += 1
             lc = plt.LineCollection(
                 np.array([np.array([np.zeros_like(p_dist), p_dist]).T[:-1],
                           np.array([np.zeros_like(p_dist), p_dist]).T[1:]]).transpose(1, 0, 2),
@@ -1682,14 +1906,12 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
             self.ax_prof.set(ylabel="Height (Å)", title="Tip Height", xlabel="Dist (Å)")
 
             for p_idx, (p_label, t_data) in enumerate(processed_partitions):
-                ax_l = self._grid_panel(grid, 0, col, stretch=10)
+                ax_l = self._panel(row, stretch=10)
                 self.line_decomp_axes.append(ax_l)
-                col += 1
                 cax_l = None
                 if self.show_dcmp_norm or p_idx == num_p - 1:
-                    cax_l = self._grid_panel(grid, 0, col, inner_w=15)
+                    cax_l = self._panel(row, inner_w=15)
                     self.line_decomp_axes.append(cax_l)
-                    col += 1
 
                 v_max = np.max(np.abs(t_data)) if self.show_dcmp_norm else global_vmax
                 if v_max == 0:
@@ -1730,32 +1952,42 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
                     if p_idx == 0:
                         self.ax_stripe.axhline(y=p_dist[idx], color=color, ls='--', lw=2, alpha=0.7, picker=5, label=f'marker_{i}')
 
-            # The top row shares one height (the row rule, Figure.align_row): the stripe and the
+            # The cluster's row shares one height (the row rule, Figure.align_row): the stripe and the
             # colour bars follow the heatmaps' box aspect at any window size.
-            self.fig.align_row(self.ax_map, *self.line_decomp_axes)
+            self.fig.align_row(*self.line_decomp_axes)
             self._cluster_label.set_text(f"LDOS: {self.active_element}" if self.plot_level >= 3 else "LDOS")
+            self._rearrange()                      # the row is new: the arrangement and the window follow (rule 11)
 
         elif self.mode == 'Map':
             num_p = max(1, len(partitions))
-            h_topo = max(1.0, 3.5 - float(num_p))
-            # The top row and the map rows share the height as the old height ratios did.
-            self._panel_area.setStretch(0, int(round(100 * h_topo)))
-            self._panel_area.setStretch(1, int(round(100 * num_p)))
 
             if len(self.map_axes) != nepts * num_p or full_refresh:
-                # The map rows rebuilt as cells of the map grid: num_p rows of nepts maps, a colour
-                # bar cell per row (show_dcmp_norm) or one spanning the rows (automatic layout).
-                self._clear_map_grid()
-                grid = self._map_grid
+                # The map block rebuilt: nepts maps per partition, wrapped into the rows that make
+                # them largest (controls.MapBlock; rule 11), a colour bar cell per partition
+                # (show_dcmp_norm) or one for the whole block (automatic layout).
+                self._clear_map_rows()
+                groups = []
                 for r in range(num_p):
-                    for c in range(nepts):
-                        self.map_axes.append(self._grid_panel(grid, r, c, stretch=10))
+                    cells = []
+                    for _ in range(nepts):
+                        ax_m, cell = self._cell_axes()
+                        self.map_axes.append(ax_m)
+                        cells.append(cell)
+                    bar = None
                     if self.show_dcmp_norm:
-                        self.cax_list.append(self._grid_panel(grid, r, nepts, inner_w=15))
+                        bar = self.fig.cell(inner_w=15)
+                        self._panel_cells.append(bar)
+                        self.cax_list.append(self.fig.add_axes(cell=bar))
+                    groups.append((cells, bar))
+                    self._map_cells += cells + ([bar] if bar is not None else [])
+                shared = None
                 if not self.show_dcmp_norm:
-                    self.cax_list.append(self._grid_panel(grid, 0, nepts, inner_w=15, rowspan=num_p))
-                for r in range(num_p):
-                    self.fig.align_row(*self.map_axes[r * nepts:(r + 1) * nepts])
+                    shared = self.fig.cell(inner_w=15)
+                    self._panel_cells.append(shared)
+                    self.cax_list.append(self.fig.add_axes(cell=shared))
+                    self._map_cells.append(shared)
+                self._map_block.set_groups(groups, shared_bar=shared)
+                self._rearrange()                  # the block is new: the arrangement and the window follow (rule 11)
 
             if not hasattr(self, 'map_e_targets') or len(self.map_e_targets) != nepts or full_refresh:
                 self.map_e_targets = np.linspace(self.s_emin.val, self.s_emax.val, nepts)
@@ -1889,6 +2121,13 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
             ax.set_yticks([])
 
     def _on_pick(self, event):
+        label = event.artist.get_label() if hasattr(event.artist, 'get_label') else ''
+        if isinstance(label, str) and label.startswith('_cursor_'):    # a crop cursor: its press is its own (before any marker's)
+            _, _, axis, k = label.split('_')
+            self.active_obj = ('cursor', axis, int(k))
+            return
+        if self.active_obj is not None and self.active_obj[0] == 'cursor':
+            return
         if event.artist == getattr(self, 'ends', None) and self.mode == 'Line':
             self.active_obj = ('end', event.ind[0])
         elif event.artist == getattr(self, 'path_pts', None) and self.mode == 'Path':
@@ -1939,6 +2178,12 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
 
     def _on_motion(self, event):
         if self.active_obj is None or event.xdata is None:
+            return
+        if self.active_obj[0] == 'cursor':
+            # A crop cursor follows the mouse on the placement topo along its own axis (made valid as it goes).
+            if event.inaxes is self._crop_ax and event.ydata is not None:
+                _, axis, k = self.active_obj
+                self._set_cursor(axis, k, event.xdata if axis == 'x' else event.ydata)
             return
         t_obj, idx = self.active_obj
         if self.mode == 'Line':

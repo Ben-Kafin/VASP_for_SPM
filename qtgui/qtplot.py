@@ -3680,19 +3680,29 @@ class PanelCell(QtWidgets.QWidget):
         The room around the panel's box, (left, top, right, bottom) px: its axes' tick axes and title
         (Axes._decor_px); in an aligned row (Figure.align_row, a colour bar beside) the row's top and
         bottom, since the row's boxes lie in one band, below the tallest title and above the deepest x
-        axis of the row (Axes._px_rect), and the panel's shape is its box's in that band.
+        axis of the row (Axes._px_rect), and the panel's shape is its box's in that band.  A control
+        box over a row member (controls.PanelWithBox: the member's cell sits under the box in one
+        item) counts in that member's top for the others, since the band starts under the box.
         """
         ax = next((o for o in self._bound if hasattr(o, '_decor_px')), None)
         if ax is None:
             return (0.0, 0.0, 0.0, 0.0)
+
+        def box_above(cell):
+            f = getattr(cell.parentWidget(), '_box_h', None)
+            return float(f()) if f is not None else 0.0
         try:
             left, top, right, bottom = ax._decor_px()
             row = getattr(ax, '_row', None)
             if row is not None:
+                own = box_above(self)
                 for m in row:
                     if m is ax or getattr(m, '_cell', None) is None or not m._visible or m.figure is not ax.figure:
                         continue
                     _, mt, _, mb = m._decor_px()
+                    # The member's cell starts under its own box; the band's top, in this cell's terms,
+                    # is the member's top shifted by the difference of the two boxes above.
+                    mt += box_above(m._cell) - own
                     top, bottom = max(top, mt), max(bottom, mb)
             return (left, top, right, bottom)
         except Exception:
@@ -4273,15 +4283,25 @@ class Axes:
         if not (getattr(self, '_adjust_box', False) and self.vb.state['aspectLocked']):
             return None
         tx, ty = getattr(self, '_target_x', None), getattr(self, '_target_y', None)
-        if tx is None or ty is None or not (tx[1] > tx[0] and ty[1] > ty[0]):
-            # No limits set: the drawn data's extent (what the autoscaled view shows) gives the ratio.
+        if tx is not None and not tx[1] > tx[0]:
+            tx = None
+        if ty is not None and not ty[1] > ty[0]:
+            ty = None
+        if tx is None or ty is None:
+            # No limits set on an axis: the drawn data's extent along it (what the autoscaled view
+            # shows) gives that side of the ratio; a crop of one axis alone changes the shape too.
             try:
                 r = self.vb.childrenBoundingRect()
             except Exception:
                 return None
-            if not (r.width() > 0 and r.height() > 0):
-                return None
-            return float(r.height() / r.width()) * float(self.vb.state['aspectLocked'])
+            if tx is None:
+                if not r.width() > 0:
+                    return None
+                tx = (float(r.left()), float(r.right()))
+            if ty is None:
+                if not r.height() > 0:
+                    return None
+                ty = (float(r.top()), float(r.bottom()))
         return (ty[1] - ty[0]) / (tx[1] - tx[0]) * float(self.vb.state['aspectLocked'])
 
     def _notify_shape(self):
@@ -4962,6 +4982,7 @@ class Axes:
         self.vb.disableAutoRange(axis=pg.ViewBox.XAxis)
         self._target_x = (a, b)
         self._apply_targets()
+        self._notify_shape()                   # new limits are a new shape for a panel that keeps its ratio (a crop)
         return (lo, hi)
 
     def set_ylim(self, *args, **kw):
@@ -4983,6 +5004,7 @@ class Axes:
         self.vb.disableAutoRange(axis=pg.ViewBox.YAxis)
         self._target_y = (a, b)
         self._apply_targets()
+        self._notify_shape()
         return (lo, hi)
 
     def _apply_targets(self):

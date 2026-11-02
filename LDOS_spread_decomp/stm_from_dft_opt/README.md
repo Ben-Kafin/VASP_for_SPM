@@ -19,14 +19,24 @@ The window is a Qt window (PySide6 + pyqtgraph) drawn with the shared `qtgui` la
 repository root: its panels and controls sit in one automatic layout (nothing is placed by hand,
 nothing overlaps at any window size, the window never scrolls), every text follows the window's
 size, and a panel's title shows its short name with the details (bias, height, the marker) in the
-information panel docked at the bottom. The placement panel of every view (the Global Topo, where
-the markers, the line ends and the path nodes are dragged; in Map the Global Topo and the Map Topo
-side by side) has a pane of its own and takes the largest size its shape allows: a unit cell taller
-than wide stands at the left of the window with the other panels at its right, a wide one lies
-across the top with the other panels below, the arrangement chosen again on every view change and
-resize, and the window trims the room beside it. The Topo h box sits above the Global Topo, the
-LDOS h box above the panel its height belongs to (the Line view's Topo panel, the Path view's
-tip-height stripe, the Map Topo). The window opens on the screen's available area. The toolbar has Home, Pan, Zoom and Save; Save writes PDF,
+information panel docked at the bottom. The panels are arranged by one rule (the guide's rule 11):
+every plotted panel is a first-class citizen, the plots fill the window, spatial panels keep their
+ratio, nothing plotted is shrunk to make room, and blank space is what is minimized. The shaped
+groups of a view, the placement topo (the Global Topo, where the markers, the line ends and the
+path nodes are dragged, with its boxes above), the heatmap row of Line and Path (its label over
+it), the Global Topo and Map Topo pair and the block of energy maps of Map (the maps wrap into the
+rows that make them largest), and the curve panels (Tip Height and Partitioned LDOS, side by side
+or stacked by their room) are placed by the arrangement that scores best, the smallest group's size
+against its size alone less the blank fraction, chosen again on every view change, rebuild, crop
+and resize; the window trims the blank strips at its edges. The Topo h box, Crop and Uncrop sit
+above the Global Topo, the LDOS h box above the panel its height belongs to (the Line view's Topo
+panel, the Path view's tip-height stripe, the Map Topo). The Global Topo can be cropped as the
+sm4_Browser Line window crops its heatmap: two draggable cursors per axis start at the full extent
+of the drawn cells, the area outside each pair is shaded, a box riding with each cursor above (x)
+and right of (y) the panel shows its value and takes a typed one, Crop applies the ranges between
+the cursors as the panel's limits (in Map the Map Topo takes the same) and Uncrop restores the
+extent; a crop changes the panel's shape and the arrangement follows (a tall crop, a tall layout).
+The window opens on the screen's available area. The toolbar has Home, Pan, Zoom and Save; Save writes PDF,
 EPS, SVG, PNG or TIFF through matplotlib (publication files), a PNG or SVG as on screen, a
 screenshot, or the curves as CSV.
 

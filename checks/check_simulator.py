@@ -46,6 +46,8 @@ for p in (ROOT, STM, MO, os.path.join(STM, 'stm_from_dft')):
 import numpy as np
 
 SHOTS = os.environ.get('SHOTS_DIR', '/tmp/claude-0/-home-user/e027c064-e45e-5745-8c9f-d6260f223483/scratchpad/shots/simulator')
+SHOTS_SHAPE = os.path.join(SHOTS, 'shape')          # the shape checks' screenshots (a tall and a wide unit cell)
+CACHE = os.path.join(ROOT, 'checks', '_cache', 'simulator')   # the inputs and the simulator's topography caches, kept between runs (git-ignored)
 
 
 # ---------------------------------------------------------------------- #
@@ -140,11 +142,54 @@ check = rw.check           # the one check function of every check script (check
 #  Synthetic inputs                                                        #
 # ---------------------------------------------------------------------- #
 
-def write_inputs(d):
-    """A four-atom slab in a 5 x 5 x 20 Å cell, an ISPIN=1 DOSCAR (9 orbital columns), a LOCPOT cache."""
+def inputs_dir(name, a=5.0, b=5.0):
+    """
+    The input directory of one check, `checks/_cache/simulator/<name>/`: the synthetic inputs
+    written afresh, the simulator's topography caches seeded (seed_caches) and kept between runs,
+    so that no run computes a topography.  The simulator changes into this directory and names
+    its caches relative to it.
+    """
+    d = os.path.join(CACHE, name)
+    os.makedirs(d, exist_ok=True)
+    write_inputs(d, a, b)
+    seed_caches(d)
+    return d
+
+
+def seed_caches(d, grid_res=10, z_top=6.3):
+    """
+    Ready-made topography data in place of the simulator's computations: the global topography
+    at the check's bias and height, the LDOS topography at the check's bias, the Topo h rerun
+    heights the checks apply (3.0 and the cell top above the highest atom), and the decay-off
+    model, each a smooth z-map on the grid_res x grid_res fractional grid (one value per grid
+    point, the simulator's own layout), written with the names the simulator looks for
+    (`global_topo_<bias>V_<height>A_<grid>px<broadening><unit cell><decay>.npy`,
+    `ldos_topo_...`).  The names do not depend on the cell's shape, so the same data serves the
+    5 x 5, the tall and the wide cell: the layout check needs the shape, not the physics.
+    Existing files are left alone.
+    """
+    g = np.linspace(0.0, 1.0, grid_res)
+    fx, fy = np.meshgrid(g, g)
+    bump = 0.3 * np.sin(2 * np.pi * fx.ravel()) * np.cos(2 * np.pi * fy.ravel())
+    tip_max = 20.0 - z_top                      # the cell top above the highest atom (the Topo h box's limit)
+    names = [f"global_topo_0.2V_{h}A_{grid_res}px_uc1_{model}.npy"
+             for h in (2.5, 3.0, tip_max) for model in ('decay_on', 'decay_off', 'decay_on_noclamp')]
+    names += [f"ldos_topo_-3.0V_1.25A_{grid_res}px_uc1_{model}.npy" for model in ('decay_on', 'decay_off', 'decay_on_noclamp')]
+    names += [f"ldos_topo_-5.0V_1.25A_{grid_res}px_uc1_{model}.npy" for model in ('decay_on', 'decay_off', 'decay_on_noclamp')]
+    for name in names:
+        path = os.path.join(d, name)
+        if not os.path.exists(path):
+            h = float(name.split('_')[3][:-1]) if name.startswith('global') else 1.25
+            np.save(path, (z_top + h + bump).astype(np.float32))
+
+
+def write_inputs(d, a=5.0, b=5.0):
+    """A four-atom slab in an a x b x 20 Å cell (the atoms scaled into it), an ISPIN=1 DOSCAR (9 orbital columns), a LOCPOT cache."""
+    fa, fb = a / 5.0, b / 5.0
+    atoms = [(0.0, 0.0, 2.0), (2.5, 2.5, 4.0), (1.0, 1.0, 6.0), (3.5, 3.5, 6.3)]
     with open(os.path.join(d, 'POSCAR'), 'w') as f:
-        f.write("synthetic slab\n1.0\n  5.0 0.0 0.0\n  0.0 5.0 0.0\n  0.0 0.0 20.0\nAu N C\n2 1 1\nCartesian\n"
-                "  0.0 0.0 2.0\n  2.5 2.5 4.0\n  1.0 1.0 6.0\n  3.5 3.5 6.3\n")
+        f.write(f"synthetic slab\n1.0\n  {a:.1f} 0.0 0.0\n  0.0 {b:.1f} 0.0\n  0.0 0.0 20.0\nAu N C\n2 1 1\nCartesian\n"
+                + "".join(f"  {x * fa:.3f} {y * fb:.3f} {z:.1f}\n" for x, y, z in atoms))
     ef = -2.0
     nedos = 81
     E = np.linspace(-6.0, 2.0, nedos)
@@ -226,7 +271,7 @@ def check_simulator(d):
     cmap = plt.LinearSegmentedColormap.from_list("t", ["black", "firebrick", "yellow"])
     sim = simmod.Interactive_STM_Simulator(filepath=d, erange=[-3.0, 0.5], ldos_height=1.25, cmap_topo=cmap, unit_cell_num=1)
     sim.run_interactive(grid_res=10, topo_bias=0.2, topo_height=2.5, ldos_bias_sign='neg', use_decay=True,
-                        show_decay_toggle=True, reuse_cache=False, line_endpoints=([0.5, 0.5], [4.5, 4.5]),
+                        show_decay_toggle=True, reuse_cache=True, line_endpoints=([0.5, 0.5], [4.5, 4.5]),
                         marker_positions=[[1.0, 1.0], [3.0, 3.0]], extra_broadening={'N': 0.0},
                         path=[[0.5, 0.5], [2.5, 2.5], [4.5, 4.5]], path_extend=False)
     fig = sim.fig
@@ -337,7 +382,8 @@ def check_simulator(d):
     check('Line cluster: Topo box, stripe, one heatmap, one colour bar', len(heats) == 1 and len(bars) == 1)
     check('cluster label LDOS', sim._cluster_label.get_text() == 'LDOS' and sim._cluster_label.qt.isVisible())
     check('the stripe is a coloured LineCollection', any(isinstance(a, plt.LineCollection) for a in sim.ax_stripe.collections))
-    check('the top row shares one height (align_row)', sim.ax_map._row is not None and sim.ax_stripe in sim.ax_map._row and heats[0] in sim.ax_map._row)
+    check('the heatmap row shares one height (align_row)', sim.ax_line_topo._row is not None and sim.ax_stripe in sim.ax_line_topo._row
+          and heats[0] in sim.ax_line_topo._row)
     check('heatmap title is the partition', heats[0].get_title() == 'Total')
     check('colour bar exponent title', bars[0].get_title().startswith('1e'))
     report(rw.check_window(fig, 'simulator_line', SHOTS))
@@ -413,10 +459,13 @@ def check_simulator(d):
     em = [l for l in sim.ax_spec.get_lines() if l.get_label().startswith('emarker_')]
     check('energy markers on the spectrum', len(em) == 3)
     e1 = float(sim.map_e_targets[1])
-    ev = press(fig, sim.ax_spec, e1, 0.5 * sum(sim.ax_spec.get_ylim()))
+    # The press is in the band above the curves (the y limits leave 10 % over the highest curve): a
+    # press on the marker where a curve crosses it would descend a level as well, as it always did.
+    yl = sim.ax_spec.get_ylim()
+    ev = press(fig, sim.ax_spec, e1, yl[1] - 0.03 * (yl[1] - yl[0]))
     fig._pick(ev)
     check('pick on an energy marker selects it', sim.active_obj == ('emarker', 1), sim.active_obj)
-    sim._on_motion(motion(fig, sim.ax_spec, e1 + 0.3, 0.5 * sum(sim.ax_spec.get_ylim())))
+    sim._on_motion(motion(fig, sim.ax_spec, e1 + 0.3, yl[1] - 0.03 * (yl[1] - yl[0])))
     check('dragging the energy marker moves it', abs(sim.map_e_targets[1] - (e1 + 0.3)) < 1e-6)
     before = sim.cached_ld_up[:, 1].copy()
     try:
@@ -443,6 +492,136 @@ def check_simulator(d):
 # ---------------------------------------------------------------------- #
 #  The wrapper's boxes                                                     #
 # ---------------------------------------------------------------------- #
+
+# ---------------------------------------------------------------------- #
+#  The shape rule: a tall and a wide unit cell (plan 6.4, guide rule 11)   #
+# ---------------------------------------------------------------------- #
+
+def rect_in(fig, w):
+    """A widget's rectangle in the canvas's coordinates."""
+    vp = fig.canvas.viewport()
+    p = w.mapTo(vp, QtCore.QPoint(0, 0))
+    return QtCore.QRect(p, w.size())
+
+
+def above(fig, box, cell):
+    """Whether the control box `box` is shown above the panel cell `cell`: its bottom at or over the cell's top, their x ranges overlapping."""
+    if box is None or cell is None or not box.isVisible():
+        return False
+    b, c = rect_in(fig, box), rect_in(fig, cell)
+    return b.bottom() <= c.top() + 1 and b.left() < c.right() and b.right() > c.left()
+
+
+def inside(w, ancestor):
+    """Whether `ancestor` is on the parent chain of the widget `w`."""
+    while w is not None:
+        if w is ancestor:
+            return True
+        w = w.parentWidget()
+    return False
+
+
+def check_shape(a, b, name, want):
+    """
+    The simulator on a unit cell a x b Å, RUN on, every view in turn (plan 6.4, the owner's rule:
+    the plots fill the window, nothing plotted is squeezed, blank space minimized): no render
+    problem at any size (empty bands included); at the design size the arrangement leaves little
+    blank (< 12 %), no shaped group is below 45 % of the size it would have alone (the
+    arrangement's scales), the Topo h box and the crop buttons sit above the placement topo, the
+    LDOS h box above the panel it belongs to (Line: the Line Topo panel; Path: the stripe; Map: the
+    Map Topo), the heatmaps of Line / Path and the energy maps of Map are not small (their boxes at
+    least 22 % of the canvas height); `want` is the arrangement expected for the cell at the
+    design size in the Line view ('a_left' for a tall cell, 'ab_left' for a wide one).  Then the
+    crop in the Line view: a cursor dragged on the topo moves and its box follows, a typed box
+    moves its cursor, the shade covers the outside, Crop applies the ranges as the topo's limits
+    and the arrangement follows the new shape, Uncrop restores the extent.
+    """
+    from stm_from_dft import simulator as simmod
+    d = inputs_dir(name, a, b)
+    cmap = plt.LinearSegmentedColormap.from_list("t", ["black", "firebrick", "yellow"])
+    sim = simmod.Interactive_STM_Simulator(filepath=d, erange=[-3.0, 0.5], ldos_height=1.25, cmap_topo=cmap, unit_cell_num=1)
+
+    def at(fx, fy):
+        return [fx * a, fy * b]
+    sim.run_interactive(grid_res=10, topo_bias=0.2, topo_height=2.5, ldos_bias_sign='neg', use_decay=True,
+                        show_decay_toggle=True, reuse_cache=True, line_endpoints=(at(0.1, 0.1), at(0.9, 0.9)),
+                        marker_positions=[at(0.2, 0.2), at(0.6, 0.6)], extra_broadening={'N': 0.0},
+                        path=[at(0.1, 0.1), at(0.5, 0.5), at(0.9, 0.9)], path_extend=False)
+    fig = sim.fig
+    rw.pump(150)
+    sim.btn_run.widget.click()                 # RUN: the Line / Path heatmap row and the Map block exist
+    rw.pump(100)
+    for i, view in enumerate(('Single Point', 'Line', 'Path', 'Map')):
+        sim.ui_radio.buttons[i].click()
+        rw.pump(150)
+        tag = f"{name} cell, {view}"
+        report(rw.check_window(fig, f"sim_{name}_{view.replace(' ', '_').lower()}", SHOTS_SHAPE))
+        arr = sim._arrangement
+        H = fig.canvas.viewport().height()
+        print(f"   {tag}: arrangement {arr.layout_name}, blank {arr.blank_fraction():.3f}, scales {[round(v, 2) for v in arr.scales()]}, canvas {fig._canvas_size()}")
+        print(f"   {tag}: candidates {arr.explain()}")
+        check(f"{tag}: little blank space (< 15 %)", arr.blank_fraction() < 0.15, round(arr.blank_fraction(), 3))
+        check(f"{tag}: no group below 45 % of its size alone", all(v >= 0.45 for v in arr.scales()), arr.scales())
+        if view == 'Line':
+            check(f"{tag}: the arrangement is {want!r}", arr.layout_name == want, arr.layout_name)
+        topo_ax = sim.ax_map_global if view == 'Map' else sim.ax_map
+        check(f"{tag}: Topo h box and the crop buttons above the placement topo",
+              above(fig, sim._box_topo_h, topo_ax._cell) and above(fig, sim._box_crop, topo_ax._cell) and inside(sim._box_topo_h, sim._crop_panel),
+              (rect_in(fig, sim._box_topo_h), rect_in(fig, sim._box_crop), rect_in(fig, topo_ax._cell)))
+        check(f"{tag}: the cursor boxes ride in the bands of the crop panel", all(inside(b.qt, sim._crop_panel) and b.qt.isVisible() for b in sim._cursor_boxes.values()))
+        if view != 'Single Point':
+            owner = {'Line': sim.ax_line_topo, 'Path': sim.ax_stripe, 'Map': sim.ax_map}[view]
+            check(f"{tag}: LDOS h box above the panel it belongs to", owner is not None and above(fig, sim._box_ldos_h, owner._cell),
+                  None if owner is None else (rect_in(fig, sim._box_ldos_h), rect_in(fig, owner._cell)))
+            if view == 'Map':
+                hs = [ax._px_rect()[3] for ax in sim.map_axes]
+                print(f"   {tag}: the map block wraps {sim._map_block.cols} per row; map boxes {round(min(hs))} px tall in a {H} px canvas")
+            else:
+                hs = [a_._px_rect()[3] for a_ in sim.line_decomp_axes if a_.get_title() == 'Total']
+                check(f"{tag}: the heatmap not small (box >= 22 % of the canvas height)", bool(hs) and min(hs) >= 0.22 * H, (hs and round(min(hs)), H))
+        else:
+            check(f"{tag}: LDOS h box hidden", not sim._box_ldos_h.isVisible())
+    # The crop, in the Line view.
+    sim.ui_radio.buttons[1].click()
+    rw.pump(150)
+    ax = sim._crop_ax
+    (ex0, ex1), (ey0, ey1) = sim._full_extent()
+    check(f"{name}: the cursors start at the full extent of the drawn cells", sim._cursors['x'] == [ex0, ex1] and sim._cursors['y'] == [ey0, ey1]
+          and len(sim._cursor_artists) == 4 and not sim._shade_artists, (sim._cursors, (ex0, ex1, ey0, ey1)))
+    check(f"{name}: a cursor box shows its cursor's value", sim._cursor_boxes[('x', 0)].text == f"{ex0:.2f}", sim._cursor_boxes[('x', 0)].text)
+    # drag the upper x cursor: pick, motion on the topo, release
+    art = next(a_ for a_ in sim._cursor_artists if a_.get_label() == '_cursor_x_1')
+    ev = types.SimpleNamespace(artist=art, ind=[0], mouseevent=None)
+    sim._on_pick(ev)
+    check(f"{name}: a pick on a cursor selects it before any marker", sim.active_obj == ('cursor', 'x', 1), sim.active_obj)
+    target = ex0 + 0.4 * (ex1 - ex0)
+    sim._on_motion(motion(fig, ax, target, 0.5 * (ey0 + ey1)))
+    sim._on_rel(None)
+    check(f"{name}: the dragged cursor moved and its box followed", abs(sim._cursors['x'][1] - target) < 1e-6 and sim._cursor_boxes[('x', 1)].text == f"{target:.2f}"
+          and len(sim._shade_artists) == 1, (sim._cursors['x'], sim._cursor_boxes[('x', 1)].text, len(sim._shade_artists)))
+    # a typed box moves the y cursor
+    y_hi = ey0 + 0.7 * (ey1 - ey0)
+    sim._on_cursor_box('y', 1, f"{y_hi:.4f}")
+    check(f"{name}: a typed box moves its cursor", abs(sim._cursors['y'][1] - y_hi) < 1e-6 and len(sim._shade_artists) == 2, (sim._cursors['y'], len(sim._shade_artists)))
+    sim._on_cursor_box('y', 1, "abc")
+    check(f"{name}: a box text that is not a number is refused", abs(sim._cursors['y'][1] - y_hi) < 1e-6 and sim._cursor_boxes[('y', 1)].text == f"{y_hi:.2f}")
+    # Crop: the limits, the cursors at the new edges, the arrangement follows the new shape
+    before = sim._arrangement.layout_name
+    sim._on_crop()
+    rw.pump(300)
+    xl, yl = ax.get_xlim(), ax.get_ylim()
+    check(f"{name}: Crop applies the cursors' ranges as the topo's limits", abs(xl[1] - target) < 1e-6 and abs(yl[1] - y_hi) < 1e-6
+          and np.allclose(sim.crop_x, (ex0, target)) and np.allclose(sim.crop_y, (ey0, y_hi)), (xl, yl, sim.crop_x, sim.crop_y))
+    check(f"{name}: after Crop the cursors sit at the new edges with no shade", np.allclose(sim._cursors['x'], [ex0, target]) and not sim._shade_artists, sim._cursors)
+    print(f"   {name}: arrangement before crop {before}, after {sim._arrangement.layout_name}; topo box {tuple(round(v) for v in ax._px_rect())}")
+    check(f"{name}: no render problem at the design size after the crop", not [p_ for p_ in rw.check_window(fig, f'sim_{name}_line_cropped', SHOTS_SHAPE)['problems'] if p_[0] == 'design'])
+    sim._on_uncrop()
+    rw.pump(200)
+    check(f"{name}: Uncrop restores the full extent", sim.crop_x is None and np.allclose(ax.get_xlim(), (ex0, ex1)) and np.allclose(ax.get_ylim(), (ey0, ey1))
+          and sim._cursors['x'] == [ex0, ex1], (ax.get_xlim(), ax.get_ylim(), sim._cursors))
+    sim.btn_run.widget.click()                 # STOP
+    return sim
+
 
 def install_decomp_stubs():
     """The wrapper's siblings as stand-ins: PlotConfig, resolve_stm, the two decomposition windows."""
@@ -490,7 +669,7 @@ def check_wrapper(d):
     from mo_ldos_projection import sim_wrapper as sw
     plt.ioff()
     session = sw.StmDecompSession(d, erange=(-3.0, 0.5), ldos_height=1.25, unit_cell_num=1, sigma=0.2,
-                                  sim_kwargs=dict(grid_res=10, topo_bias=0.2, topo_height=2.5, reuse_cache=False,
+                                  sim_kwargs=dict(grid_res=10, topo_bias=0.2, topo_height=2.5, reuse_cache=True,
                                                   marker_positions=[[1.0, 1.0], [3.0, 3.0]]),
                                   use_synthetic_doscar=False)
     sim = session.launch()
@@ -585,21 +764,23 @@ def check_dos_plotter(d):
     plt.close(fig)
 
 
-def main():
-    d = tempfile.mkdtemp(prefix='sim_check_')
-    write_inputs(d)
+def main(shape_only=False):
+    """Every check; with `shape_only` (the --shape argument, or SHAPE_ONLY=1) the two shape checks alone, for iterating on the layout."""
+    d = inputs_dir('base')
     cwd = os.getcwd()
     print(f"inputs in {d}; pymatgen stand-in: {PYMATGEN_STUBBED}")
-    for fn in (check_simulator, check_wrapper, check_dos_plotter):
+    steps = [] if shape_only else [(check_simulator, (d,)), (check_wrapper, (d,)), (check_dos_plotter, (d,))]
+    steps += [(check_shape, (4.0, 10.0, 'tall', 'a_left')), (check_shape, (10.0, 4.0, 'wide', 'ab_left'))]
+    for fn, args in steps:
         try:
             os.chdir(cwd)
-            fn(d)
+            fn(*args)
         except Exception as exc:
             traceback.print_exc()
-            check(f'{fn.__name__} runs without an exception', False, exc)
+            check(f'{fn.__name__}{args[1:] if fn is check_shape else ""} runs without an exception', False, exc)
         os.chdir(cwd)
     return rw.summary()
 
 
 if __name__ == '__main__':
-    sys.exit(main())
+    sys.exit(main(shape_only='--shape' in sys.argv[1:] or os.environ.get('SHAPE_ONLY', '') not in ('', '0')))

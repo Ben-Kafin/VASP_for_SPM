@@ -269,6 +269,17 @@ class UnderPanel(QtWidgets.QWidget):
         if follow:
             ax.on_placed(self._follow)         # follow=False: centred on the whole cell (a narrow cell, whose box is centred in it)
 
+    def _items_w(self):
+        """The width the items need (their size hints, whole labels, and the spacing between them)."""
+        lay = self.layout()
+        ws = [lay.itemAt(i).widget() for i in range(lay.count())]
+        ws = [w for w in ws if w is not None and not w.isHidden()]
+        return sum(max(w.sizeHint().width(), w.minimumSizeHint().width()) for w in ws) + lay.spacing() * max(len(ws) - 1, 0)
+
+    def need_w(self):
+        """The width the panel under this box must have for the box's labels to stay whole."""
+        return float(self._items_w())
+
     def _follow(self):
         ax = self._ax
         cell = getattr(ax, '_cell', None)
@@ -278,6 +289,11 @@ class UnderPanel(QtWidgets.QWidget):
         x0, y0, w, h = ax._px_rect()
         left = max(int(round(x0 - cx)), 0)
         right = max(int(round(cx + cw - (x0 + w))), 0)
+        # The items keep their width: the margins never close the room under the box below what
+        # they need (a box wider than a small panel's box is centred on it as far as the cell allows).
+        room = max(int(cw) - self._items_w(), 0)
+        left = min(left, room)
+        right = min(right, room - left)
         m = self.layout().contentsMargins()
         if (m.left(), m.right()) != (left, right):
             self.layout().setContentsMargins(left, 0, right, 0)
@@ -320,7 +336,10 @@ class PanelWithBox(QtWidgets.QWidget):
         return None if h is None else h + self._box_h()
 
     def width_for_height(self, h):
-        return self.cell.width_for_height(max(float(h) - self._box_h(), 1.0))
+        w = self.cell.width_for_height(max(float(h) - self._box_h(), 1.0))
+        if w is None:
+            return None
+        return max(w, self.above.need_w())     # never narrower than the box over the panel
 
     def hasHeightForWidth(self):
         return self.cell.hasHeightForWidth()
@@ -497,10 +516,12 @@ class RideBand(QtWidgets.QWidget):
         self.updateGeometry()
 
     def sizeHint(self):
-        hints = [it[0].sizeHint() for it in self._items.values()]
+        # As thick as the thickest item will really be: the larger of its hint and its minimum (a
+        # number box's minimum width is often the larger), so that a shape counting the band is right.
+        hints = [(it[0].sizeHint(), it[0].minimumSizeHint()) for it in self._items.values()]
         if self.orient == 'h':
-            return QtCore.QSize(0, max([h.height() for h in hints] + [0]))
-        return QtCore.QSize(max([h.width() for h in hints] + [0]), 0)
+            return QtCore.QSize(0, max([max(h.height(), m.height()) for h, m in hints] + [0]))
+        return QtCore.QSize(max([max(h.width(), m.width()) for h, m in hints] + [0]), 0)
 
     def minimumSizeHint(self):
         return self.sizeHint()
@@ -512,9 +533,14 @@ class RideBand(QtWidgets.QWidget):
 
     def _apply(self, key):
         w, c = self._items[key]
-        if c is None:
-            return
         s = w.sizeHint()
+        if c is None:
+            # Not placed yet: at the band's start, the band's thickness (never wider than the band).
+            if self.orient == 'h':
+                w.setGeometry(0, 0, s.width(), self.height())
+            else:
+                w.setGeometry(0, 0, self.width(), s.height())
+            return
         vp = self.parentWidget()
         while vp is not None and vp.parentWidget() is not None and not isinstance(vp.parentWidget(), QtWidgets.QGraphicsView):
             vp = vp.parentWidget()
@@ -532,6 +558,15 @@ class RideBand(QtWidgets.QWidget):
         super().resizeEvent(ev)
         for k in self._items:
             self._apply(k)
+
+    def event(self, ev):
+        if ev.type() == QtCore.QEvent.Type.LayoutRequest:
+            # An item's size hint changed (a text zoom): the band's thickness follows, and the layout
+            # holding the band is told (the band has no layout of its own to pass it on).
+            self.updateGeometry()
+            for k in self._items:
+                self._apply(k)
+        return super().event(ev)
 
 
 def widget_of(layout):
@@ -1605,3 +1640,686 @@ class GammaBox:
         self.gamma = g
         if self._cb is not None:
             self._cb(g)
+
+
+# ---------------------------------------------------------------------- #
+#  Rule 11, the arrangement: plots fill the window, blank space minimized  #
+# ---------------------------------------------------------------------- #
+
+def _shaped_size(widget, W, H):
+    """
+    The largest size (w, h) a shaped widget takes inside W x H: its own `fit(W, H)` when it has one
+    (a wrapping block chooses its columns), else from height_for_width / width_for_height (a cell,
+    a PanelWithBox, a RowWidget); None for a widget without a shape.
+    """
+    W, H = max(float(W), 1.0), max(float(H), 1.0)
+    fit = getattr(widget, 'fit', None)
+    if fit is not None:
+        r = fit(W, H)
+        if r is not None:
+            return (float(r[0]), float(r[1]))
+    hfw, wfh = getattr(widget, 'height_for_width', None), getattr(widget, 'width_for_height', None)
+    try:
+        h = hfw(W) if hfw is not None else None
+        if h is None:
+            # No shape yet (a row with no panel in it: a control box waiting for RUN): the widget's own
+            # size hint, so that the group keeps its place and stays reachable.
+            hint = widget.sizeHint()
+            return (min(W, float(max(hint.width(), 1))), min(H, float(max(hint.height(), 1))))
+        if h <= H:
+            return (W, float(h))
+        w = wfh(H)
+        if w is None:
+            return None
+        w = min(float(w), W)
+        h2 = hfw(w)
+        return (w, min(float(h2 if h2 is not None else H), H))
+    except Exception:
+        return None
+
+
+class Titled(QtWidgets.QWidget):
+    """
+    A shaped group with a label over it (the 'LDOS' label over the heatmap row or the energy maps):
+    the label centred above `body`, the pair one shaped item (height_for_width, width_for_height,
+    fit forward to the body plus the label's height).  `label` is a controls.Label or a QWidget.
+    """
+
+    def __init__(self, body, label, spacing=2):
+        super().__init__()
+        lay = QtWidgets.QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(spacing)
+        self.label = _qw(label)
+        lay.addWidget(self.label, 0, QtCore.Qt.AlignmentFlag.AlignHCenter)
+        lay.addWidget(body, 1)
+        self.body = body
+        self._sp = int(spacing)
+
+    def _label_h(self):
+        return 0.0 if self.label.isHidden() else float(self.label.sizeHint().height()) + self._sp
+
+    def fit(self, W, H):
+        r = _shaped_size(self.body, W, max(float(H) - self._label_h(), 1.0))
+        return None if r is None else (r[0], r[1] + self._label_h())
+
+    def height_for_width(self, w):
+        hfw = getattr(self.body, 'height_for_width', None)
+        h = hfw(w) if hfw is not None else None
+        return None if h is None else h + self._label_h()
+
+    def width_for_height(self, h):
+        wfh = getattr(self.body, 'width_for_height', None)
+        return None if wfh is None else wfh(max(float(h) - self._label_h(), 1.0))
+
+    def hasHeightForWidth(self):
+        return bool(getattr(self.body, 'hasHeightForWidth', lambda: False)())
+
+    def heightForWidth(self, w):
+        h = self.height_for_width(w)
+        return -1 if h is None else int(round(h))
+
+
+class FlipBox(QtWidgets.QWidget):
+    """
+    Free panels side by side when their space is wider than tall, stacked when it is taller than
+    wide (rule 11: the curve panels of the simulator's Line / Path views beside or under the heatmap
+    row).  `items` are widgets with a stretch each: FlipBox((cell, 25), (cell, 10)) or plain
+    widgets (stretch 1).  The direction flips at a width-to-height ratio of `wide` (to a row) and
+    `tall` (to a column), the gap between keeping it steady.
+    """
+
+    def __init__(self, *items, spacing=6, wide=1.3, tall=0.9):
+        super().__init__()
+        self._lay = QtWidgets.QBoxLayout(QtWidgets.QBoxLayout.Direction.LeftToRight, self)
+        self._lay.setContentsMargins(0, 0, 0, 0)
+        self._lay.setSpacing(spacing)
+        for it in items:
+            w, st = (it if isinstance(it, tuple) else (it, 1))
+            self._lay.addWidget(_qw(w), int(st))
+        self._wide, self._tall = float(wide), float(tall)
+        pol = QtWidgets.QSizePolicy.Policy
+        self.setSizePolicy(pol.Expanding, pol.Expanding)
+
+    @property
+    def direction(self):
+        return 'row' if self._lay.direction() == QtWidgets.QBoxLayout.Direction.LeftToRight else 'column'
+
+    def _flip(self):
+        w, h = float(self.width()), float(max(self.height(), 1))
+        r = w / h
+        want = None
+        if r > self._wide:
+            want = QtWidgets.QBoxLayout.Direction.LeftToRight
+        elif r < self._tall:
+            want = QtWidgets.QBoxLayout.Direction.TopToBottom
+        if want is not None and want != self._lay.direction():
+            self._lay.setDirection(want)
+
+    def resizeEvent(self, ev):
+        self._flip()
+        super().resizeEvent(ev)
+
+    def minimumSizeHint(self):
+        return QtCore.QSize(120, 90)
+
+    def sizeHint(self):
+        return QtCore.QSize(400, 300)
+
+
+class CropPanel(QtWidgets.QWidget):
+    """
+    The placement panel with its crop: a control box over it (AbovePanel: the tip-height box, the
+    Crop / Uncrop buttons), a band under that box where the x-cursor boxes ride along the panel's
+    top edge (RideBand 'h', `band_x`), the panel's cell, and a band at its right where the
+    y-cursor boxes ride along its right edge (RideBand 'v', `band_y`).  One shaped item of an
+    Arrangement: height_for_width and width_for_height count the box and the bands, so the group
+    is sized as one and the boxes never sit between panels.  The window adds the riding boxes
+    (`band_x.add(key, box)`, `band_y.add(key, box)`) and moves them (`set_pos`) when the panel is
+    placed (Axes.on_placed).
+    """
+
+    def __init__(self, ax, cell, *items, spacing=3):
+        super().__init__()
+        grid = QtWidgets.QGridLayout(self)
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setHorizontalSpacing(spacing)
+        grid.setVerticalSpacing(spacing)
+        self.above = AbovePanel(ax, *items)
+        self.band_x = RideBand('h')
+        self.band_y = RideBand('v')
+        grid.addWidget(self.above, 0, 0)       # over the cell's column only: the y band keeps its own width whatever the box needs
+        grid.addWidget(self.band_x, 1, 0)
+        grid.addWidget(cell, 2, 0)
+        grid.addWidget(self.band_y, 2, 1)
+        grid.setColumnStretch(0, 1)
+        grid.setRowStretch(2, 1)
+        self.cell = cell
+        self._sp = int(spacing)
+
+    def _box_h(self):
+        h = 0.0 if self.above.isHidden() else float(self.above.sizeHint().height()) + self._sp
+        if not self.band_x.isHidden():
+            h += float(self.band_x.sizeHint().height()) + self._sp
+        return h
+
+    def _band_w(self):
+        return 0.0 if self.band_y.isHidden() else float(self.band_y.sizeHint().width()) + self._sp
+
+    def height_for_width(self, w):
+        h = self.cell.height_for_width(max(float(w) - self._band_w(), 1.0))
+        return None if h is None else h + self._box_h()
+
+    def width_for_height(self, h):
+        w = self.cell.width_for_height(max(float(h) - self._box_h(), 1.0))
+        if w is None:
+            return None
+        return max(w + self._band_w(), self.above.need_w())       # never narrower than the boxes over the panel
+
+    def hasHeightForWidth(self):
+        return self.cell.hasHeightForWidth()
+
+    def heightForWidth(self, w):
+        h = self.height_for_width(w)
+        return -1 if h is None else int(round(h))
+
+
+class MapBlock(QtWidgets.QWidget):
+    """
+    A block of equal-shaped map panels (the simulator's energy maps) that wraps: partition by
+    partition, the maps go into rows of `cols` columns, and `cols` is chosen for the largest maps
+    that fit the block's region (`fit`); each partition may have a colour-bar cell at its right
+    spanning its rows, or one bar serves the whole block at its right.  The cells are placed by
+    the block itself (rule 11: the row of each visual line shares one band, Figure.align_row).
+    `set_groups([(cells, bar_or_None), ...], shared_bar=None)` gives it the cells (the block takes
+    them as children; the old ones are the window's to remove).
+    """
+
+    def __init__(self, fig, spacing=4):
+        super().__init__()
+        self.fig = fig
+        self._sp = int(spacing)
+        self._groups = []             # [(cells, bar)]
+        self._shared = None
+        self.cols = 1
+        pol = QtWidgets.QSizePolicy.Policy
+        self.setSizePolicy(pol.Expanding, pol.Expanding)
+
+    def set_groups(self, groups, shared_bar=None):
+        self._groups = [(list(cells), bar) for cells, bar in groups]
+        self._shared = shared_bar
+        for cells, bar in self._groups:
+            for c in cells + ([bar] if bar is not None else []):
+                c.setParent(self)
+                c.show()
+        if shared_bar is not None:
+            shared_bar.setParent(self)
+            shared_bar.show()
+        self.cols = max(1, max([len(c) for c, _ in self._groups] + [1]))
+        self.updateGeometry()
+        self._arrange()
+
+    # --- the shape ---
+
+    def _ratio(self):
+        for cells, _ in self._groups:
+            for c in cells:
+                r = c.shape_ratio()
+                if r is not None:
+                    return float(r)
+        return 1.0
+
+    def _decor(self):
+        """(left+right, top+bottom) the widest room around a map in the block (left+right is one for every column)."""
+        lr = tb = 0.0
+        for cells, _ in self._groups:
+            for c in cells:
+                l, t, r, b = c._decor()
+                lr, tb = max(lr, l + r), max(tb, t + b)
+        return lr, tb
+
+    def _tb_of(self, cells):
+        """top+bottom the widest among `cells` (a partition's own rows: a row without titles is no taller than its maps need)."""
+        tb = 0.0
+        for c in cells:
+            l, t, r, b = c._decor()
+            tb = max(tb, t + b)
+        return tb
+
+    def _bar_w(self):
+        bars = [bar for _, bar in self._groups if bar is not None] + ([self._shared] if self._shared is not None else [])
+        if not bars:
+            return 0.0
+        return float(max(b.sizeHint().width() for b in bars)) + self._sp
+
+    def _rows(self, cols):
+        return sum(-(-len(cells) // cols) for cells, _ in self._groups if cells)
+
+    def _title_w(self):
+        """The widest map title: a map's cell is never narrower than its title."""
+        tw = 0.0
+        for cells, _ in self._groups:
+            for c in cells:
+                for o in c._bound:
+                    t = getattr(o, '_title', None)
+                    if t is not None and t.get_text():
+                        try:
+                            tw = max(tw, float(t.item.boundingRect().width()))
+                        except Exception:
+                            pass
+        return tw
+
+    def _size_at(self, cols, W, H):
+        """(w, h, box_w) of the block at `cols` columns inside W x H: the largest maps that fit by width, then by height."""
+        n = max(1, min(cols, max(len(c) for c, _ in self._groups)))
+        R = self._rows(n)
+        if R == 0:
+            return (1.0, 1.0, 0.0)
+        lr, _ = self._decor()
+        r = self._ratio()
+        # Every partition's rows carry that partition's own room (titles on the first partition only).
+        tb_sum = sum(-(-len(cells) // n) * self._tb_of(cells) for cells, _ in self._groups if cells)
+        cw = (W - self._bar_w() - (n - 1) * self._sp) / n
+        box_w = max(cw - lr, 1.0)
+        box_h = box_w * r
+        total = R * box_h + tb_sum + (R - 1) * self._sp
+        if total > H:
+            box_h = max((H - (R - 1) * self._sp - tb_sum) / R, 1.0)
+            box_w = box_h / r
+        cw = max(box_w + lr, self._title_w() + 4.0)             # a cell at least as wide as its title
+        w = n * cw + (n - 1) * self._sp + self._bar_w()
+        h = R * (box_w * r) + tb_sum + (R - 1) * self._sp
+        return (w, h, box_w)
+
+    def _best(self, W, H):
+        """(w, h, box_w, cols) inside W x H over every column count: the largest maps whose block fits the width."""
+        n_max = max(len(c) for c, _ in self._groups)
+        best = None
+        for n in range(1, n_max + 1):
+            w, h, box_w = self._size_at(n, W, H)
+            if w > W + 0.5 and n > 1:
+                continue                                 # the titles do not fit side by side at this count
+            if best is None or box_w > best[2] + 0.5:
+                best = (w, h, box_w, n)
+        return best
+
+    def fit(self, W, H):
+        """The block's size (w, h) inside W x H with the columns chosen for the largest maps (no side effect: the block chooses again for the size it is given)."""
+        if not self._groups:
+            return (1.0, 1.0)
+        w, h, box_w, n = self._best(W, H)
+        return (w, h)
+
+    def height_for_width(self, w):
+        return self._best(w, 1.0e9)[1] if self._groups else None
+
+    def width_for_height(self, h):
+        return self._best(1.0e9, h)[0] if self._groups else None
+
+    def hasHeightForWidth(self):
+        return bool(self._groups)
+
+    def heightForWidth(self, w):
+        h = self.height_for_width(w)
+        return -1 if h is None else int(round(h))
+
+    # --- the placement ---
+
+    def _arrange(self):
+        if not self._groups or self.width() <= 0 or self.height() <= 0:
+            return
+        W, H = float(self.width()), float(self.height())
+        w, h, box_w, n = self._best(W, H)
+        self.cols = n
+        lr, _ = self._decor()
+        r = self._ratio()
+        cw = max(box_w + lr, self._title_w() + 4.0)
+        bar_w = self._bar_w() - self._sp if self._bar_w() > 0 else 0.0
+        y = 0.0
+        rows_for_align = []
+        for cells, bar in self._groups:
+            y0 = y
+            ch = box_w * r + self._tb_of(cells)                 # this partition's row height
+            row = []
+            for i, c in enumerate(cells):
+                col, line = i % n, i // n
+                if col == 0 and i > 0:
+                    rows_for_align.append(row)
+                    row = []
+                x = col * (cw + self._sp)
+                c.setGeometry(int(round(x)), int(round(y0 + line * (ch + self._sp))), int(round(cw)), int(round(ch)))
+                row.append(c)
+            if row:
+                rows_for_align.append(row)
+            lines = -(-len(cells) // n)
+            gh = lines * ch + (lines - 1) * self._sp
+            if bar is not None:
+                bx = n * cw + (n - 1) * self._sp + self._sp
+                bar.setGeometry(int(round(bx)), int(round(y0)), int(round(bar_w)), int(round(gh)))
+            y = y0 + gh + self._sp
+        if self._shared is not None:
+            bx = n * cw + (n - 1) * self._sp + self._sp
+            self._shared.setGeometry(int(round(bx)), 0, int(round(bar_w)), int(round(max(y - self._sp, 1.0))))
+        for row in rows_for_align:
+            axes = [o for c in row for o in c._bound if isinstance(o, plt.Axes)]
+            if len(axes) > 1:
+                self.fig.align_row(*axes)
+
+    def rearrange(self):
+        self._arrange()
+
+    def resizeEvent(self, ev):
+        super().resizeEvent(ev)
+        self._arrange()
+
+    def event(self, ev):
+        if ev.type() == QtCore.QEvent.Type.LayoutRequest:
+            self._arrange()
+        return super().event(ev)
+
+    def minimumSizeHint(self):
+        return QtCore.QSize(120, 80)
+
+    def sizeHint(self):
+        return QtCore.QSize(600, 300)
+
+
+class Arrangement(QtWidgets.QWidget):
+    """
+    The rule of every window with spatial panels (rule 11 of the guide, as the owner stated it):
+    every plotted panel is a first-class citizen, the plots fill the window, spatial panels keep
+    their ratio, no plotted panel is shrunk to make room for another, and what is minimized is the
+    blank space.  `shaped` is one or two shaped groups (a CropPanel or PanelWithBox, a RowWidget,
+    a MapBlock: each tells its size inside a region, _shaped_size), `free` the widget of the curve
+    panels, which takes whatever is left but never less than `free_share` of the window each way
+    (and its own minimum).  The candidate arrangements for two groups A, B and the free widget F:
+
+        row_top   A and B in one row across the top, F below
+        a_left    A at the left with the window's height; B over F at its right
+        a_top     A across the top; B at the left of F below it
+        ab_left   A over B at the left; F at the right
+        abf_row   A, B and F side by side
+        abf_col   A, B and F stacked
+
+    and for one group: `h` (A at the left, F at the right) and `v` (A on top, F below).  Each is
+    sized at the widget's size and scored: every group's scale is its size against the size it
+    would have alone in the whole window (the square root of the area ratio), and the score is the
+    smallest scale less the blank fraction, so that no group is squeezed for another and blank
+    space costs; the best score is taken (the current arrangement kept unless another scores
+    better by more than `hysteresis`; ties go to the larger plotted area).  Chosen again on every
+    resize, on `rearrange()` (a window that rebuilt a group) and when a group's shape changes (its
+    layout request).  `fit_delta` is the blank strip at the right and bottom edges that no region
+    reaches, which the window can lose (Figure.fit_window); `layout_name` the candidate taken;
+    `blank_fraction()` the blank share of the area; `scales()` the groups' scales.
+    """
+
+    def __init__(self, shaped, free=None, spacing=8, free_share=0.22, hysteresis=0.05):
+        super().__init__()
+        self.shaped = [w for w in shaped if w is not None]
+        self.free = free
+        for w in self.shaped + ([free] if free is not None else []):
+            w.setParent(self)
+            w.show()
+            w.installEventFilter(self)
+        self._sp, self._share, self._hys = int(spacing), float(free_share), float(hysteresis)
+        self.layout_name = None
+        self._placed = None               # {widget: QRectF} of the last arrangement
+        self._blank = 0.0
+        self._cb = None
+        self._pending = False
+        pol = QtWidgets.QSizePolicy.Policy
+        self.setSizePolicy(pol.Expanding, pol.Expanding)
+
+    # --- events ---
+
+    def eventFilter(self, obj, ev):
+        if ev.type() == QtCore.QEvent.Type.LayoutRequest and not self._pending:
+            self._pending = True
+            QtCore.QTimer.singleShot(0, self._later)
+        return False
+
+    def _later(self):
+        self._pending = False
+        self._arrange()
+
+    def on_arranged(self, callback):
+        """callback(layout_name) after every arrangement."""
+        self._cb = callback
+
+    def rearrange(self):
+        self._arrange()
+
+    def resizeEvent(self, ev):
+        super().resizeEvent(ev)
+        self._arrange()
+
+    def showEvent(self, ev):
+        super().showEvent(ev)
+        self._arrange()
+
+    def event(self, ev):
+        if ev.type() == QtCore.QEvent.Type.LayoutRequest:
+            self._arrange()
+        return super().event(ev)
+
+    def minimumSizeHint(self):
+        return QtCore.QSize(200, 150)
+
+    def sizeHint(self):
+        return QtCore.QSize(1000, 700)
+
+    # --- the candidates ---
+
+    def _free_min(self, W, H):
+        if self.free is None:
+            return 0.0, 0.0
+        m = self.free.minimumSizeHint()
+        return max(float(m.width()), self._share * W), max(float(m.height()), self._share * H)
+
+    def _row_shared(self, A, B, W, H):
+        """A and B in one row of width W, height at most H: the largest common height whose widths fit; ((wA, hA), (wB, hB))."""
+        lo, hi = 1.0, float(H)
+        best = None
+        for _ in range(30):
+            h = 0.5 * (lo + hi)
+            a, b = _shaped_size(A, W, h), _shaped_size(B, W, h)
+            if a is None or b is None:
+                return None
+            if a[0] + b[0] + self._sp <= W:
+                best, lo = (a, b), h
+            else:
+                hi = h
+        return best
+
+    def _col_shared(self, A, B, W, H):
+        """A over B in one column of height H, width at most W: the largest common width whose heights fit."""
+        lo, hi = 1.0, float(W)
+        best = None
+        for _ in range(30):
+            w = 0.5 * (lo + hi)
+            a, b = _shaped_size(A, w, H), _shaped_size(B, w, H)
+            if a is None or b is None:
+                return None
+            if a[1] + b[1] + self._sp <= H:
+                best, lo = (a, b), w
+            else:
+                hi = w
+        return best
+
+    def _candidates(self, W, H):
+        """[(name, blank, {widget: (x, y, w, h)}, valid)] at the size W x H."""
+        sp = self._sp
+        fw, fh = self._free_min(W, H)
+        F = self.free
+        out = []
+        R = QtCore.QRectF
+
+        def put(name, rects, blank, valid=True):
+            out.append((name, float(blank), rects, bool(valid)))
+
+        if len(self.shaped) == 1:
+            A = self.shaped[0]
+            if F is None:
+                a = _shaped_size(A, W, H)
+                if a:
+                    put('a', {A: (0, 0, a[0], a[1])}, W * H - a[0] * a[1])
+                return out
+            a = _shaped_size(A, W - fw - sp, H)                   # h: A at the left
+            if a:
+                wA = a[0]
+                put('h', {A: (0, 0, a[0], a[1]), F: (wA + sp, 0, W - wA - sp, H)}, wA * (H - a[1]),
+                    W - wA - sp >= fw - 1)
+            a = _shaped_size(A, W, H - fh - sp)                   # v: A on top
+            if a:
+                hA = a[1]
+                put('v', {A: (0, 0, a[0], a[1]), F: (0, hA + sp, W, H - hA - sp)}, hA * (W - a[0]),
+                    H - hA - sp >= fh - 1)
+            return out
+        A, B = self.shaped[0], self.shaped[1]
+        if F is None:
+            fw = fh = 0.0
+        # row_top
+        rs = self._row_shared(A, B, W, H - fh - sp if F is not None else H)
+        if rs:
+            (wA, hA), (wB, hB) = rs
+            row_h = max(hA, hB)
+            rects = {A: (0, 0, wA, hA), B: (wA + sp, 0, wB, hB)}
+            if F is not None:
+                rects[F] = (0, row_h + sp, W, H - row_h - sp)
+            put('row_top', rects, W * row_h - wA * hA - wB * hB, F is None or H - row_h - sp >= fh - 1)
+        # a_left
+        a = _shaped_size(A, W - fw - sp, H)
+        if a:
+            wA, hA = a
+            Wr = W - wA - sp
+            b = _shaped_size(B, Wr, H - fh - sp if F is not None else H)
+            if b:
+                wB, hB = b
+                rects = {A: (0, 0, wA, hA), B: (wA + sp, 0, wB, hB)}
+                if F is not None:
+                    rects[F] = (wA + sp, hB + sp, Wr, H - hB - sp)
+                put('a_left', rects, wA * (H - hA) + hB * (Wr - wB), F is None or (Wr >= fw - 1 and H - hB - sp >= fh - 1))
+        # a_top
+        a = _shaped_size(A, W, H - fh - sp)
+        if a:
+            wA, hA = a
+            Hb = H - hA - sp
+            b = _shaped_size(B, W - fw - sp if F is not None else W, Hb)
+            if b:
+                wB, hB = b
+                rects = {A: (0, 0, wA, hA), B: (0, hA + sp, wB, hB)}
+                if F is not None:
+                    rects[F] = (wB + sp, hA + sp, W - wB - sp, Hb)
+                put('a_top', rects, hA * (W - wA) + wB * (Hb - hB), F is None or (W - wB - sp >= fw - 1 and Hb >= fh - 1))
+        # ab_left
+        cs = self._col_shared(A, B, W - fw - sp if F is not None else W, H)
+        if cs:
+            (wA, hA), (wB, hB) = cs
+            col_w = max(wA, wB)
+            rects = {A: (0, 0, wA, hA), B: (0, hA + sp, wB, hB)}
+            if F is not None:
+                rects[F] = (col_w + sp, 0, W - col_w - sp, H)
+            put('ab_left', rects, col_w * H - wA * hA - wB * hB, F is None or W - col_w - sp >= fw - 1)
+        if F is not None:
+            # abf_row
+            a = _shaped_size(A, W - fw - 2 * sp, H)
+            if a:
+                wA, hA = a
+                b = _shaped_size(B, W - wA - fw - 2 * sp, H)
+                if b:
+                    wB, hB = b
+                    x = wA + sp + wB + sp
+                    put('abf_row', {A: (0, 0, wA, hA), B: (wA + sp, 0, wB, hB), F: (x, 0, W - x, H)},
+                        wA * (H - hA) + wB * (H - hB), W - x >= fw - 1)
+            # abf_col
+            a = _shaped_size(A, W, H - fh - 2 * sp)
+            if a:
+                wA, hA = a
+                b = _shaped_size(B, W, H - hA - fh - 2 * sp)
+                if b:
+                    wB, hB = b
+                    y = hA + sp + hB + sp
+                    put('abf_col', {A: (0, 0, wA, hA), B: (0, hA + sp, wB, hB), F: (0, y, W, H - y)},
+                        hA * (W - wA) + hB * (W - wB), H - y >= fh - 1)
+        return out
+
+    def _score(self, cand, solo, W, H):
+        """(score, plotted area) of a candidate: the smallest group scale less the blank fraction."""
+        name, blank, rects, _ = cand
+        scales, area = [], 0.0
+        for w, s_area in zip(self.shaped, solo):
+            r = rects.get(w)
+            a = r[2] * r[3] if r else 0.0
+            area += a
+            scales.append(min(1.0, (a / s_area) ** 0.5) if s_area > 0 else 0.0)
+        return (min(scales) if scales else 0.0) - blank / (W * H), area, scales
+
+    def _choose(self, W, H):
+        cands = self._candidates(W, H)
+        if not cands:
+            return None
+        valid = [c for c in cands if c[3]] or cands
+        solo = []
+        for w in self.shaped:
+            s = _shaped_size(w, W, H)
+            solo.append(s[0] * s[1] if s else 0.0)
+        scored = [(self._score(c, solo, W, H), c) for c in valid]
+        best = max(scored, key=lambda t: (round(t[0][0], 3), t[0][1]))
+        cur = next((t for t in scored if t[1][0] == self.layout_name), None)
+        if cur is not None and cur is not best and cur[0][0] >= best[0][0] - self._hys:
+            best = cur
+        self._scales = best[0][2]
+        return best[1]
+
+    def scales(self):
+        """The groups' scales in the current arrangement (1.0: as large as alone in the window)."""
+        return list(getattr(self, '_scales', []))
+
+    def explain(self):
+        """[(name, score, blank fraction, scales, valid)] of every candidate at the current size, best first (a check's diagnostic)."""
+        W, H = float(self.width()), float(self.height())
+        if W <= 0 or H <= 0 or not self.shaped:
+            return []
+        solo = []
+        for w in self.shaped:
+            s = _shaped_size(w, W, H)
+            solo.append(s[0] * s[1] if s else 0.0)
+        out = []
+        for c in self._candidates(W, H):
+            score, area, scales = self._score(c, solo, W, H)
+            out.append((c[0], round(score, 3), round(c[1] / (W * H), 3), [round(v, 2) for v in scales], c[3]))
+        return sorted(out, key=lambda t: -t[1])
+
+    def _arrange(self):
+        W, H = float(self.width()), float(self.height())
+        if W <= 0 or H <= 0 or not self.shaped:
+            return
+        best = self._choose(W, H)
+        if best is None:
+            return
+        name, blank, rects, _ = best
+        self.layout_name, self._blank, self._placed = name, blank, rects
+        for w, (x, y, ww, hh) in rects.items():
+            w.setGeometry(int(round(x)), int(round(y)), max(int(round(ww)), 1), max(int(round(hh)), 1))
+        if self._cb is not None:
+            self._cb(name)
+
+    # --- what the window reads ---
+
+    def blank_fraction(self):
+        """The blank share of this widget's area in the current arrangement (the free widget counts as filled)."""
+        W, H = float(self.width()), float(self.height())
+        return 0.0 if W <= 0 or H <= 0 else self._blank / (W * H)
+
+    def fit_delta(self):
+        """
+        (dw, dh), each <= 0 px: the strip at the right and the strip at the bottom that no region
+        reaches (the free widget's region counts as reached: the curves fill it), which the window
+        can lose.  (0, 0) before the first arrangement.
+        """
+        if not self._placed:
+            return (0, 0)
+        W, H = float(self.width()), float(self.height())
+        right = max(x + ww for (x, y, ww, hh) in self._placed.values())
+        bottom = max(y + hh for (x, y, ww, hh) in self._placed.values())
+        return (min(0, int(round(right - W))), min(0, int(round(bottom - H))))

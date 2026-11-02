@@ -71,6 +71,8 @@ SPECS = {
     # --- buttons ---
     'RUN': _spec('button', 0.6, 0.4, fs=9),                         # the simulator: RUN / STOP
     'Rerun': _spec('button', 0.6, 0.3),                             # the simulator: apply a tip height
+    'Crop': _spec('button', 0.6, 0.26, fs=7),                       # the simulator's placement topo: the view to the cursors' ranges
+    'Uncrop': _spec('button', 0.7, 0.26, fs=7),                     # ... back to the full extent
     'Save data': _spec('button', 1.0, 0.36),
     'topo': _spec('button', 0.5, 0.36),                             # the simulator wrapper's 'Send to decomp' box
     'ldos': _spec('button', 0.5, 0.36),
@@ -88,6 +90,10 @@ SPECS = {
     'σ (eV)': _spec('value', 0.6, 0.24, decimals=3),                           # SigmaBox: the window passes the limits
     'γ': _spec('text', 0.45, 0.24, fs=7),                                      # GammaBox (plane slice)
     'LDOS γ': _spec('text', 0.45, 0.24, fs=7),                                 # GammaBox (the simulator's heatmaps)
+    'x lo': _spec('text', 0.55, 0.22, fs=7),                                   # the simulator's crop cursors: the boxes riding with them,
+    'x hi': _spec('text', 0.55, 0.22, fs=7),                                   # ... the x ones along the placement topo's top edge,
+    'y lo': _spec('text', 0.55, 0.22, fs=7),                                   # ... the y ones along its right edge (Å, two decimals)
+    'y hi': _spec('text', 0.55, 0.22, fs=7),
     'area ≥': _spec('text', 0.7, 0.24),                                        # decomp_window: the MO area threshold
     # --- sliders ---
     'window start': _spec('slider', 3.0, 0.2, fs=8, vmin=0, vmax=1),           # forces.py: scrubbing the ionic steps (the one slider kept)
@@ -95,7 +101,7 @@ SPECS = {
 
 # Widget names whose label text differs from the name (every other widget is labeled with its name).
 LABELS = {'sim toggles': None, 'broadening': None, 'collapse': None, 'spread view': None, 'topo view': None,
-          'mode': 'mode', 'σ broad': 'σ'}
+          'mode': 'mode', 'σ broad': 'σ', 'x lo': '', 'x hi': '', 'y lo': '', 'y hi': ''}
 
 # The short form of every label that has one, used when a window is taller than it is wide (the
 # figure's portrait flag, qtplot.Figure.set_portrait): a control whose label is a key here shows

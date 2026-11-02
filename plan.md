@@ -8,8 +8,8 @@ and committed, the last step deletes this file from the repository (it stays in 
 
 - **Where the work stands**: sections 1 to 5 are done and on `main` (the conversion of every
   interactive window to the shared Qt layer `qtgui/`, verified; commits 76e35cc .. 07dcf10).
-  Section 6 (the owner's shape rule) is in progress: 6.1 to 6.3 done, 6.4 to 6.7 open. Continue
-  at the first `[ ]` of section 6.
+  Section 6 (the owner's shape rule): 6.1 to 6.6 done; 6.7 (this file's deletion in a commit of
+  its own) is the last step.
 - **Git**: develop on the branch `claude/festive-mayer-q2ig83`; after every commit push the branch
   and fast-forward `main` to it (the owner's instruction: the commits go to `main` and the history
   is recorded): `git push origin claude/festive-mayer-q2ig83 && git push origin HEAD:main`. Never
@@ -240,7 +240,7 @@ Tier 3 and Feenstra changes go into the two inactive reference files, fully comm
   a requested size with its own is checked at the size it took: the text rule and the portrait
   flag).  Results: matcher 66/66, decomp 53/53, misc 64/64, pytest 68 pass / 58 skip / the 3
   pre-existing failures; the simulator reports empty bands in every view until 6.4 rebuilds it.
-- [~] 6.4 The simulator's four views arranged by one rule, confirmed by the owner on 2026-11-02
+- [x] 6.4 The simulator's four views arranged by one rule, confirmed by the owner on 2026-11-02
   after the first pane layout was rejected (the heatmaps came out as small as a control box):
   **every plotted panel is a first-class citizen; the layout fills the window with plots, spatial
   panels keep their ratio, no plotted panel is ever shrunk to make room, and what is minimized is
@@ -284,16 +284,24 @@ Tier 3 and Feenstra changes go into the two inactive reference files, fully comm
     their region, the boxes above their panels; the crop: a dragged cursor updates its box, a typed
     box moves its cursor, Crop changes the limits and the arrangement, Uncrop restores.  The full
     suite once at the end.
-  Done so far: the first pane layout of the fork (reviewed, kept as the base: `_pair`,
-  `_panel_with_box`, `_detach`, the PanelRows, `_pin_limits` removed, the shape check with the
-  two cells, the seeded caches); the layer's `OrientedPanes.fit_delta`, `PanelWithBox` over a
-  narrow cell, the row band counting a member's box above.  To do: the engine, the FlipBox, the
-  MapBlock, the CropPanel and the crop logic, the simulator on them, the checks, the guide's
-  rule-11 text and the READMEs updated to this rule.
-- [ ] 6.5 Every other converted window on the rule (the automatic grid's rows); the render check
-  measures the empty band of every row and the window's fit.
-- [ ] 6.6 Screenshots of the four views for a tall and a wide synthetic cell to the owner; READMEs;
-  commit, push (the branch and `main`).
+  Done: the layer (`controls.Arrangement` with `explain()`, `FlipBox`, `MapBlock`, `CropPanel`,
+  `Titled`, `RideBand` following its items, `_shaped_size`; `Axes.set_xlim` / `set_ylim` announce
+  the shape, a one-axis crop counts, the row band counts the difference of the boxes above its
+  members); the simulator's four views on the Arrangement with the crop of the placement topo
+  (`_placement`, `_full_extent`, `_axis_extent`, `_reset_cursors`, `_cursor_value`, `_set_cursor`,
+  `_on_cursor_box`, `_draw_cursors`, `_place_cursor_boxes`, `_crop_ranges`, `_apply_crop`,
+  `_on_crop`, `_on_uncrop`, `_rearrange`; the spectrum no longer square in Line / Path); the
+  shape check (`checks/check_simulator.py --shape`, 74 checks: the two cells in the four views,
+  the arrangement's blank and scales, the boxes above their panels, the crop by drag, by typing,
+  Crop, Uncrop); the guide's rule 11, tools, recipe step and pitfalls; the READMEs.
+- [x] 6.5 Every other converted window on the rule (the automatic grid's rows are PanelRows; a
+  window of spatial panels trims itself); the render check measures the empty band of every row
+  and the window's fit: decomp 53/53, matcher 66/66, misc windows 64/64; the READMEs.
+- [x] 6.6 Screenshots of the four views for a tall and a wide synthetic cell to the owner (sent in
+  the session; `checks/check_simulator.py --shape` writes them under the shots folder); READMEs;
+  commit, push (the branch and `main`).  Final results: simulator 158/158 (the 74 shape checks
+  included), decomp 53/53, matcher 66/66, misc 64/64, pytest 68 pass / 58 skip / the 3
+  pre-existing failures, the layer exercises clean.
 - [ ] 6.7 When every step above is done and committed: delete `plan.md` from the repository in a
   commit of its own (the owner's instruction; the file stays in the git history), push the branch
   and `main`.
