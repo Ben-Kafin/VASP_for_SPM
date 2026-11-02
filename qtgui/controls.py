@@ -2046,7 +2046,10 @@ class Arrangement(QtWidgets.QWidget):
     heatmap row's), at the top left of its slot, and the part of the slot it leaves counts as
     blank.  With `free_scored` (the simulator's Single Point view) the free widget is a
     first-class panel instead: it is scored as a group (its scale against the whole window) and
-    the one group and it are sized to one scale.  The candidate arrangements for two groups A, B and the free widget F:
+    the one group and it are sized to one scale.  `group_cap` (A, B, k, box_a, box_b): group A's
+    plot box never more than k times group B's (box_a(rect), box_b(rect): their plot box heights
+    in a region; the simulator: the topographies at most twice a heatmap); a candidate that
+    breaks it is sized again with A limited (_candidates).  The candidate arrangements for two groups A, B and the free widget F:
 
         row_top   A and B in one row across the top, F below
         a_left    A at the left with the window's height; B over F at its right
@@ -2068,7 +2071,7 @@ class Arrangement(QtWidgets.QWidget):
     """
 
     def __init__(self, shaped, free=None, spacing=8, hysteresis=0.05, free_min=None, free_cap=None,
-                 free_scored=False):
+                 free_scored=False, group_cap=None):
         super().__init__()
         self.shaped = [w for w in shaped if w is not None]
         self.free = free
@@ -2078,6 +2081,8 @@ class Arrangement(QtWidgets.QWidget):
             w.installEventFilter(self)
         self._sp, self._hys = int(spacing), float(hysteresis)
         self._free_min_fn, self._free_cap_fn, self._free_scored = free_min, free_cap, bool(free_scored)
+        self._group_cap = group_cap       # (A, B, k, box_a, box_b): group A's plot box at most k times group B's
+        self._lim = {}                    # {group: (max w, max h)} while a candidate is sized under group_cap
         self.layout_name = None
         self._placed = None               # {widget: QRectF} of the last arrangement
         self._blank = 0.0
@@ -2157,7 +2162,7 @@ class Arrangement(QtWidgets.QWidget):
         the left and the free widget at its right, else the group on top.
         """
         sp = self._sp
-        solo = _shaped_size(A, W, H)
+        solo = self._sz(A, W, H)
         if not solo:
             return None
         s_area = solo[0] * solo[1]
@@ -2165,7 +2170,7 @@ class Arrangement(QtWidgets.QWidget):
         best = None
         for _ in range(30):
             mid = 0.5 * (lo + hi)
-            a = _shaped_size(A, mid, H) if horizontal else _shaped_size(A, W, mid)
+            a = self._sz(A, mid, H) if horizontal else self._sz(A, W, mid)
             if not a:
                 return best
             slot = (W - a[0] - sp, H) if horizontal else (W, H - a[1] - sp)
@@ -2184,7 +2189,7 @@ class Arrangement(QtWidgets.QWidget):
         best = None
         for _ in range(30):
             h = 0.5 * (lo + hi)
-            a, b = _shaped_size(A, W, h), _shaped_size(B, W, h)
+            a, b = self._sz(A, W, h), self._sz(B, W, h)
             if a is None or b is None:
                 return None
             if a[0] + b[0] + self._sp <= W:
@@ -2199,7 +2204,7 @@ class Arrangement(QtWidgets.QWidget):
         best = None
         for _ in range(30):
             w = 0.5 * (lo + hi)
-            a, b = _shaped_size(A, w, H), _shaped_size(B, w, H)
+            a, b = self._sz(A, w, H), self._sz(B, w, H)
             if a is None or b is None:
                 return None
             if a[1] + b[1] + self._sp <= H:
@@ -2208,8 +2213,57 @@ class Arrangement(QtWidgets.QWidget):
                 hi = w
         return best
 
+    def _sz(self, w, W, H):
+        """_shaped_size of a group inside W x H, within its limit while one is set (_lim, group_cap)."""
+        lim = self._lim.get(w)
+        if lim is not None:
+            W, H = min(float(W), lim[0]), min(float(H), lim[1])
+        return _shaped_size(w, W, H)
+
+    def _within(self, cand):
+        """Whether a candidate keeps group_cap: group A's plot box at most k times group B's (box_a, box_b of their rects; a box not known yet counts as kept)."""
+        A, B, k, box_a, box_b = self._group_cap
+        rects = cand[2]
+        if A not in rects or B not in rects:
+            return True
+        a, b = box_a(rects[A]), box_b(rects[B])
+        return a is None or b is None or a <= k * b + 0.5
+
     def _candidates(self, W, H):
-        """[(name, blank, {widget: (x, y, w, h)}, valid)] at the size W x H."""
+        """
+        [(name, blank, {widget: (x, y, w, h)}, valid)] at the size W x H (_candidates_at); with
+        group_cap, a candidate whose group A is more than k times group B (their plot boxes) is
+        sized again with A limited to the largest share of its size that keeps the cap (a
+        bisection of 10 steps on that candidate alone; the room A gives up goes to B and the free
+        widget as the candidate's geometry gives it).
+        """
+        self._lim = {}
+        base = self._candidates_at(W, H)
+        if self._group_cap is None or len(self.shaped) < 2:
+            return base
+        A = self._group_cap[0]
+        out = []
+        for cand in base:
+            if self._within(cand):
+                out.append(cand)
+                continue
+            name, ra = cand[0], cand[2][A]
+            lo, hi, best = 0.05, 1.0, None
+            for _ in range(10):
+                f = 0.5 * (lo + hi)
+                self._lim = {A: (ra[2] * f, ra[3] * f)}
+                c = next((c for c in self._candidates_at(W, H, only=name) if c[0] == name), None)
+                if c is not None and self._within(c):
+                    best, lo = c, f
+                else:
+                    hi = f
+            self._lim = {}
+            out.append(best if best is not None else cand)
+        return out
+
+    def _candidates_at(self, W, H, only=None):
+        """[(name, blank, {widget: (x, y, w, h)}, valid)] at the size W x H, the groups within their limits (_lim); `only`: that candidate alone (two groups)."""
+        want = lambda name: only is None or only == name
         sp = self._sp
         fw, fh = self._free_min(W, H)
         F = self.free
@@ -2223,7 +2277,7 @@ class Arrangement(QtWidgets.QWidget):
         if len(self.shaped) == 1:
             A = self.shaped[0]
             if F is None:
-                a = _shaped_size(A, W, H)
+                a = self._sz(A, W, H)
                 if a:
                     put('a', {A: (0, 0, a[0], a[1])}, W * H - a[0] * a[1])
                 return out
@@ -2231,7 +2285,7 @@ class Arrangement(QtWidgets.QWidget):
                 b = self._balanced(A, True, W, H, fw, fh)
                 a = b[0] if b else None
             else:
-                a = _shaped_size(A, W - fw - sp, H)
+                a = self._sz(A, W - fw - sp, H)
             if a:                                                 # h: A at the left
                 wA = a[0]
                 put('h', {A: (0, 0, a[0], a[1]), F: (wA + sp, 0, W - wA - sp, H)}, wA * (H - a[1]),
@@ -2240,7 +2294,7 @@ class Arrangement(QtWidgets.QWidget):
                 b = self._balanced(A, False, W, H, fw, fh)
                 a = b[0] if b else None
             else:
-                a = _shaped_size(A, W, H - fh - sp)
+                a = self._sz(A, W, H - fh - sp)
             if a:                                                 # v: A on top
                 hA = a[1]
                 put('v', {A: (0, 0, a[0], a[1]), F: (0, hA + sp, W, H - hA - sp)}, hA * (W - a[0]),
@@ -2250,7 +2304,7 @@ class Arrangement(QtWidgets.QWidget):
         if F is None:
             fw = fh = 0.0
         # row_top
-        rs = self._row_shared(A, B, W, H - fh - sp if F is not None else H)
+        rs = self._row_shared(A, B, W, H - fh - sp if F is not None else H) if want('row_top') else None
         if rs:
             (wA, hA), (wB, hB) = rs
             row_h = max(hA, hB)
@@ -2259,11 +2313,11 @@ class Arrangement(QtWidgets.QWidget):
                 rects[F] = (0, row_h + sp, W, H - row_h - sp)
             put('row_top', rects, W * row_h - wA * hA - wB * hB, F is None or H - row_h - sp >= fh - 1)
         # a_left
-        a = _shaped_size(A, W - fw - sp, H)
+        a = self._sz(A, W - fw - sp, H) if want('a_left') else None
         if a:
             wA, hA = a
             Wr = W - wA - sp
-            b = _shaped_size(B, Wr, H - fh - sp if F is not None else H)
+            b = self._sz(B, Wr, H - fh - sp if F is not None else H)
             if b:
                 wB, hB = b
                 rects = {A: (0, 0, wA, hA), B: (wA + sp, 0, wB, hB)}
@@ -2271,11 +2325,11 @@ class Arrangement(QtWidgets.QWidget):
                     rects[F] = (wA + sp, hB + sp, Wr, H - hB - sp)
                 put('a_left', rects, wA * (H - hA) + hB * (Wr - wB), F is None or (Wr >= fw - 1 and H - hB - sp >= fh - 1))
         # a_top
-        a = _shaped_size(A, W, H - fh - sp)
+        a = self._sz(A, W, H - fh - sp) if want('a_top') else None
         if a:
             wA, hA = a
             Hb = H - hA - sp
-            b = _shaped_size(B, W - fw - sp if F is not None else W, Hb)
+            b = self._sz(B, W - fw - sp if F is not None else W, Hb)
             if b:
                 wB, hB = b
                 rects = {A: (0, 0, wA, hA), B: (0, hA + sp, wB, hB)}
@@ -2283,7 +2337,7 @@ class Arrangement(QtWidgets.QWidget):
                     rects[F] = (wB + sp, hA + sp, W - wB - sp, Hb)
                 put('a_top', rects, hA * (W - wA) + wB * (Hb - hB), F is None or (W - wB - sp >= fw - 1 and Hb >= fh - 1))
         # ab_left
-        cs = self._col_shared(A, B, W - fw - sp if F is not None else W, H)
+        cs = self._col_shared(A, B, W - fw - sp if F is not None else W, H) if want('ab_left') else None
         if cs:
             (wA, hA), (wB, hB) = cs
             col_w = max(wA, wB)
@@ -2293,20 +2347,20 @@ class Arrangement(QtWidgets.QWidget):
             put('ab_left', rects, col_w * H - wA * hA - wB * hB, F is None or W - col_w - sp >= fw - 1)
         if F is not None:
             # abf_row
-            a = _shaped_size(A, W - fw - 2 * sp, H)
+            a = self._sz(A, W - fw - 2 * sp, H) if want('abf_row') else None
             if a:
                 wA, hA = a
-                b = _shaped_size(B, W - wA - fw - 2 * sp, H)
+                b = self._sz(B, W - wA - fw - 2 * sp, H)
                 if b:
                     wB, hB = b
                     x = wA + sp + wB + sp
                     put('abf_row', {A: (0, 0, wA, hA), B: (wA + sp, 0, wB, hB), F: (x, 0, W - x, H)},
                         wA * (H - hA) + wB * (H - hB), W - x >= fw - 1)
             # abf_col
-            a = _shaped_size(A, W, H - fh - 2 * sp)
+            a = self._sz(A, W, H - fh - 2 * sp) if want('abf_col') else None
             if a:
                 wA, hA = a
-                b = _shaped_size(B, W, H - hA - fh - 2 * sp)
+                b = self._sz(B, W, H - hA - fh - 2 * sp)
                 if b:
                     wB, hB = b
                     y = hA + sp + hB + sp

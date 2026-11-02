@@ -1083,7 +1083,8 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         # is a first-class panel beside the placement topo (Arrangement free_min / free_cap / free_scored).
         self._arrangement = controls.Arrangement(groups, free, spacing=8, free_min=self._curves_readable,
                                                  free_cap=self._curves_cap(mode, groups),
-                                                 free_scored=mode == 'Single Point')
+                                                 free_scored=mode == 'Single Point',
+                                                 group_cap=self._topo_cap(mode, groups))
         self._panel_area.addWidget(self._arrangement, 1)
         self._box_topo_h.setVisible(True)
         self._box_ldos_h.setVisible(mode != 'Single Point')
@@ -1160,6 +1161,52 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
                 return region(max(r[3] - cluster._label_h() - hm_tb, 1.0))
             return cap
         return None
+
+    TOPO_MAX_FACTOR = 2.0              # a topography's plot box at most this many times a heatmap's (Map, Line, Path)
+
+    def _topo_axes(self):
+        """The topography panels of the view: the placement topo (Global Topo in Map) and the Map Topo."""
+        if self.mode == 'Map':
+            return [a for a in (getattr(self, 'ax_map_global', None), getattr(self, 'ax_map', None)) if a is not None]
+        return [a for a in (getattr(self, 'ax_map', None),) if a is not None]
+
+    def _topo_cap(self, mode, groups):
+        """
+        The Arrangement's group_cap of the view (None in Single Point: no heatmap): the topography
+        group's plot box at most TOPO_MAX_FACTOR times one heatmap's (Map: one energy map's box,
+        MapBlock.map_box_height; Line / Path: the heatmap row's box, as _curves_cap reads it).  A
+        topo's box in a region is the region's height less the room around its box: the crop
+        panel's boxes and band above it and the axes' title and x axis (fixed quantities, never the
+        window's current geometry, so the arrangement does not chase its own last layout).
+        """
+        if mode not in ('Map', 'Line', 'Path'):
+            return None
+        topo_group, heat_group = groups[0], groups[1]
+
+        def around():
+            # The room over and around the placement topo's box: the crop panel's boxes and band above it
+            # (CropPanel._box_h) and the axes' title and x axis (the cell's _decor): fixed quantities, not
+            # the window's current geometry, so the arrangement never chases its own last layout.
+            panel = getattr(self, '_crop_panel', None)
+            if panel is None:
+                return 0.0
+            l, t, r, b = panel.cell._decor()
+            return panel._box_h() + t + b
+
+        def box_a(rect):
+            return max(rect[3] - around(), 1.0)
+
+        if mode == 'Map':
+            def box_b(rect):
+                return self._map_block.map_box_height(rect[2], max(rect[3] - heat_group._label_h(), 1.0))
+        else:
+            def box_b(rect):
+                hm = getattr(self, 'line_decomp_axes', None) or []
+                if not hm:
+                    return None
+                hm_tb = max(a._decor_px()[1] + a._decor_px()[3] for a in hm)
+                return max(rect[3] - heat_group._label_h() - hm_tb, 1.0)
+        return (topo_group, heat_group, self.TOPO_MAX_FACTOR, box_a, box_b)
 
     def _rearrange(self):
         """The arrangement chosen again for the panels as they now are, and the window trimmed to them (rule 11)."""

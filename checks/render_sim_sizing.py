@@ -1,8 +1,9 @@
 """
 The simulator's sizing on synthetic processed data (checks/sim_synthetic.py): every view (Single
 Point, Line, Path, Map) at the design size and in a wide and a tall window, one screenshot each, and
-one line each: the arrangement chosen, the spectrum panel's size, one energy map's size (Map), the
-heatmap row's height (Line, Path) and the blank fraction.
+one line each: the arrangement chosen, the topography's box, the spectrum panel's size, one energy
+map's size (Map), the heatmap row's height (Line, Path), the topography's height over the
+heatmap's, and the blank fraction.
 
     QT_QPA_PLATFORM=offscreen python3 -m checks.render_sim_sizing <out_dir> [tag]
 
@@ -35,9 +36,11 @@ def measure(sim):
     row_h = None
     if sim.mode in ('Line', 'Path') and getattr(sim, 'line_decomp_axes', None):
         row_h = round(sim.line_decomp_axes[0]._px_rect()[3])
+    topo = sim.ax_map_global if sim.mode == 'Map' else sim.ax_map
+    t = topo._px_rect()
     return (arr.layout_name if arr is not None else None,
             (round(spec[2]), round(spec[3])) if spec else None, one_map, row_h,
-            round(arr.blank_fraction(), 3) if arr is not None else None)
+            round(arr.blank_fraction(), 3) if arr is not None else None, (round(t[2]), round(t[3])))
 
 
 def main(out, tag='now'):
@@ -52,10 +55,12 @@ def main(out, tag='now'):
         for name, w_in, h_in in SIZES:
             rw.resize(sim.fig, w_in, h_in)
             rw.pump(250)
-            lay, spec, one_map, row_h, blank = measure(sim)
+            lay, spec, one_map, row_h, blank, topo = measure(sim)
             win = sim.fig.canvas.window()
-            print(f"{tag:6s} {view:12s} {name:6s} window {win.width()}x{win.height()}  arrangement {lay}  "
-                  f"spectrum {spec}  one map {one_map}  heatmap row h {row_h}  blank {blank}", flush=True)
+            heat = one_map[1] if one_map else row_h
+            ratio = f"{topo[1] / heat:.2f}" if heat else "-"
+            print(f"{tag:6s} {view:12s} {name:6s} window {win.width()}x{win.height()}  arrangement {lay}  topo {topo}  "
+                  f"spectrum {spec}  one map {one_map}  heatmap h {row_h}  topo/heat {ratio}  blank {blank}", flush=True)
             sim.fig.savefig(os.path.join(out, f"{tag}_{view.replace(' ', '_').lower()}_{name}.png"))
 
 
