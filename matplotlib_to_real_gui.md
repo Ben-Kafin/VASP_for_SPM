@@ -59,8 +59,10 @@ slower has failed.
     they leave, and the layout also minimizes the controls' footprint. A curve panel (a spectrum,
     a profile) never grows at the heat maps' expense: it is given only its readable minimum (a plot
     box of 220 x 140 px at the design text size, plus its labels) before the groups are sized,
-    and keeps that readable size: it never grows to fill blank space, and the part of its slot it
-    leaves counts as blank. A topography never grows past twice a heatmap, in width or in height
+    then takes the room the groups leave: the heat maps come first and the curves fill what their
+    shapes cannot use, so no room stands blank beside a small spectrum. In the simulator's Map view
+    the spectrum is one cell of the map block, a map's size, in the free slot of the block's last
+    row (`MapBlock` `extra`). A topography never grows past twice a heatmap, in width or in height
     (`group_cap`: the energy maps in Map, the heatmap row in Line and Path). Where a curve panel
     is the window's main panel beside one map (the simulator's Single Point view), it is a
     first-class panel instead: it and the map are sized to one scale. The panels drawn in the

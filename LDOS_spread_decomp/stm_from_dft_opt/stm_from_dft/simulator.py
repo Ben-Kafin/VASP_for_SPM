@@ -855,6 +855,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         self._arrangement = None                           # the view's controls.Arrangement (the shaped groups and the curve panels)
         self._cluster_row = None                           # Line / Path: the heatmap row's PanelRow (rebuilt per refresh)
         self._map_block = None                             # Map: the energy maps' wrapping block (controls.MapBlock)
+        self._spec_cell = None                             # Map: the spectrum's cell, one cell of the block
         self._map_cells = []                               # Map: the cells in the block (rebuilt when the counts change)
         self.line_decomp_axes = []
         self.map_axes = []
@@ -988,7 +989,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
             c.deleteLater()
         self._map_cells = []
         if self._map_block is not None:
-            self._map_block.set_groups([], None)
+            self._map_block.set_groups([], None, extra=getattr(self, '_spec_cell', None))
 
     def _clear_panels(self):
         """Every panel of the view removed: its axes, its cells, the panes of the panel area; the reused boxes and label detached first."""
@@ -999,6 +1000,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         self._detach(*self._kept_widgets())
         self._empty_layout(self._panel_area, self._kept_widgets())
         self._arrangement = None
+        self._spec_cell = None
         self._crop_ax = self._crop_panel = None
         self._cursor_artists, self._shade_artists = [], []
         self._panel_cells = []
@@ -1018,10 +1020,11 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         view: the placement topo in its crop panel (Topo h, Crop / Uncrop and the cursor boxes
         above and beside it); in Line / Path the heatmap row (its label over it); in Map the
         Global Topo and Map Topo pair (their boxes above) and the energy maps' wrapping block.  The
-        curve panels (Tip Height and Partitioned LDOS, beside or over each other by their room;
-        the spectrum alone in Map) keep their readable size (_curves_readable, _curves_cap) and the
-        heatmaps and topographies take the rest, the topographies at most twice a heatmap
-        (_topo_cap); in Single Point the spectrum is a first-class panel beside the placement topo.
+        curve panels (Tip Height and Partitioned LDOS, beside or over each other by their room)
+        take the room the heatmaps and topographies leave, at least their readable size
+        (_curves_readable), the topographies at most twice a heatmap (_topo_cap); in Map the
+        spectrum is a cell of the map block, a map's size; in Single Point it is a first-class
+        panel beside the placement topo.
         The arrangement is chosen
         again and the window trimmed (Figure.fit_window) on every view change, rebuild, crop and
         resize; the unit-cell panels' orientation (as drawn, or turned 90 degrees: the way the
@@ -1051,7 +1054,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         elif mode in ('Line', 'Path'):
             # The placement topo; the heatmap row (rebuilt by _update_all each refresh, the LDOS h box
             # above the Line Topo panel or above the Path stripe) under its label; the Tip Height
-            # profile and the spectrum at their readable size (rule 11), side by side or stacked by that room's shape.
+            # profile and the spectrum in the room left (at least readable: rule 11), side by side or stacked by that room's shape.
             self.ax_map, topo = self._placement()
             self._cluster_row = plt.PanelRow(spacing=4)
             cluster = controls.Titled(plt.RowWidget(self._cluster_row), self._cluster_label.qt)
@@ -1070,7 +1073,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         elif mode == 'Map':
             # The Global Topo (the crop panel) and the Map Topo (LDOS h above it) side by side as one
             # shaped row; the energy maps as a wrapping block under its label (rebuilt by _update_all
-            # when the counts change); the spectrum at its readable size (rule 11).  The topo panels keep
+            # when the counts change) with the spectrum as one of its cells (rule 11).  The topo panels keep
             # set_aspect('equal') and take the same crop.
             row = plt.PanelRow(spacing=10)
             self.ax_map_global, topo = self._placement()
@@ -1080,18 +1083,22 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
             topos = plt.RowWidget(row)
             self._map_block = controls.MapBlock(fig, spacing=4)
             maps = controls.Titled(self._map_block, self._cluster_label.qt)
+            # The spectrum is one cell of the map block, a map's size, in the free slot of the block's last
+            # row (or a row of its own): never a strip below the maps, never squeezed (rule 11).
             self.ax_spec, spec_cell = self._cell_axes()
-            groups, free = [topos, maps], spec_cell
+            self._spec_cell = spec_cell
+            self._map_block.set_groups([], None, extra=spec_cell)
+            groups, free = [topos, maps], None
             self.map_axes = []
             self.cax_list = []
             self.marks = self.ax_map.scatter([], [], s=150, edgecolors='black', zorder=15, picker=5)
             fig.align_row(self.ax_map_global, self.ax_map)
-        # The sizing (rule 11): the heatmaps and the topographies fill the window (the topographies at most
-        # twice a heatmap, in width and in height); the curve panels keep their readable size, never grown
-        # to fill blank space; in Single Point the spectrum is a first-class panel beside the placement topo
-        # (Arrangement free_min / free_cap / free_scored / group_cap).
+        # The sizing (rule 11): the heatmaps and the topographies are sized first and fill the window (the
+        # topographies at most twice a heatmap, in width and in height); the curve panels, at least readable,
+        # take the room those leave (Line / Path: the Tip Height profile and the spectrum in the room beside
+        # or under the heatmap row; Map: the spectrum a cell of the map block); in Single Point the spectrum
+        # is a first-class panel beside the placement topo (Arrangement free_min / free_scored / group_cap).
         self._arrangement = controls.Arrangement(groups, free, spacing=8, free_min=self._curves_readable,
-                                                 free_cap=self._curves_cap(mode, groups),
                                                  free_scored=mode == 'Single Point',
                                                  group_cap=self._topo_cap(mode, groups))
         self._arrangement.on_arranged(self._on_arranged)
@@ -1114,10 +1121,11 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
 
     def _curves_readable(self):
         """
-        The curve panels' readable minimum (rule 11): every curve panel's cell is given, as its
-        minimum size, the readable plot box (CURVE_BOX_MIN_PX at the window's text zoom) plus its
-        own labels (Axes._decor_px), so that a split between two panels never squeezes one below
-        it; returns the free widget's minimum (w, h): the panels side by side.
+        The curve panels' readable minimum (rule 11; the Arrangement's free_min): every curve
+        panel's cell is given, as its minimum size, the readable plot box (CURVE_BOX_MIN_PX at the
+        window's text zoom) plus its own labels (Axes._decor_px), so that a split between two
+        panels never squeezes one below it; returns the free widget's minimum (w, h): the panels
+        side by side.  The panels take the room the heatmaps and topographies leave beyond it.
         """
         z = float(getattr(self.fig, 'font_zoom', 1.0) or 1.0)
         bw, bh = self.CURVE_BOX_MIN_PX
@@ -1130,17 +1138,6 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
             ws.append(w)
             hs.append(h)
         return (sum(ws) + 6 * (len(ws) - 1), max(hs)) if ws else (0, 0)
-
-    def _curves_cap(self, mode, groups):
-        """
-        The Arrangement's free_cap of the view (None in Single Point): the curve panels (the
-        spectrum, and the Tip Height profile in Line / Path) keep their readable size
-        (_curves_readable): never shrunk below it, never grown to fill blank space; the heatmaps
-        and the topographies take the rest.
-        """
-        if mode not in ('Map', 'Line', 'Path'):
-            return None
-        return lambda rects: self._curves_readable()
 
     TOPO_MAX_FACTOR = 2.0              # a topography's plot box at most this many times a heatmap's (Map, Line, Path)
 
@@ -2166,7 +2163,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
                     self._panel_cells.append(shared)
                     self.cax_list.append(self.fig.add_axes(cell=shared))
                     self._map_cells.append(shared)
-                self._map_block.set_groups(groups, shared_bar=shared)
+                self._map_block.set_groups(groups, shared_bar=shared, extra=self._spec_cell)
                 self._rearrange()                  # the block is new: the arrangement and the window follow (rule 11)
 
             if not hasattr(self, 'map_e_targets') or len(self.map_e_targets) != nepts or full_refresh:

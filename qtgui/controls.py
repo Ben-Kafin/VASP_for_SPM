@@ -1843,8 +1843,11 @@ class MapBlock(QtWidgets.QWidget):
     that fit the block's region (`fit`); each partition may have a colour-bar cell at its right
     spanning its rows, or one bar serves the whole block at its right.  The cells are placed by
     the block itself (rule 11: the row of each visual line shares one band, Figure.align_row).
-    `set_groups([(cells, bar_or_None), ...], shared_bar=None)` gives it the cells (the block takes
-    them as children; the old ones are the window's to remove).
+    `set_groups([(cells, bar_or_None), ...], shared_bar=None, extra=None)` gives it the cells (the
+    block takes them as children; the old ones are the window's to remove); `extra` is one more
+    cell of a map's size (the simulator's spectrum) placed in the free slot of the last row, or in
+    a row of its own when the last row is full (alone in the block before there are maps); it
+    counts in the block's shape but not in the maps' room for titles and tick axes.
     """
 
     def __init__(self, fig, spacing=4):
@@ -1853,13 +1856,15 @@ class MapBlock(QtWidgets.QWidget):
         self._sp = int(spacing)
         self._groups = []             # [(cells, bar)]
         self._shared = None
+        self._extra = None            # the extra cell (set_groups), one map's size at the first free slot
         self.cols = 1
         pol = QtWidgets.QSizePolicy.Policy
         self.setSizePolicy(pol.Expanding, pol.Expanding)
 
-    def set_groups(self, groups, shared_bar=None):
+    def set_groups(self, groups, shared_bar=None, extra=None):
         self._groups = [(list(cells), bar) for cells, bar in groups]
         self._shared = shared_bar
+        self._extra = extra
         for cells, bar in self._groups:
             for c in cells + ([bar] if bar is not None else []):
                 c.setParent(self)
@@ -1867,6 +1872,9 @@ class MapBlock(QtWidgets.QWidget):
         if shared_bar is not None:
             shared_bar.setParent(self)
             shared_bar.show()
+        if extra is not None:
+            extra.setParent(self)
+            extra.show()
         self.cols = max(1, max([len(c) for c, _ in self._groups] + [1]))
         self.updateGeometry()
         self._arrange()
@@ -1904,8 +1912,15 @@ class MapBlock(QtWidgets.QWidget):
             return 0.0
         return float(max(b.sizeHint().width() for b in bars)) + self._sp
 
+    def _lines(self, k, cols):
+        """The rows partition k takes at `cols` columns (the extra cell counted with the last partition)."""
+        n = len(self._groups[k][0]) + (1 if self._extra is not None and k == len(self._groups) - 1 else 0)
+        return -(-n // cols) if n else 0
+
     def _rows(self, cols):
-        return sum(-(-len(cells) // cols) for cells, _ in self._groups if cells)
+        if not self._groups:
+            return 1 if self._extra is not None else 0
+        return sum(self._lines(k, cols) for k in range(len(self._groups)))
 
     def _title_w(self):
         """The widest map title: a map's cell is never narrower than its title."""
@@ -1923,14 +1938,14 @@ class MapBlock(QtWidgets.QWidget):
 
     def _size_at(self, cols, W, H):
         """(w, h, box_w) of the block at `cols` columns inside W x H: the largest maps that fit by width, then by height."""
-        n = max(1, min(cols, max(len(c) for c, _ in self._groups)))
+        n = max(1, min(cols, max([len(c) for c, _ in self._groups] + [1])))
         R = self._rows(n)
         if R == 0:
             return (1.0, 1.0, 0.0)
         lr, _ = self._decor()
         r = self._ratio()
         # Every partition's rows carry that partition's own room (titles on the first partition only).
-        tb_sum = sum(-(-len(cells) // n) * self._tb_of(cells) for cells, _ in self._groups if cells)
+        tb_sum = sum(self._lines(k, n) * self._tb_of(cells) for k, (cells, _) in enumerate(self._groups))
         cw = (W - self._bar_w() - (n - 1) * self._sp) / n
         box_w = max(cw - lr, 1.0)
         box_h = box_w * r
@@ -1945,7 +1960,7 @@ class MapBlock(QtWidgets.QWidget):
 
     def _best(self, W, H):
         """(w, h, box_w, cols) inside W x H over every column count: the largest maps whose block fits the width."""
-        n_max = max(len(c) for c, _ in self._groups)
+        n_max = max([len(c) for c, _ in self._groups] + [1])
         best = None
         for n in range(1, n_max + 1):
             w, h, box_w = self._size_at(n, W, H)
@@ -1957,7 +1972,7 @@ class MapBlock(QtWidgets.QWidget):
 
     def fit(self, W, H):
         """The block's size (w, h) inside W x H with the columns chosen for the largest maps (no side effect: the block chooses again for the size it is given)."""
-        if not self._groups:
+        if not self._groups and self._extra is None:
             return (1.0, 1.0)
         w, h, box_w, n = self._best(W, H)
         return (w, h)
@@ -1969,14 +1984,17 @@ class MapBlock(QtWidgets.QWidget):
         w, h, box_w, n = self._best(W, H)
         return box_w, box_w * self._ratio()
 
+    def _has_cells(self):
+        return bool(self._groups) or self._extra is not None
+
     def height_for_width(self, w):
-        return self._best(w, 1.0e9)[1] if self._groups else None
+        return self._best(w, 1.0e9)[1] if self._has_cells() else None
 
     def width_for_height(self, h):
-        return self._best(1.0e9, h)[0] if self._groups else None
+        return self._best(1.0e9, h)[0] if self._has_cells() else None
 
     def hasHeightForWidth(self):
-        return bool(self._groups)
+        return self._has_cells()
 
     def heightForWidth(self, w):
         h = self.height_for_width(w)
@@ -1985,7 +2003,7 @@ class MapBlock(QtWidgets.QWidget):
     # --- the placement ---
 
     def _arrange(self):
-        if not self._groups or self.width() <= 0 or self.height() <= 0:
+        if not self._has_cells() or self.width() <= 0 or self.height() <= 0:
             return
         W, H = float(self.width()), float(self.height())
         w, h, box_w, n = self._best(W, H)
@@ -1996,11 +2014,14 @@ class MapBlock(QtWidgets.QWidget):
         bar_w = self._bar_w() - self._sp if self._bar_w() > 0 else 0.0
         y = 0.0
         rows_for_align = []
-        for cells, bar in self._groups:
+        groups = self._groups or [([], None)]
+        for k, (cells, bar) in enumerate(groups):
+            # The extra cell after the last partition's maps: the free slot of its last row, or a new row.
+            placed = list(cells) + ([self._extra] if self._extra is not None and k == len(groups) - 1 else [])
             y0 = y
             ch = box_w * r + self._tb_of(cells)                 # this partition's row height
             row = []
-            for i, c in enumerate(cells):
+            for i, c in enumerate(placed):
                 col, line = i % n, i // n
                 if col == 0 and i > 0:
                     rows_for_align.append(row)
@@ -2010,7 +2031,7 @@ class MapBlock(QtWidgets.QWidget):
                 row.append(c)
             if row:
                 rows_for_align.append(row)
-            lines = -(-len(cells) // n)
+            lines = -(-len(placed) // n)
             gh = lines * ch + (lines - 1) * self._sp
             if bar is not None:
                 bx = n * cw + (n - 1) * self._sp + self._sp
@@ -2054,9 +2075,9 @@ class Arrangement(QtWidgets.QWidget):
     panels.  Of every candidate's room the free widget is given only its readable minimum
     (`free_min()`, (w, h) px, and its own minimum) before the groups are sized; it then takes the
     rest of its slot up to `free_cap(rects)` ((max w, max h) for the groups' rects in that
-    candidate, never below the readable minimum; the simulator: the panels' readable size, so
-    they never grow to fill blank space), at the top left of its slot, and the part of the slot
-    it leaves counts as blank.  With `free_scored` (the simulator's Single Point view) the free widget is a
+    candidate, never below the readable minimum; the simulator sets none: its curve panels take
+    the room the groups leave), at the top left of its slot, and the part of the slot it leaves
+    counts as blank.  With `free_scored` (the simulator's Single Point view) the free widget is a
     first-class panel instead: it is scored as a group (its scale against the whole window) and
     the one group and it are sized to one scale.  `group_cap` (A, B, k, box_a, box_b): group A's
     plot box never more than k times group B's in width or in height (box_a(rect), box_b(rect):

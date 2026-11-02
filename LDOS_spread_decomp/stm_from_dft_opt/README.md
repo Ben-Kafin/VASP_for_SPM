@@ -80,9 +80,11 @@ button). `checks/check_simulator.py` at the repository root opens the window off
 inputs (numpy stand-ins for cupy) and measures its layout at several sizes.
 
 The window sizes its panels by rule 11 of `matplotlib_to_real_gui.md`: the topographies and the
-heatmaps fill the window (a topography never more than twice a heatmap), the curve panels keep a
-readable size and never grow to fill blank space, and in Single Point the spectrum stands beside the
-placement topo as its equal. The panels drawn in the unit cell's frame (the Global Topo, the Map
+heatmaps are sized first and fill the window (a topography never more than twice a heatmap); the
+curve panels (the Tip Height profile and the Partitioned LDOS) take the room those leave, never less
+than a readable size; in Map the spectrum is one cell of the map block, a map's size, in the free
+slot of the last row; and in Single Point the spectrum stands beside the placement topo as its
+equal. The panels drawn in the unit cell's frame (the Global Topo, the Map
 Topo and the energy maps; the placement topo of the other views) are shown as drawn or turned 90
 degrees anticlockwise (x up, y to the left: a rotation, never a mirror), whichever fits the window
 better; that is decided when a view is built and again on Crop / Uncrop, never on a resize, and the
