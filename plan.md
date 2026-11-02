@@ -240,16 +240,56 @@ Tier 3 and Feenstra changes go into the two inactive reference files, fully comm
   a requested size with its own is checked at the size it took: the text rule and the portrait
   flag).  Results: matcher 66/66, decomp 53/53, misc 64/64, pytest 68 pass / 58 skip / the 3
   pre-existing failures; the simulator reports empty bands in every view until 6.4 rebuilds it.
-- [~] 6.4 The simulator's four views on the oriented panes: pane A the placement panel(s) with the
-  tip-height box above each (Topo h over Global Topo; LDOS h over Map Topo in Map, over the Line
-  cluster's Topo box, over the Path stripe); pane B the rest of the view on PanelRows; the
-  orientation and the window size recomputed on every view change and resize.  Layer additions
-  made for it (verified in the shape exercise, 29/29): `OrientedPanes.fit_delta` (what the window
-  can lose beside the main pane) and `Figure.fit_window` / `_fit_pane` applying it, the render
-  check's `window_fit` reading it; `PanelWithBox` over a narrow cell (the Path stripe) as a
-  fixed-width pair, `UnderPanel(follow=False)` for it.  The simulator work itself is done by a
-  fork of the session on `simulator.py` and `checks/check_simulator.py` (a tall and a wide
-  synthetic cell: orientation, boxes above their panels, no bands, screenshots).
+- [~] 6.4 The simulator's four views arranged by one rule, confirmed by the owner on 2026-11-02
+  after the first pane layout was rejected (the heatmaps came out as small as a control box):
+  **every plotted panel is a first-class citizen; the layout fills the window with plots, spatial
+  panels keep their ratio, no plotted panel is ever shrunk to make room, and what is minimized is
+  the blank space and the controls' footprint** (preference among plots: the spectral heatmaps of
+  Line / Path over the Map view's constant-energy slices).  Concretely:
+  - **The arrangement engine** (layer, `controls.Arrangement`): up to two shaped groups and one
+    free widget; the candidates (the two groups in one row across the top with the free widget
+    below; the first group at the left with the second over the free widget at its right; the
+    first across the top with the second at the left of the free widget below; the two groups
+    stacked at the left with the free widget at the right; the three side by side; the three
+    stacked) are each sized at the window's size (a shaped group takes the largest size its ratio
+    allows in its region; the free widget keeps a readable share, `free_share`) and the one with
+    the least blank space is taken (hysteresis against the current one); chosen again on every
+    resize, rebuild and shape change; `fit_delta` reports the blank at the window's edge for
+    `Figure.fit_window`.  It replaces `OrientedPanes` for the simulator (OrientedPanes stays as the
+    one-group case of the same rule).
+  - **Groups per view.** Single Point: the placement topo (with its boxes above) and the spectrum.
+    Line / Path: the placement topo; the heatmap row (Topo corridor with LDOS h above it in Line,
+    the stripe with LDOS h above it in Path, the heatmaps, the colour bar) as a `RowWidget`; the
+    Tip Height profile and the Partitioned LDOS as the free widget, side by side when their space
+    is wide, stacked when tall (`controls.FlipBox`).  Map: the Global Topo and Map Topo pair (Topo
+    h and LDOS h above them) as a `RowWidget`; the energy maps as a wrapping block
+    (`controls.MapBlock`: partition by partition, the number of maps per row chosen for the
+    largest maps that fit the block's region, the colour bar per partition or one for all at the
+    right); the spectrum as the free widget.
+  - **The crop of the placement topo** (the topo with the atom overlays where markers, line ends
+    and path nodes are placed), as the sm4_Browser Line window crops its heatmap (line.py, the
+    crop cursors): two draggable cursor lines per axis starting at the full extent of the drawn
+    cells, the area outside each pair shaded grey, a text box riding with each cursor in a band
+    above (x) and right of (y) the panel (`controls.RideBand`) showing its value and taking a
+    typed one, 'Crop' applying the ranges between the cursors as the panel's limits (the cursors
+    then at the new edges) and 'Uncrop' restoring the full extent; the boxes and buttons sit above
+    the panel with the Topo h box (`controls.CropPanel`, a `PanelWithBox` with the two bands).  In
+    Map the Map Topo takes the same ranges.  A crop changes the panel's shape, so the arrangement
+    and the window follow it (tall crop: tall layout; wide crop: wide layout).  The crop stays
+    across view changes.
+  - **The window** opens on the screen's available area and trims its blank edge on every change.
+  - **Checks** (`checks/check_simulator.py --shape`, about 90 s, the topographies pre-seeded in
+    `checks/_cache/simulator/`): a tall and a wide cell in the four views: no empty band, the
+    blank fraction of the panel area small, the heatmaps and maps not smaller than a set share of
+    their region, the boxes above their panels; the crop: a dragged cursor updates its box, a typed
+    box moves its cursor, Crop changes the limits and the arrangement, Uncrop restores.  The full
+    suite once at the end.
+  Done so far: the first pane layout of the fork (reviewed, kept as the base: `_pair`,
+  `_panel_with_box`, `_detach`, the PanelRows, `_pin_limits` removed, the shape check with the
+  two cells, the seeded caches); the layer's `OrientedPanes.fit_delta`, `PanelWithBox` over a
+  narrow cell, the row band counting a member's box above.  To do: the engine, the FlipBox, the
+  MapBlock, the CropPanel and the crop logic, the simulator on them, the checks, the guide's
+  rule-11 text and the READMEs updated to this rule.
 - [ ] 6.5 Every other converted window on the rule (the automatic grid's rows); the render check
   measures the empty band of every row and the window's fit.
 - [ ] 6.6 Screenshots of the four views for a tall and a wide synthetic cell to the owner; READMEs;
