@@ -53,10 +53,17 @@ slower has failed.
    the shared drawing functions.
 10. **Comments name the rule they follow, and the README stays current.** Every layout block
     carries a comment such as `# automatic layout: the one rule for every window`.
-11. **Panels know their shape; the window arranges itself.** Every plotted panel is a first-class
-    citizen: the plots fill the window, a spatial panel keeps its x:y ratio, no plotted panel is
-    ever shrunk to make room for another, and what the layout minimizes is the blank space and the
-    controls' footprint. A spatial panel's cell tells the layout the height its ratio needs for
+11. **Panels know their shape; the window arranges itself.** The plots fill the window, a spatial
+    panel keeps its x:y ratio, and the heat-map data comes first: the spatial groups (maps,
+    topographies, heatmap rows) are sized as large as the window allows, so the blank space is what
+    they leave, and the layout also minimizes the controls' footprint. A curve panel (a spectrum,
+    a profile) never grows at the heat maps' expense: it is given only its readable minimum (a plot
+    box of 220 x 140 px at the design text size, plus its labels) before the groups are sized,
+    then at most the rest of its slot up to a cap (in the simulator, its plot box no taller than one
+    energy map's box, or the heatmaps' box, and no more than twice that wide), and the part of its
+    slot it leaves counts as blank. Where a curve panel is the window's main panel beside one map
+    (the simulator's Single Point view), it is a first-class panel instead: it and the map are
+    sized to one scale. A spatial panel's cell tells the layout the height its ratio needs for
     the width it is given (Qt's height-for-width), so a row of panels is exactly as tall as its
     spatial panels ask, the curve panels and colour bars of that row fill that height, and no row
     leaves an empty band above or below its panels; given more room the panels grow until their
@@ -66,10 +73,10 @@ slower has failed.
     one group at the left and the other over the curves at its right, one across the top and the
     other beside the curves below it, both stacked at the left with the curves at the right, the
     three side by side, the three stacked) is sized at the window's size, each group as large as
-    its ratio allows in its region and the curves keeping a readable share, and the arrangement
-    with the best score is taken: the smallest group's scale (its size against the size it would
-    have alone in the window) less the blank fraction, so that no group is squeezed for another
-    and blank space costs. A block of equal maps wraps into the rows that make the maps largest.
+    its ratio allows in its region and the curves at their readable minimum and their cap, and the
+    arrangement with the best score is taken: the smallest group's scale (its size against the size
+    it would have alone in the window) less the blank fraction, so that no group is squeezed for
+    another and blank space costs. A block of equal maps wraps into the rows that make the maps largest.
     The arrangement is chosen again on every resize, every rebuild and whenever a panel's shape
     changes, a crop included: cropping the map the user works in to a tall strip turns the layout
     tall, to a wide strip wide. The window opens filling the screen's available area when it is a
@@ -129,7 +136,8 @@ From top to bottom:
       right.
    2. **Panel grid.** Rows of cells (`PanelRow`s); a window with spatial groups and curve panels
       arranges them with `Arrangement` (rule 11: the groups as large as their shapes allow, the
-      curves in the room left, the blank space minimized; `OrientedPanes` is the one-group case).
+      curves readable and capped in the room left, the blank space minimized; `OrientedPanes` is
+      the one-group case).
       A colour bar or ramp is a narrow cell beside its panel. A control that belongs to one panel
       sits directly under it (or over it: a tip-height box over its topography), centred on the
       panel's box. A box that rides along a cursor sits in a band beside the panel (`RideBand`; a
@@ -207,7 +215,7 @@ cell moves or resizes.
 |---|---|
 | A panel | `cell = fig.cell()`, then `fig.add_axes(cell=cell)` |
 | A row of panels sized by their shapes | `row = qtplot.PanelRow()`, `row.addWidget(cell, stretch)` (a free panel's stretch is its share of the width); `qtplot.RowWidget(row)` makes a row one shaped item of a row or pane above it |
-| The shaped groups and the curve panels arranged by rule 11 | `controls.Arrangement([group, group], free, free_share=0.22)`: the groups shaped widgets (a `CropPanel` or `PanelWithBox`, a `RowWidget`, a `MapBlock`, a `Titled` group), `free` the widget of the curve panels (a cell, a `FlipBox`); `.layout_name`, `.scales()`, `.blank_fraction()`, `.explain()`, `.rearrange()`, `.fit_delta()` |
+| The shaped groups and the curve panels arranged by rule 11 | `controls.Arrangement([group, group], free, free_min=f, free_cap=g, free_scored=False)` (`f()`: the curves' readable minimum (w, h); `g(rects)`: their largest size for the groups' rects in a candidate; `free_scored`: the curves a first-class panel, scored with the groups): the groups shaped widgets (a `CropPanel` or `PanelWithBox`, a `RowWidget`, a `MapBlock`, a `Titled` group), `free` the widget of the curve panels (a cell, a `FlipBox`); `.layout_name`, `.scales()`, `.blank_fraction()`, `.explain()`, `.rearrange()`, `.fit_delta()` |
 | One main panel and the rest | `controls.OrientedPanes(main, rest, main_share=0.6)`: the one-group case; `.orientation`, `.rearrange()`, `.fit_delta()` |
 | Curve panels beside or over each other by their room | `controls.FlipBox((cell, stretch), ...)`: a row when wider than tall, a column when taller |
 | A block of equal maps that wraps | `controls.MapBlock(fig)`, `block.set_groups([(cells, bar_or_None), ...], shared_bar=None)`: the maps per row chosen for the largest maps that fit (`.cols`) |
@@ -454,7 +462,7 @@ Adapt the control table and the shared groups to the new program, and keep the r
 | Dragging lags behind the mouse | Every motion event redraws | Coalesce motion and redraw on idle |
 | Empty bands above and below a row of square panels | The grid gives the row a share of the height by stretch; the panels keep their ratio inside a cell too tall for their width | The cells report height-for-width and the row is a `PanelRow` (rule 11) |
 | A tall unit cell's map is a small panel in a wide window | The map sits in a row across the window; its height is bounded by the row | `Arrangement`: the map stands at the left with the window's full height when it is taller than wide |
-| A curve panel shrinks to the height of the small map beside it | Rule 7 applied to a row the map does not dominate | The map a shaped group of the `Arrangement`; the curve panels fill the room left |
+| The spectrum grows over the heat maps (taller than an energy map, the window's width) | The curve panels took every pixel the groups left, with a 22 % share reserved for them before the groups were sized | Rule 11 as now stated: the curves get their readable minimum first and a cap after the groups are sized (this replaces the earlier entry, "a curve panel shrinks to the height of the small map beside it: the curve panels fill the room left") |
 | The heatmaps come out as small as a control box while one map fills the window | One panel was maximized and the others left the remainder | Every plotted panel is a group of the `Arrangement`; the score (the smallest group's scale less the blank) keeps them all large |
 | Five wide maps in one row are tiny in a wide, short region | A fixed grid of one row per partition | `MapBlock`: the maps wrap into the rows that make them largest |
 | A cropped map keeps the old layout | The crop changed the limits but not the shape the layout saw | `set_xlim` / `set_ylim` announce the new shape; the arrangement follows (a tall crop, a tall layout) |

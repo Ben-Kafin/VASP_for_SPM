@@ -1950,6 +1950,13 @@ class MapBlock(QtWidgets.QWidget):
         w, h, box_w, n = self._best(W, H)
         return (w, h)
 
+    def map_box_height(self, W, H):
+        """One map's plot box height when the block is given W x H (the columns chosen as fit chooses them); None without maps."""
+        if not self._groups:
+            return None
+        w, h, box_w, n = self._best(W, H)
+        return box_w * self._ratio()
+
     def height_for_width(self, w):
         return self._best(w, 1.0e9)[1] if self._groups else None
 
@@ -2027,12 +2034,19 @@ class MapBlock(QtWidgets.QWidget):
 class Arrangement(QtWidgets.QWidget):
     """
     The rule of every window with spatial panels (rule 11 of the guide, as the owner stated it):
-    every plotted panel is a first-class citizen, the plots fill the window, spatial panels keep
-    their ratio, no plotted panel is shrunk to make room for another, and what is minimized is the
-    blank space.  `shaped` is one or two shaped groups (a CropPanel or PanelWithBox, a RowWidget,
-    a MapBlock: each tells its size inside a region, _shaped_size), `free` the widget of the curve
-    panels, which takes whatever is left but never less than `free_share` of the window each way
-    (and its own minimum).  The candidate arrangements for two groups A, B and the free widget F:
+    the plots fill the window, spatial panels keep their ratio, and the heat-map data comes first:
+    the shaped groups are sized as large as the window allows, so the blank space is what they
+    leave; the curve panels (the spectrum) never grow at their expense, yet stay readable at any
+    size.  `shaped` is one or two shaped groups (a CropPanel or PanelWithBox, a RowWidget, a
+    MapBlock: each tells its size inside a region, _shaped_size), `free` the widget of the curve
+    panels.  Of every candidate's room the free widget is given only its readable minimum
+    (`free_min()`, (w, h) px, and its own minimum) before the groups are sized; it then takes the
+    rest of its slot up to `free_cap(rects)` ((max w, max h) for the groups' rects in that
+    candidate, never below the readable minimum; the simulator: one energy map's height, or the
+    heatmap row's), at the top left of its slot, and the part of the slot it leaves counts as
+    blank.  With `free_scored` (the simulator's Single Point view) the free widget is a
+    first-class panel instead: it is scored as a group (its scale against the whole window) and
+    the one group and it are sized to one scale.  The candidate arrangements for two groups A, B and the free widget F:
 
         row_top   A and B in one row across the top, F below
         a_left    A at the left with the window's height; B over F at its right
@@ -2053,7 +2067,8 @@ class Arrangement(QtWidgets.QWidget):
     `blank_fraction()` the blank share of the area; `scales()` the groups' scales.
     """
 
-    def __init__(self, shaped, free=None, spacing=8, free_share=0.22, hysteresis=0.05):
+    def __init__(self, shaped, free=None, spacing=8, hysteresis=0.05, free_min=None, free_cap=None,
+                 free_scored=False):
         super().__init__()
         self.shaped = [w for w in shaped if w is not None]
         self.free = free
@@ -2061,7 +2076,8 @@ class Arrangement(QtWidgets.QWidget):
             w.setParent(self)
             w.show()
             w.installEventFilter(self)
-        self._sp, self._share, self._hys = int(spacing), float(free_share), float(hysteresis)
+        self._sp, self._hys = int(spacing), float(hysteresis)
+        self._free_min_fn, self._free_cap_fn, self._free_scored = free_min, free_cap, bool(free_scored)
         self.layout_name = None
         self._placed = None               # {widget: QRectF} of the last arrangement
         self._blank = 0.0
@@ -2111,10 +2127,56 @@ class Arrangement(QtWidgets.QWidget):
     # --- the candidates ---
 
     def _free_min(self, W, H):
+        """The free widget's readable minimum (free_min(), and its own minimum size hint): all the room it is given before the groups are sized."""
         if self.free is None:
             return 0.0, 0.0
         m = self.free.minimumSizeHint()
-        return max(float(m.width()), self._share * W), max(float(m.height()), self._share * H)
+        rw, rh = self._free_min_fn() if self._free_min_fn is not None else (0.0, 0.0)
+        return max(float(m.width()), float(rw)), max(float(m.height()), float(rh))
+
+    def _capped(self, rects, blank, fw, fh):
+        """The free widget's region cut to free_cap (never below the readable minimum fw x fh), at the top left of its slot; the part of the slot it leaves is added to the blank."""
+        F = self.free
+        if F is None or F not in rects or self._free_cap_fn is None:
+            return rects, blank
+        cap = self._free_cap_fn({w: r for w, r in rects.items() if w is not F})
+        if cap is None:
+            return rects, blank
+        x, y, w, h = rects[F]
+        cw = min(w, max(float(cap[0]), fw))
+        ch = min(h, max(float(cap[1]), fh))
+        rects = dict(rects)
+        rects[F] = (x, y, cw, ch)
+        return rects, blank + w * h - cw * ch
+
+    def _balanced(self, A, horizontal, W, H, fw, fh):
+        """
+        free_scored, one group: the group's size and the free widget's slot at one scale (the
+        group's area against its size alone, the free widget's against the whole window), by
+        bisection on the room the group may take; (a, slot) or None.  `horizontal`: the group at
+        the left and the free widget at its right, else the group on top.
+        """
+        sp = self._sp
+        solo = _shaped_size(A, W, H)
+        if not solo:
+            return None
+        s_area = solo[0] * solo[1]
+        lo, hi = 1.0, (W - fw - sp) if horizontal else (H - fh - sp)
+        best = None
+        for _ in range(30):
+            mid = 0.5 * (lo + hi)
+            a = _shaped_size(A, mid, H) if horizontal else _shaped_size(A, W, mid)
+            if not a:
+                return best
+            slot = (W - a[0] - sp, H) if horizontal else (W, H - a[1] - sp)
+            sa = (a[0] * a[1] / s_area) ** 0.5
+            sf = (max(slot[0], 0.0) * max(slot[1], 0.0) / (W * H)) ** 0.5
+            best = (a, slot)
+            if sa < sf:
+                lo = mid
+            else:
+                hi = mid
+        return best
 
     def _row_shared(self, A, B, W, H):
         """A and B in one row of width W, height at most H: the largest common height whose widths fit; ((wA, hA), (wB, hB))."""
@@ -2155,6 +2217,7 @@ class Arrangement(QtWidgets.QWidget):
         R = QtCore.QRectF
 
         def put(name, rects, blank, valid=True):
+            rects, blank = self._capped(rects, blank, fw, fh)
             out.append((name, float(blank), rects, bool(valid)))
 
         if len(self.shaped) == 1:
@@ -2164,13 +2227,21 @@ class Arrangement(QtWidgets.QWidget):
                 if a:
                     put('a', {A: (0, 0, a[0], a[1])}, W * H - a[0] * a[1])
                 return out
-            a = _shaped_size(A, W - fw - sp, H)                   # h: A at the left
-            if a:
+            if self._free_scored:                                 # the group and the free widget at one scale
+                b = self._balanced(A, True, W, H, fw, fh)
+                a = b[0] if b else None
+            else:
+                a = _shaped_size(A, W - fw - sp, H)
+            if a:                                                 # h: A at the left
                 wA = a[0]
                 put('h', {A: (0, 0, a[0], a[1]), F: (wA + sp, 0, W - wA - sp, H)}, wA * (H - a[1]),
                     W - wA - sp >= fw - 1)
-            a = _shaped_size(A, W, H - fh - sp)                   # v: A on top
-            if a:
+            if self._free_scored:
+                b = self._balanced(A, False, W, H, fw, fh)
+                a = b[0] if b else None
+            else:
+                a = _shaped_size(A, W, H - fh - sp)
+            if a:                                                 # v: A on top
                 hA = a[1]
                 put('v', {A: (0, 0, a[0], a[1]), F: (0, hA + sp, W, H - hA - sp)}, hA * (W - a[0]),
                     H - hA - sp >= fh - 1)
@@ -2244,7 +2315,7 @@ class Arrangement(QtWidgets.QWidget):
         return out
 
     def _score(self, cand, solo, W, H):
-        """(score, plotted area) of a candidate: the smallest group scale less the blank fraction."""
+        """(score, plotted area) of a candidate: the smallest group scale (with free_scored the free widget's too, against the whole window) less the blank fraction."""
         name, blank, rects, _ = cand
         scales, area = [], 0.0
         for w, s_area in zip(self.shaped, solo):
@@ -2252,6 +2323,9 @@ class Arrangement(QtWidgets.QWidget):
             a = r[2] * r[3] if r else 0.0
             area += a
             scales.append(min(1.0, (a / s_area) ** 0.5) if s_area > 0 else 0.0)
+        if self._free_scored and self.free is not None and self.free in rects:
+            r = rects[self.free]
+            scales.append(min(1.0, (r[2] * r[3] / (W * H)) ** 0.5))
         return (min(scales) if scales else 0.0) - blank / (W * H), area, scales
 
     def _choose(self, W, H):

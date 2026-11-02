@@ -100,7 +100,10 @@ on synthetic inputs, resize it to its design size, half, double and taller than 
 that no text is cut, no controls overlap, the labels follow the rules, no row leaves an empty
 band and a window of spatial panels has sized itself to them (`QT_QPA_PLATFORM=offscreen
 python checks/check_simulator.py`, `check_decomp.py`, `check_matcher_plots.py`,
-`check_misc_windows.py`).
+`check_misc_windows.py`). `checks/sim_synthetic.py` gives the simulator synthetic processed data
+ready to plot (a synthetic structure, DOS, LDOS and tip heights; no VASP inputs, no physics), and
+`python -m checks.render_sim_sizing <dir>` renders its four views at the design size and in a wide
+and a tall window with the curve panels' and the maps' sizes (rule 11's sizing).
 
 ## Third-party code
 
