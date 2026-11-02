@@ -526,6 +526,17 @@ class RideBand(QtWidgets.QWidget):
     def minimumSizeHint(self):
         return self.sizeHint()
 
+    def take(self, key):
+        """Item `key` taken out of the band: its widget, hidden and unparented (for another band's add); None when the band has no such item."""
+        it = self._items.pop(key, None)
+        if it is None:
+            return None
+        w = it[0]
+        w.hide()
+        w.setParent(None)
+        self.updateGeometry()
+        return w
+
     def set_pos(self, key, coord_px):
         """Centre item `key` at canvas coordinate `coord_px` along the band (x for 'h', y for 'v')."""
         self._items[key][1] = float(coord_px)
@@ -1776,7 +1787,8 @@ class CropPanel(QtWidgets.QWidget):
     Arrangement: height_for_width and width_for_height count the box and the bands, so the group
     is sized as one and the boxes never sit between panels.  The window adds the riding boxes
     (`band_x.add(key, box)`, `band_y.add(key, box)`) and moves them (`set_pos`) when the panel is
-    placed (Axes.on_placed).
+    placed (Axes.on_placed); when the panel is turned (Axes.set_rotated) the window moves each box
+    to the band its cursor's line now runs along (`take` and `add`).
     """
 
     def __init__(self, ax, cell, *items, spacing=3):
@@ -2042,14 +2054,16 @@ class Arrangement(QtWidgets.QWidget):
     panels.  Of every candidate's room the free widget is given only its readable minimum
     (`free_min()`, (w, h) px, and its own minimum) before the groups are sized; it then takes the
     rest of its slot up to `free_cap(rects)` ((max w, max h) for the groups' rects in that
-    candidate, never below the readable minimum; the simulator: one energy map's height, or the
-    heatmap row's), at the top left of its slot, and the part of the slot it leaves counts as
-    blank.  With `free_scored` (the simulator's Single Point view) the free widget is a
+    candidate, never below the readable minimum; the simulator: the panels' readable size, so
+    they never grow to fill blank space), at the top left of its slot, and the part of the slot
+    it leaves counts as blank.  With `free_scored` (the simulator's Single Point view) the free widget is a
     first-class panel instead: it is scored as a group (its scale against the whole window) and
     the one group and it are sized to one scale.  `group_cap` (A, B, k, box_a, box_b): group A's
     plot box never more than k times group B's in width or in height (box_a(rect), box_b(rect):
     their plot boxes (w, h) in a region; the simulator: the topographies at most twice a heatmap);
-    a candidate that breaks it is sized again with A limited (_candidates).  The candidate arrangements for two groups A, B and the free widget F:
+    a candidate that breaks it is sized again with A limited (_candidates).  `best_score()` is
+    the best candidate's score at the widget's size, nothing placed (the simulator compares its
+    unit-cell panels' two orientations with it).  The candidate arrangements for two groups A, B and the free widget F:
 
         row_top   A and B in one row across the top, F below
         a_left    A at the left with the window's height; B over F at its right
@@ -2384,16 +2398,33 @@ class Arrangement(QtWidgets.QWidget):
             scales.append(min(1.0, (r[2] * r[3] / (W * H)) ** 0.5))
         return (min(scales) if scales else 0.0) - blank / (W * H), area, scales
 
-    def _choose(self, W, H):
+    def _scored(self, W, H):
+        """[((score, area, scales), candidate)] of the valid candidates at W x H (every candidate when none is valid)."""
         cands = self._candidates(W, H)
         if not cands:
-            return None
+            return []
         valid = [c for c in cands if c[3]] or cands
         solo = []
         for w in self.shaped:
             s = _shaped_size(w, W, H)
             solo.append(s[0] * s[1] if s else 0.0)
-        scored = [(self._score(c, solo, W, H), c) for c in valid]
+        return [(self._score(c, solo, W, H), c) for c in valid]
+
+    def best_score(self):
+        """(score, name) of the best candidate at the widget's size now, nothing placed; None before the widget has a size."""
+        W, H = float(self.width()), float(self.height())
+        if W <= 0 or H <= 0 or not self.shaped:
+            return None
+        scored = self._scored(W, H)
+        if not scored:
+            return None
+        best = max(scored, key=lambda t: (round(t[0][0], 3), t[0][1]))
+        return float(best[0][0]), best[1][0]
+
+    def _choose(self, W, H):
+        scored = self._scored(W, H)
+        if not scored:
+            return None
         best = max(scored, key=lambda t: (round(t[0][0], 3), t[0][1]))
         cur = next((t for t in scored if t[1][0] == self.layout_name), None)
         if cur is not None and cur is not best and cur[0][0] >= best[0][0] - self._hys:

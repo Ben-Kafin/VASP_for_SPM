@@ -5,9 +5,10 @@ one line each: the arrangement chosen, the topography's box, the spectrum panel'
 map's size (Map), the heatmap row's height (Line, Path), the topography's height over the
 heatmap's, and the blank fraction.
 
-    QT_QPA_PLATFORM=offscreen python3 -m checks.render_sim_sizing <out_dir> [tag]
+    QT_QPA_PLATFORM=offscreen python3 -m checks.render_sim_sizing <out_dir> [tag] [a b]
 
-run from the repository's root.
+run from the repository's root; `a b` the unit cell's sides in Å (10 10 by default: a tall or a wide
+cell shows the unit-cell panels' orientation, printed per view).
 """
 import os
 import sys
@@ -43,9 +44,9 @@ def measure(sim):
             round(arr.blank_fraction(), 3) if arr is not None else None, (round(t[2]), round(t[3])))
 
 
-def main(out, tag='now'):
+def main(out, tag='now', cell=(10.0, 10.0)):
     os.makedirs(out, exist_ok=True)
-    sim = ss.open_simulator()
+    sim = ss.open_simulator(cell=cell)
     rw.pump(200)
     sim.btn_run.widget.click()
     rw.pump(200)
@@ -59,10 +60,12 @@ def main(out, tag='now'):
             win = sim.fig.canvas.window()
             heat = one_map[1] if one_map else row_h
             ratio = f"{topo[1] / heat:.2f}" if heat else "-"
-            print(f"{tag:6s} {view:12s} {name:6s} window {win.width()}x{win.height()}  arrangement {lay}  topo {topo}  "
-                  f"spectrum {spec}  one map {one_map}  heatmap h {row_h}  topo/heat {ratio}  blank {blank}", flush=True)
+            turn = 'turned' if sim.cell_rotated else 'as drawn'
+            print(f"{tag:6s} {view:12s} {name:6s} window {win.width()}x{win.height()}  arrangement {lay}  cell {turn}  "
+                  f"topo {topo}  spectrum {spec}  one map {one_map}  heatmap h {row_h}  topo/heat {ratio}  blank {blank}", flush=True)
             sim.fig.savefig(os.path.join(out, f"{tag}_{view.replace(' ', '_').lower()}_{name}.png"))
 
 
 if __name__ == '__main__':
-    main(sys.argv[1] if len(sys.argv) > 1 else 'shots_sizing', sys.argv[2] if len(sys.argv) > 2 else 'now')
+    cell = (float(sys.argv[3]), float(sys.argv[4])) if len(sys.argv) > 4 else (10.0, 10.0)
+    main(sys.argv[1] if len(sys.argv) > 1 else 'shots_sizing', sys.argv[2] if len(sys.argv) > 2 else 'now', cell)

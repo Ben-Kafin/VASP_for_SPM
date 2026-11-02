@@ -10,7 +10,9 @@ computed.  SyntheticSimulator is the interactive simulator with two things repla
   _calculate_ldos_at_points_gpu  the LDOS at the tip positions: each atom's DOS weighted by
                                exp(-2 kappa d) over the atom's periodic images (kappa 1/Å), with the
                                simulator's own shapes ((points, energies), or with preserve_orbitals
-                               (points, energies, atoms, orbitals)); one channel
+                               (points, energies, atoms, orbitals)); one channel.  The cell's a and
+                               b are the `cell` argument (10 x 10 Å by default; a tall or a wide
+                               cell shows the unit-cell panels' orientation)
   _converge_tip_height         the tip height: a bump of 0.6 Å over every atom (images included)
                                on the starting height
 
@@ -58,18 +60,19 @@ def synthetic_dos(types):
 class SyntheticSimulator(simmod.Interactive_STM_Simulator):
     """The interactive simulator on synthetic processed data (module docstring)."""
 
-    def __init__(self, erange=(-3.0, 0.5), ldos_height=1.25, cmap_topo=None, directory=None):
+    def __init__(self, erange=(-3.0, 0.5), ldos_height=1.25, cmap_topo=None, directory=None, cell=(10.0, 10.0)):
+        self._cell = (float(cell[0]), float(cell[1]))          # the unit cell's a and b (Å): its shape
         directory = directory or tempfile.mkdtemp(prefix='simsynth_')
         super().__init__(filepath=directory, erange=list(erange), ldos_height=ldos_height,
                          cmap_topo=cmap_topo, unit_cell_num=1)
 
     def parse_vasp_outputs(self, locpot_path):
         cp = simmod.cp
-        a = 10.0
-        self.lv = np.array([[a, 0.0, 0.0], [0.0, a, 0.0], [0.0, 0.0, 20.0]])
+        a, b = self._cell
+        self.lv = np.array([[a, 0.0, 0.0], [0.0, b, 0.0], [0.0, 0.0, 20.0]])
         self.atomtypes, self.atomnums = ['Au', 'N', 'C'], [4, 1, 2]
         self.coord = np.array([[2.5, 2.5, 5.0], [7.5, 2.5, 5.0], [2.5, 7.5, 5.0], [7.5, 7.5, 5.0],
-                               [5.0, 5.0, 7.0], [3.8, 5.6, 7.5], [6.2, 4.4, 7.5]])
+                               [5.0, 5.0, 7.0], [3.8, 5.6, 7.5], [6.2, 4.4, 7.5]]) * np.array([a / 10.0, b / 10.0, 1.0])
         types = list(np.repeat(self.atomtypes, self.atomnums))
         self.energies, self.ef = ENERGIES.copy(), 0.0
         self.energies_gpu = cp.asarray(self.energies, dtype=cp.float32)
@@ -137,12 +140,14 @@ class SyntheticSimulator(simmod.Interactive_STM_Simulator):
         return cp.asarray((np.asarray(z_map_gpu, dtype=np.float64) + bump).astype(np.float32))
 
 
-def open_simulator(grid_res=32):
-    """A SyntheticSimulator window, opened and run (RUN pressed); returns it."""
+def open_simulator(grid_res=32, cell=(10.0, 10.0)):
+    """A SyntheticSimulator window on a unit cell of `cell` (a, b in Å), opened (RUN not pressed); returns it."""
     from qtgui import qtplot as plt
     cmap = plt.LinearSegmentedColormap.from_list("t", ["black", "firebrick", "yellow"])
-    sim = SyntheticSimulator(cmap_topo=cmap)
+    sim = SyntheticSimulator(cmap_topo=cmap, cell=cell)
+    fa, fb = cell[0] / 10.0, cell[1] / 10.0
     sim.run_interactive(grid_res=grid_res, topo_bias=0.2, topo_height=2.5, ldos_bias_sign='neg', use_decay=True,
-                        show_decay_toggle=True, reuse_cache=False, line_endpoints=([1.0, 1.0], [9.0, 9.0]),
-                        marker_positions=[[2.5, 2.5], [5.0, 5.0]], path=[[1.0, 1.0], [5.0, 5.0], [9.0, 2.0]])
+                        show_decay_toggle=True, reuse_cache=False, line_endpoints=([1.0 * fa, 1.0 * fb], [9.0 * fa, 9.0 * fb]),
+                        marker_positions=[[2.5 * fa, 2.5 * fb], [5.0 * fa, 5.0 * fb]],
+                        path=[[1.0 * fa, 1.0 * fb], [5.0 * fa, 5.0 * fb], [9.0 * fa, 2.0 * fb]])
     return sim

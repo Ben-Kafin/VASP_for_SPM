@@ -159,19 +159,23 @@ def _axes(mfig, ax):
     title, a secondary y axis, and the legend as on screen.  Text sizes are the points set on the
     qtplot axes.
     """
+    from matplotlib.transforms import Affine2D
     m = mfig.add_axes(_pos(ax))
     m.set_facecolor(ax.get_facecolor() if hasattr(ax, 'get_facecolor') else 'white')
+    # A rotated axes (Axes.set_rotated) turns as on screen: every artist drawn through the swap (x, y)
+    # -> (y, x) into the view's axes, whose limits (inverted x) complete the turn.
+    swap = Affine2D(np.array([[0.0, 1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]])) if getattr(ax, '_rotated', False) else None
     handle_map = {}
     for a in ax._children:
         if not a.get_visible():
             continue
-        made = _artist(m, a)
+        made = _artist(m, a, swap)
         if made is not None:
             handle_map[id(a)] = made
     # Quad meshes added straight to the view (RowHeatmap, PixelMap): filled polygons.
     for it in getattr(ax.vb, 'addedItems', []):
         if isinstance(it, q.QuadItem) and it.isVisible() and not any(it is getattr(a, 'item', None) for a in ax._children):
-            _quads(m, it)
+            _turned(_quads(m, it), swap, m)
     # limits as shown
     (xa, xb), (ya, yb) = ax.vb.viewRange()
     if ax.vb.state['xInverted']:
@@ -184,10 +188,11 @@ def _axes(mfig, ax):
     m.set_ylim(ya, yb)
     # labels, ticks, title
     xi, yi = ax.xaxis_item, ax.yaxis_item
-    if ax._xlabel:
-        m.set_xlabel(q.short_label(ax._xlabel), fontsize=xi._label_pt)
-    if ax._ylabel:
-        m.set_ylabel(q.short_label(ax._ylabel), fontsize=yi._label_pt)
+    xl, yl = (ax._ylabel, ax._xlabel) if swap is not None else (ax._xlabel, ax._ylabel)   # the labels as the tick axes show them
+    if xl:
+        m.set_xlabel(q.short_label(xl), fontsize=xi._label_pt)
+    if yl:
+        m.set_ylabel(q.short_label(yl), fontsize=yi._label_pt)
     m.tick_params(axis='x', labelsize=xi._tick_pt)
     m.tick_params(axis='y', labelsize=yi._tick_pt)
     if _axis_hidden_ticks(xi):
@@ -259,9 +264,24 @@ def _line_kw(st, label, zorder):
     return kw
 
 
-def _artist(m, a):
+def _turned(art, swap, m):
+    """`art` (an artist, a contour set or None) drawn through `swap` (a rotated axes; None: as it is): its transform composed with the data transform (a scatter's offsets); returns `art`."""
+    if art is None or swap is None:
+        return art
+    parts = getattr(art, 'collections', None) if not hasattr(art, 'set_transform') else None
+    for c in (parts if parts is not None else [art]):
+        if hasattr(c, 'set_offset_transform') and hasattr(c, 'get_offsets'):
+            c.set_offset_transform(swap + m.transData)
+        else:
+            c.set_transform(swap + m.transData)
+    return art
+
+
+def _artist(m, a, swap=None):
     """
-    One qtplot artist `a` drawn into the matplotlib axes `m`, returning the matplotlib artist (the
+    One qtplot artist `a` drawn into the matplotlib axes `m` (through `swap`, the turn of a
+    rotated axes, when given: _turned; a reference line or span turns the other way; a data
+    text's position is swapped), returning the matplotlib artist (the
     legend's handle) or None when nothing is drawn: Line2D -> plot; _RefLine -> axhline / axvline;
     _Span -> axvspan / axhspan; AxesImage -> imshow with its extent, origin, colour map and norm,
     interpolation 'none' (the raw pixels), and its Affine2D (a rotated and translated topography)
@@ -272,17 +292,18 @@ def _artist(m, a):
     """
     from matplotlib.collections import LineCollection, PolyCollection
     from matplotlib.transforms import Affine2D
+    turned = swap is not None
     if isinstance(a, q.Line2D):
         ln, = m.plot(a._x, a._y, **_line_kw(a._style, a.get_label(), a.zorder))
-        return ln
+        return _turned(ln, swap, m)
     if isinstance(a, q._RefLine):
         st = a._style
-        f = m.axhline if a._horizontal else m.axvline
+        f = m.axhline if a._horizontal != turned else m.axvline
         return f(a._value, color=st['color'], lw=st['lw'], ls=_ls(st['ls']), alpha=st['alpha'], zorder=a.zorder,
                  label=a.get_label() if not str(a.get_label()).startswith('_') else None)
     if isinstance(a, q._Span):
         lo, hi, vertical, color, alpha = a._span
-        f = m.axvspan if vertical else m.axhspan
+        f = m.axvspan if vertical != turned else m.axhspan
         return f(lo, hi, color=color, alpha=alpha, lw=0, zorder=a.zorder,
                  label=a.get_label() if not str(a.get_label()).startswith('_') else None)
     if isinstance(a, q.AxesImage):
@@ -290,24 +311,25 @@ def _artist(m, a):
             return None
         im = m.imshow(a._A, cmap=_mpl_cmap(a.cmap), norm=_mpl_norm(a.norm), origin=a.origin, extent=a._extent,
                       interpolation='none', aspect='auto', zorder=a.zorder)
-        if a._affine is not None:
-            im.set_transform(Affine2D(a._affine.get_matrix()) + m.transData)
+        if a._affine is not None or turned:
+            tr = Affine2D(a._affine.get_matrix()) if a._affine is not None else Affine2D()
+            im.set_transform((tr + swap if turned else tr) + m.transData)
         return im
     if isinstance(a, q.QuadMesh):
-        return m.pcolormesh(a._X, a._Y, np.ma.masked_invalid(a._C), cmap=_mpl_cmap(a.cmap), norm=_mpl_norm(a.norm),
-                            shading='flat', zorder=a.zorder)
+        return _turned(m.pcolormesh(a._X, a._Y, np.ma.masked_invalid(a._C), cmap=_mpl_cmap(a.cmap), norm=_mpl_norm(a.norm),
+                                    shading='flat', zorder=a.zorder), swap, m)
     if isinstance(a, q.ContourSet):
         X, Y, Z, levels, cmap, norm = a._args
-        return m.contourf(X, Y, Z, levels=levels, cmap=_mpl_cmap(cmap), norm=_mpl_norm(norm), zorder=a.zorder,
-                          alpha=a.get_alpha() if hasattr(a, 'get_alpha') else None)
+        return _turned(m.contourf(X, Y, Z, levels=levels, cmap=_mpl_cmap(cmap), norm=_mpl_norm(norm), zorder=a.zorder,
+                                  alpha=a.get_alpha() if hasattr(a, 'get_alpha') else None), swap, m)
     if isinstance(a, q.TriContourSet):
         x, y, z, levels, cmap, norm, offsets = a._args
         out = None
         if len(x) >= 3:
             for dx, dy in offsets:
                 try:
-                    out = m.tricontourf(x + dx, y + dy, z, levels=levels, cmap=_mpl_cmap(cmap), norm=_mpl_norm(norm),
-                                        zorder=a.zorder, alpha=a.get_alpha())
+                    out = _turned(m.tricontourf(x + dx, y + dy, z, levels=levels, cmap=_mpl_cmap(cmap), norm=_mpl_norm(norm),
+                                                zorder=a.zorder, alpha=a.get_alpha()), swap, m)
                 except Exception as exc:          # a point set matplotlib cannot triangulate either
                     print(f"export: tricontourf skipped ({exc})")
         return out
@@ -327,20 +349,20 @@ def _artist(m, a):
         else:
             ekw['edgecolors'] = q._rgba_rows(ec, n, a._alpha)
         lw = float(np.ravel(a._lw)[0]) if np.ndim(a._lw) else float(a._lw)
-        return m.scatter(xy[:, 0], xy[:, 1], s=sizes, c=rows, marker=a._marker if isinstance(a._marker, str) else 'o',
-                         linewidths=lw, zorder=a.zorder, label=a.get_label() if not str(a.get_label()).startswith('_') else None,
-                         **ekw)
+        return _turned(m.scatter(xy[:, 0], xy[:, 1], s=sizes, c=rows, marker=a._marker if isinstance(a._marker, str) else 'o',
+                                 linewidths=lw, zorder=a.zorder,
+                                 label=a.get_label() if not str(a.get_label()).startswith('_') else None, **ekw), swap, m)
     if isinstance(a, q.LineCollection):
         cols = np.asarray(a._seg_colors(), dtype=float) / 255.0
         lws = np.resize(a._lw, (len(a._segments),)) if len(a._segments) else a._lw
         lc = LineCollection(a._segments, colors=cols, linewidths=lws, linestyles=_ls(a._ls) if a._ls != '-' else 'solid',
                             zorder=a.zorder)
         m.add_collection(lc)
-        return lc
+        return _turned(lc, swap, m)
     if isinstance(a, q.PolyCollection):
         if a.item is None:
             return None
-        return _quads(m, a.item, zorder=a.zorder)
+        return _turned(_quads(m, a.item, zorder=a.zorder), swap, m)
     if isinstance(a, q.Annotation):
         p = a._ann
         kw = dict(color=p['color'], fontsize=q.font_pt(p['fontsize'], 10.0), fontweight=p['fontweight'],
@@ -352,7 +374,7 @@ def _artist(m, a):
         if not a.get_text():
             return None
         tr = m.transAxes if a._coords == 'axes' else None
-        return _text(a, transform=tr, target=m)
+        return _text(a, transform=tr, target=m, swap_xy=turned and a._coords == 'data')
     return None
 
 
@@ -374,7 +396,7 @@ def _quads(m, item, zorder=None):
     return pc
 
 
-def _text(t, transform=None, target=None):
+def _text(t, transform=None, target=None, swap_xy=False):
     """
     A qtplot Text as matplotlib text on `target` (a matplotlib Axes or Figure): size in points,
     alignment, colour, rotation, weight, a monospace family, the bbox keys matplotlib takes,
@@ -398,6 +420,8 @@ def _text(t, transform=None, target=None):
         kw['transform'] = offset_copy(base, fig=target.figure if hasattr(target, 'figure') else target,
                                       x=_px_to_pt(t._offset_px[0]), y=_px_to_pt(t._offset_px[1]), units='points')
     x, y = t.figure_xy() if getattr(t, '_cell', None) is not None else (t._x, t._y)
+    if swap_xy:
+        x, y = y, x                            # a data text on a rotated axes sits at view (y, x)
     return target.text(x, y, t.get_text(), **kw)
 
 

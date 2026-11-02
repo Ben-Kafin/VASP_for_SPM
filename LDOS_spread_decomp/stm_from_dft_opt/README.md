@@ -78,3 +78,14 @@ Dependencies: numpy, scipy, cupy (CUDA GPU), pymatgen, PySide6 and pyqtgraph (th
 layer at the repository root), matplotlib (the publication files written by the toolbar's Save
 button). `checks/check_simulator.py` at the repository root opens the window offscreen on synthetic
 inputs (numpy stand-ins for cupy) and measures its layout at several sizes.
+
+The window sizes its panels by rule 11 of `matplotlib_to_real_gui.md`: the topographies and the
+heatmaps fill the window (a topography never more than twice a heatmap), the curve panels keep a
+readable size and never grow to fill blank space, and in Single Point the spectrum stands beside the
+placement topo as its equal. The panels drawn in the unit cell's frame (the Global Topo, the Map
+Topo and the energy maps; the placement topo of the other views) are shown as drawn or turned 90
+degrees anticlockwise (x up, y to the left: a rotation, never a mirror), whichever fits the window
+better; that is decided when a view is built and again on Crop / Uncrop, never on a resize, and the
+console says which way and why. The heatmaps of energy against position never turn. Everything on a
+turned panel keeps its data coordinates: the cursors, the markers, the line and path endpoints, the
+limits and the publication files (which show the turn as on screen).

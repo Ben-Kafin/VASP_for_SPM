@@ -1030,6 +1030,8 @@ class _Transform:
             if self.kind == 'axes':
                 fx, fy = p[:, 0], p[:, 1]
             else:
+                if getattr(ax, '_rotated', False):
+                    p = p[:, ::-1]                       # a rotated axes: data (x, y) sits at view (y, x)
                 (xa, xb), (ya, yb) = ax._view_range()
                 fx = (p[:, 0] - xa) / ((xb - xa) or 1.0)
                 fy = (p[:, 1] - ya) / ((yb - ya) or 1.0)
@@ -1062,8 +1064,13 @@ class _Inverse:
         fy = (p[:, 1] - (H - (y0 + h))) / (h or 1.0)
         if self.t.kind == 'axes':
             return np.column_stack([fx, fy])
+        if ax.vb.state['xInverted']:                 # an inverted axis runs the other way (transData's inverse)
+            fx = 1.0 - fx
+        if ax.vb.state['yInverted']:
+            fy = 1.0 - fy
         (xa, xb), (ya, yb) = ax._view_range()
-        return np.column_stack([xa + fx * (xb - xa), ya + fy * (yb - ya)])
+        out = np.column_stack([xa + fx * (xb - xa), ya + fy * (yb - ya)])
+        return out[:, ::-1] if getattr(ax, '_rotated', False) else out      # view (y, x) back to data (x, y)
 
 
 # ---------------------------------------------------------------------- #
@@ -1976,6 +1983,7 @@ class Artist:
         if not self._visible:
             item.setVisible(False)
         self.axes.vb.addItem(item, ignoreBounds=ignore_bounds)
+        self.axes._place_item(item)
         self._items.append(item)
         return item
 
@@ -2494,7 +2502,8 @@ class _RefLine(Artist):
     def contains_px(self, x, y):
         tol = float(self._picker) if isinstance(self._picker, (int, float)) and not isinstance(self._picker, bool) else 5.0
         p = self.axes.transData.transform([[self._value, self._value]])[0]
-        return abs((y - p[1]) if self._horizontal else (x - p[0])) <= tol
+        horizontal = self._horizontal != bool(getattr(self.axes, '_rotated', False))    # on screen (a rotated axes turns it)
+        return abs((y - p[1]) if horizontal else (x - p[0])) <= tol
 
     def _legend_sample(self):
         s = self._style
@@ -3197,6 +3206,7 @@ class Text(Artist):
             self.item.setVisible(False)
         if coords == 'data':
             self.axes.vb.addItem(self.item, ignoreBounds=True)
+            self.axes._place_item(self.item)
             if np.isfinite(self._x) and np.isfinite(self._y) and max(abs(self._x), abs(self._y)) < _LIMIT:
                 self.item.setPos(self._x, self._y)
             else:
@@ -4051,6 +4061,18 @@ class _Slot(QtWidgets.QWidget):
         return -1 if h is None else int(round(h))
 
 
+_SWAP = QtGui.QTransform(0.0, 1.0, 1.0, 0.0, 0.0, 0.0)        # (x, y) -> (y, x): the turn of a rotated axes
+
+
+class _Rotor(pg.ItemGroup):
+    """
+    The turn of a rotated axes (Axes.set_rotated): every item drawn into the view is its child
+    and its transform maps data (x, y) to view (y, x); with the view's x axis inverted (Axes
+    keeps it so while rotated) the picture is turned 90 degrees anticlockwise on screen, x up
+    and y to the left: a rotation, never a mirror.  No contents of its own (pyqtgraph's ItemGroup).
+    """
+
+
 class Axes:
     """
     One axes: a pyqtgraph ViewBox placed in its cell of the window's
@@ -4112,6 +4134,8 @@ class Axes:
         self._is_colorbar = False
         self._home = None
         self._aspect = 'auto'
+        self._rotated = False          # set_rotated: the axes turned 90 degrees on screen (the data stays as given)
+        self._rotor_item = None        # the turned group every item sits in while rotated (_rotor)
         self._shared_x = sharex
         self._shared_y = sharey
         if sharex is not None:
@@ -4287,22 +4311,24 @@ class Axes:
             tx = None
         if ty is not None and not ty[1] > ty[0]:
             ty = None
-        if tx is None or ty is None:
+        vx, vy = (ty, tx) if self._rotated else (tx, ty)      # the view's x and y spans (data y and x on a rotated axes)
+        if vx is None or vy is None:
             # No limits set on an axis: the drawn data's extent along it (what the autoscaled view
-            # shows) gives that side of the ratio; a crop of one axis alone changes the shape too.
+            # shows, in the view's own axes) gives that side of the ratio; a crop of one axis alone
+            # changes the shape too.
             try:
                 r = self.vb.childrenBoundingRect()
             except Exception:
                 return None
-            if tx is None:
+            if vx is None:
                 if not r.width() > 0:
                     return None
-                tx = (float(r.left()), float(r.right()))
-            if ty is None:
+                vx = (float(r.left()), float(r.right()))
+            if vy is None:
                 if not r.height() > 0:
                     return None
-                ty = (float(r.top()), float(r.bottom()))
-        return (ty[1] - ty[0]) / (tx[1] - tx[0]) * float(self.vb.state['aspectLocked'])
+                vy = (float(r.top()), float(r.bottom()))
+        return (vy[1] - vy[0]) / (vx[1] - vx[0]) * float(self.vb.state['aspectLocked'])
 
     def _notify_shape(self):
         """
@@ -4712,6 +4738,7 @@ class Axes:
                 pass
         self._axes_texts = []
         self.vb.clear()
+        self._drop_rotor()
         if self._title is not None:
             try:
                 self.figure.canvas.scene().removeItem(self._title.item)
@@ -4751,8 +4778,8 @@ class Axes:
         self._aspect = 'auto'
         self._adjust_box = False
         self._facecolor = (1.0, 1.0, 1.0, 1.0)
-        if self.vb.state['xInverted']:
-            self.vb.invertX(False)
+        if self.vb.state['xInverted'] != self._rotated:       # a rotated axes keeps its x axis inverted (y to the left)
+            self.vb.invertX(self._rotated)
         if self.vb.state['yInverted']:
             self.vb.invertY(False)
         self.vb.enableAutoRange(x=True, y=True)
@@ -4836,11 +4863,11 @@ class Axes:
 
     def set_xlabel(self, label, fontsize=None, labelpad=None, color=None, **kw):
         self._xlabel = '' if label is None else str(label)
-        self._axis_label(self.xaxis_item, label, fontsize or kw.get('size'), color)
+        self._axis_label(self._axis_item('x'), label, fontsize or kw.get('size'), color)
 
     def set_ylabel(self, label, fontsize=None, labelpad=None, color=None, **kw):
         self._ylabel = '' if label is None else str(label)
-        self._axis_label(self.yaxis_item, label, fontsize or kw.get('size'), color)
+        self._axis_label(self._axis_item('y'), label, fontsize or kw.get('size'), color)
 
     def get_xlabel(self):
         return self._xlabel
@@ -4865,10 +4892,10 @@ class Axes:
     # --- ticks ---
 
     def set_xticks(self, ticks, labels=None, **kw):
-        self._set_ticks(self.xaxis_item, ticks, labels)
+        self._set_ticks(self._axis_item('x'), ticks, labels)
 
     def set_yticks(self, ticks, labels=None, **kw):
-        self._set_ticks(self.yaxis_item, ticks, labels)
+        self._set_ticks(self._axis_item('y'), ticks, labels)
 
     def _set_ticks(self, axis, ticks, labels):
         axis._dirty = True
@@ -4906,9 +4933,9 @@ class Axes:
         self.xaxis_item._dirty = self.yaxis_item._dirty = True
         targets = []
         if axis in ('both', 'x'):
-            targets.append(self.xaxis_item)
+            targets.append(self._axis_item('x'))
         if axis in ('both', 'y'):
-            targets.append(self.yaxis_item)
+            targets.append(self._axis_item('y'))
             targets.extend(self._side_axes)
         if labelsize is not None:
             for a in targets:
@@ -4965,47 +4992,57 @@ class Axes:
 
     def set_xlim(self, *args, **kw):
         lo, hi = self._range_of(args, kw, 'xmin', 'xmax')
-        cur = self._view_range()[0]
+        return self._set_lim('x', lo, hi)
+
+    def set_ylim(self, *args, **kw):
+        lo, hi = self._range_of(args, kw, 'ymin', 'ymax')
+        return self._set_lim('y', lo, hi)
+
+    def _set_lim(self, axis, lo, hi):
+        """
+        set_xlim / set_ylim of data axis `axis` ('x' / 'y'): the limits go to the view axis that
+        shows it (_view_axis: the other one on a rotated axes, whose x axis is inverted for
+        ascending data-y limits, so y runs to the left); kept in data terms (_target_x /
+        _target_y) for _apply_targets and the shape.
+        """
+        cur = tuple(sorted(self._get_lim(axis)))
         lo = cur[0] if lo is None else float(lo)
         hi = cur[1] if hi is None else float(hi)
         inv = hi < lo
-        if inv != bool(self.vb.state['xInverted']):
-            self.vb.invertX(inv)
         a, b = (hi, lo) if inv else (lo, hi)
         if b == a:
             a, b = a - 0.5, b + 0.5
         r = _finite_range(a, b)
         if r is None:
-            print(f"qtplot: x limits ({lo}, {hi}) are not drawable; kept as they were.")
-            return self.get_xlim()
+            print(f"qtplot: {axis} limits ({lo}, {hi}) are not drawable; kept as they were.")
+            return self._get_lim(axis)
         a, b = r
-        self.vb.disableAutoRange(axis=pg.ViewBox.XAxis)
-        self._target_x = (a, b)
+        view = self._view_axis(axis)
+        want = inv != (self._rotated and view == 'x')
+        if view == 'x':
+            if want != bool(self.vb.state['xInverted']):
+                self.vb.invertX(want)
+            self.vb.disableAutoRange(axis=pg.ViewBox.XAxis)
+        else:
+            if want != bool(self.vb.state['yInverted']):
+                self.vb.invertY(want)
+            self.vb.disableAutoRange(axis=pg.ViewBox.YAxis)
+        if axis == 'x':
+            self._target_x = (a, b)
+        else:
+            self._target_y = (a, b)
         self._apply_targets()
         self._notify_shape()                   # new limits are a new shape for a panel that keeps its ratio (a crop)
         return (lo, hi)
 
-    def set_ylim(self, *args, **kw):
-        lo, hi = self._range_of(args, kw, 'ymin', 'ymax')
-        cur = self._view_range()[1]
-        lo = cur[0] if lo is None else float(lo)
-        hi = cur[1] if hi is None else float(hi)
-        inv = hi < lo
-        if inv != bool(self.vb.state['yInverted']):
-            self.vb.invertY(inv)
-        a, b = (hi, lo) if inv else (lo, hi)
-        if b == a:
-            a, b = a - 0.5, b + 0.5
-        r = _finite_range(a, b)
-        if r is None:
-            print(f"qtplot: y limits ({lo}, {hi}) are not drawable; kept as they were.")
-            return self.get_ylim()
-        a, b = r
-        self.vb.disableAutoRange(axis=pg.ViewBox.YAxis)
-        self._target_y = (a, b)
-        self._apply_targets()
-        self._notify_shape()
-        return (lo, hi)
+    def _get_lim(self, axis):
+        """get_xlim / get_ylim of data axis `axis`: the view axis showing it, in the data's own order (a rotated axes' inverted x axis reads as ascending y)."""
+        view = self._view_axis(axis)
+        a, b = self._view_range()[0 if view == 'x' else 1]
+        inverted = bool(self.vb.state['xInverted' if view == 'x' else 'yInverted'])
+        if self._rotated and view == 'x':
+            inverted = not inverted
+        return (b, a) if inverted else (a, b)
 
     def _apply_targets(self):
         """
@@ -5017,27 +5054,28 @@ class Axes:
         ty = getattr(self, '_target_y', None)
         tx = None if tx is None else _finite_range(*tx)
         ty = None if ty is None else _finite_range(*ty)
-        if self.vb.state['aspectLocked'] and tx is not None and ty is not None:
+        vx, vy = (ty, tx) if self._rotated else (tx, ty)      # the view's ranges: data y along x, x along y on a rotated axes
+        if self.vb.state['aspectLocked'] and vx is not None and vy is not None:
             x0, y0, w, h = self._px_rect()
             ratio = float(self.vb.state['aspectLocked'])
-            dx, dy = tx[1] - tx[0], ty[1] - ty[0]
+            dx, dy = vx[1] - vx[0], vy[1] - vy[0]
             if w > 0 and h > 0 and dx > 0 and dy > 0 and ratio > 0:
                 # pyqtgraph's lock: data width / data height = (box width / box height) / ratio, so the
                 # y units per pixel are `ratio` times the x units per pixel.  The x units per pixel
                 # that hold both requested ranges, then both ranges widened about their centres.
                 u = max(dx / w, dy / (h * ratio))
-                cx, cy = 0.5 * (tx[0] + tx[1]), 0.5 * (ty[0] + ty[1])
-                tx = (cx - 0.5 * u * w, cx + 0.5 * u * w)
-                ty = (cy - 0.5 * u * ratio * h, cy + 0.5 * u * ratio * h)
-            self.vb.setRange(xRange=tx, yRange=ty, padding=0)
+                cx, cy = 0.5 * (vx[0] + vx[1]), 0.5 * (vy[0] + vy[1])
+                vx = (cx - 0.5 * u * w, cx + 0.5 * u * w)
+                vy = (cy - 0.5 * u * ratio * h, cy + 0.5 * u * ratio * h)
+            self.vb.setRange(xRange=vx, yRange=vy, padding=0)
             if getattr(self, '_adjust_box', False):
                 self._place_box_only()
-        elif tx is not None and ty is not None:
-            self.vb.setRange(xRange=tx, yRange=ty, padding=0)
-        elif tx is not None:
-            self.vb.setXRange(*tx, padding=0)
-        elif ty is not None:
-            self.vb.setYRange(*ty, padding=0)
+        elif vx is not None and vy is not None:
+            self.vb.setRange(xRange=vx, yRange=vy, padding=0)
+        elif vx is not None:
+            self.vb.setXRange(*vx, padding=0)
+        elif vy is not None:
+            self.vb.setYRange(*vy, padding=0)
         self._store_home()
 
     def _store_home(self):
@@ -5045,12 +5083,10 @@ class Axes:
         self._home = (xa, xb, ya, yb)
 
     def get_xlim(self):
-        a, b = self._view_range()[0]
-        return (b, a) if self.vb.state['xInverted'] else (a, b)
+        return self._get_lim('x')
 
     def get_ylim(self):
-        a, b = self._view_range()[1]
-        return (b, a) if self.vb.state['yInverted'] else (a, b)
+        return self._get_lim('y')
 
     _ANCHORS = {'C': (0.5, 0.5), 'N': (0.5, 0.0), 'S': (0.5, 1.0), 'E': (1.0, 0.5), 'W': (0.0, 0.5),
                 'NE': (1.0, 0.0), 'NW': (0.0, 0.0), 'SE': (1.0, 1.0), 'SW': (0.0, 1.0)}
@@ -5075,7 +5111,7 @@ class Axes:
         was = getattr(self, '_adjust_box', False)
         self._adjust_box = adjustable in (None, 'box')
         if aspect == 'equal' or (isinstance(aspect, (int, float)) and not isinstance(aspect, bool)):
-            self.vb.setAspectLocked(True, 1.0 if aspect == 'equal' else float(aspect))
+            self.vb.setAspectLocked(True, self._view_ratio(1.0 if aspect == 'equal' else float(aspect)))
         else:
             self.vb.setAspectLocked(False)
         self._notify_shape()               # the panel's shape follows its aspect (rule 11)
@@ -5103,10 +5139,117 @@ class Axes:
         pass
 
     def invert_yaxis(self):
-        self.vb.invertY(not self.vb.state['yInverted'])
+        self._toggle_invert(self._view_axis('y'))
 
     def invert_xaxis(self):
-        self.vb.invertX(not self.vb.state['xInverted'])
+        self._toggle_invert(self._view_axis('x'))
+
+    def _toggle_invert(self, view):
+        """The direction of view axis `view` ('x' / 'y') reversed."""
+        if view == 'x':
+            self.vb.invertX(not self.vb.state['xInverted'])
+        else:
+            self.vb.invertY(not self.vb.state['yInverted'])
+
+    # --- a rotated axes (the simulator's unit-cell panels turned to fit the window) ---
+
+    def _view_axis(self, axis):
+        """The view axis ('x' / 'y') that shows data axis `axis`: the other one on a rotated axes."""
+        if not self._rotated:
+            return axis
+        return 'y' if axis == 'x' else 'x'
+
+    def _axis_item(self, axis):
+        """The tick axis item (bottom or left) that shows data axis `axis`."""
+        return self.xaxis_item if self._view_axis(axis) == 'x' else self.yaxis_item
+
+    def _view_ratio(self, ratio):
+        """pyqtgraph's aspect ratio (y units per x unit of the view) for a data aspect `ratio`: its inverse on a rotated axes."""
+        return 1.0 / ratio if self._rotated and ratio else ratio
+
+    def _rotor(self):
+        """The turned group of a rotated axes (_Rotor), made when first needed and again after a clear detached it; None when the axes is not rotated."""
+        if not self._rotated:
+            return None
+        r = self._rotor_item
+        if r is not None and r.parentItem() is self.vb.childGroup:
+            return r
+        self._drop_rotor()
+        r = _Rotor()
+        r.setTransform(_SWAP)
+        self.vb.addItem(r, ignoreBounds=True)
+        self._rotor_item = r
+        return r
+
+    def _drop_rotor(self):
+        r = self._rotor_item
+        self._rotor_item = None
+        if r is None:
+            return
+        try:
+            self.vb.removeItem(r)
+            if r.scene() is not None:
+                r.scene().removeItem(r)
+        except Exception:
+            pass
+
+    def _place_item(self, item):
+        """An item just added to the view (Artist._add_item, a data-coordinate Text) goes under the rotor of a rotated axes."""
+        r = self._rotor()
+        if r is not None and item is not r:
+            item.setParentItem(r)
+
+    def get_rotated(self):
+        return self._rotated
+
+    def set_rotated(self, flag=True):
+        """
+        The axes turned 90 degrees anticlockwise on screen (data x up the vertical axis, data y
+        along the horizontal axis increasing to the left: a rotation, never a mirror), or back.
+        Everything drawn turns with it (the items sit under a turned group, _Rotor) and every
+        value the axes takes or gives stays in data terms: the limits (set_xlim / set_ylim,
+        get_xlim / get_ylim), the labels (set_xlabel on the vertical tick axis when turned), ticks
+        and tick_params by data axis, the aspect, transData and the mouse events' xdata / ydata,
+        the pickers.  The current limits, labels and aspect are carried over; fixed ticks
+        (set_xticks) are not.  The panel's shape follows (its ratio turned: _aspect_want), so the
+        window's rows and arrangement size it anew.  Used where a unit cell fits the window better
+        the other way (the simulator's topographies and energy maps).
+        """
+        flag = bool(flag)
+        if flag == self._rotated:
+            return
+        xlab, ylab = self._xlabel, self._ylabel
+        xpt, ypt = self._axis_item('x')._label_pt, self._axis_item('y')._label_pt
+        xi, yi = bool(self.vb.state['xInverted']), bool(self.vb.state['yInverted'])
+        ar = list(self.vb.state['autoRange'])
+        group = self.vb.childGroup
+        if flag:
+            self._rotated = True
+            rotor = self._rotor()
+            for it in list(group.childItems()):
+                if it is not rotor:
+                    it.setParentItem(rotor)
+            self.vb.invertX(not yi)            # the view's x axis shows data y, to the left for ascending limits
+            self.vb.invertY(xi)                # the view's y axis shows data x, as it ran
+        else:
+            rotor = self._rotor()
+            self._rotated = False
+            if rotor is not None:
+                for it in list(rotor.childItems()):
+                    it.setParentItem(group)
+            self._drop_rotor()
+            self.vb.invertX(yi)
+            self.vb.invertY(not xi)
+        self.vb.enableAutoRange(x=bool(ar[1]), y=bool(ar[0]))
+        if self.vb.state['aspectLocked']:
+            self.vb.setAspectLocked(True, 1.0 / float(self.vb.state['aspectLocked']))
+        self._apply_targets()
+        for item in (self.xaxis_item, self.yaxis_item):
+            self._axis_label(item, '')
+        self.set_xlabel(xlab, fontsize=xpt)
+        self.set_ylabel(ylab, fontsize=ypt)
+        self._notify_shape()
+        self._request_place()
 
     def _home_view(self):
         if self._is_colorbar:
@@ -5901,6 +6044,8 @@ class FigureCanvas(pg.GraphicsView):
                     fy = 1.0 - fy
                 e.xdata = xa + fx * (xb - xa)
                 e.ydata = ya + fy * (yb - ya)
+                if ax._rotated:
+                    e.xdata, e.ydata = e.ydata, e.xdata      # the view shows (y, x)
             except Exception:
                 e.inaxes = None
         return e
@@ -6161,7 +6306,10 @@ class NavigationToolbar(QtWidgets.QToolBar):
             fy = 1 - fy
         if ax.vb.state['xInverted']:
             fx = 1 - fx
-        self.coords.setText(f"x={xa + fx * (xb - xa):.5g}  y={ya + fy * (yb - ya):.5g}")
+        x, y = xa + fx * (xb - xa), ya + fy * (yb - ya)
+        if ax._rotated:
+            x, y = y, x
+        self.coords.setText(f"x={x:.5g}  y={y:.5g}")
 
 
 class FigureManager:

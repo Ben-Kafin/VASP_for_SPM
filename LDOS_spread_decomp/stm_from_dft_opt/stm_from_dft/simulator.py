@@ -534,6 +534,8 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         self.cached_path_nodes = None     # cache-invalidation key for path topo
         self.cached_path_extend = None
         self.fig = None                   # the window (run_interactive); its controls are made once (_make_controls)
+        self.cell_rotated = False         # the unit-cell panels turned 90 degrees (Axes.set_rotated): _choose_orientation
+        self._orient_pending = False      # an orientation decision waiting for the arrangement's first size
         self._extra_boxes = []            # control boxes another window adds to the left column (add_control_box)
 
     def run_interactive(self, grid_res=64, topo_bias=0.2, topo_height=2.5,
@@ -917,8 +919,11 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         panel = controls.CropPanel(ax, cell, self._box_topo_h, self._box_crop)
         self._box_topo_h.show()
         self._box_crop.show()
+        ax.set_rotated(self.cell_rotated)
         for (axis, k), box in self._cursor_boxes.items():
-            (panel.band_x if axis == 'x' else panel.band_y).add((axis, k), box)
+            # Each box in the band its cursor's line runs along: as drawn the x boxes over the panel, the y
+            # boxes at its right; the other way round when the panel is turned.
+            (panel.band_y if (axis == 'x') == self.cell_rotated else panel.band_x).add((axis, k), box)
         ax.on_placed(self._place_cursor_boxes)
         self._crop_ax, self._crop_panel = ax, panel
         return ax, panel
@@ -1019,7 +1024,9 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         (_topo_cap); in Single Point the spectrum is a first-class panel beside the placement topo.
         The arrangement is chosen
         again and the window trimmed (Figure.fit_window) on every view change, rebuild, crop and
-        resize.  The controls of the view are shown and the others hidden, then
+        resize; the unit-cell panels' orientation (as drawn, or turned 90 degrees: the way the
+        window fits better, _choose_orientation) is decided when the view is built and on Crop /
+        Uncrop.  The controls of the view are shown and the others hidden, then
         _update_all(full_refresh=True).  Called at the first show and on every view change; the
         controls themselves are made once (_make_controls).  automatic layout: the one rule for
         every window (nothing placed by hand).
@@ -1069,6 +1076,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
             self.ax_map_global, topo = self._placement()
             row.addWidget(topo, 10)
             self.ax_map = self._panel_with_box(row, self._box_ldos_h, stretch=10)
+            self.ax_map.set_rotated(self.cell_rotated)
             topos = plt.RowWidget(row)
             self._map_block = controls.MapBlock(fig, spacing=4)
             maps = controls.Titled(self._map_block, self._cluster_label.qt)
@@ -1086,6 +1094,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
                                                  free_cap=self._curves_cap(mode, groups),
                                                  free_scored=mode == 'Single Point',
                                                  group_cap=self._topo_cap(mode, groups))
+        self._arrangement.on_arranged(self._on_arranged)
         self._panel_area.addWidget(self._arrangement, 1)
         self._box_topo_h.setVisible(True)
         self._box_ldos_h.setVisible(mode != 'Single Point')
@@ -1094,7 +1103,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
 
         self.cached_emin, self.cached_emax = None, None
         self._update_all(full_refresh=True)
-        self._rearrange()
+        self._rearrange(orient=True)             # the view built: the unit-cell panels' orientation decided
 
     CURVE_BOX_MIN_PX = (220, 140)      # a curve panel's readable plot box at text zoom 1 (its labels come on top)
 
@@ -1182,11 +1191,82 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
                 return with_width(max(rect[3] - heat_group._label_h() - hm_tb, 1.0), hm[0])
         return (topo_group, heat_group, self.TOPO_MAX_FACTOR, box_a, box_b)
 
-    def _rearrange(self):
-        """The arrangement chosen again for the panels as they now are, and the window trimmed to them (rule 11)."""
+    def _rearrange(self, orient=False):
+        """The arrangement chosen again for the panels as they now are, and the window trimmed to them (rule 11); with `orient` the unit-cell panels' orientation is decided first (_choose_orientation)."""
+        if orient:
+            self._choose_orientation()
         if self._arrangement is not None:
             self._arrangement.rearrange()
         self.fig.fit_window()
+
+    # --- the unit-cell panels' orientation (rule 11: turned when the window fits them better that way) ---
+
+    ORIENT_HYSTERESIS = 0.05           # the panels keep their orientation unless the other scores better by this
+
+    def _unit_cell_axes(self):
+        """The panels drawn in the unit cell's frame, which turn together: the placement topo, and in Map the Map Topo and every energy map.  The Line / Path heatmap row never turns."""
+        axs = [getattr(self, '_crop_ax', None)]
+        if self.mode == 'Map':
+            axs.append(getattr(self, 'ax_map', None))
+            axs.extend(getattr(self, 'map_axes', None) or [])
+        figure_axes = self.fig.axes
+        return [a for a in axs if a is not None and a in figure_axes]
+
+    def _set_cell_rotation(self, flag):
+        """Every unit-cell panel of the view turned 90 degrees (Axes.set_rotated) or back, together; each cursor box moves to the band its cursor's line now runs along."""
+        flag = bool(flag)
+        for ax in self._unit_cell_axes():
+            ax.set_rotated(flag)
+        if flag == self.cell_rotated:
+            return
+        self.cell_rotated = flag
+        panel = getattr(self, '_crop_panel', None)
+        if panel is not None:
+            for key in list(self._cursor_boxes):
+                axis = key[0]
+                src, dst = (panel.band_x, panel.band_y) if (axis == 'x') == flag else (panel.band_y, panel.band_x)
+                w = src.take(key)
+                if w is not None:
+                    dst.add(key, w)
+        self._place_cursor_boxes()
+
+    def _choose_orientation(self):
+        """
+        The unit-cell panels' orientation: as drawn, or turned 90 degrees, whichever the
+        arrangement scores better at the window's size now (controls.Arrangement.best_score: the
+        groups' scale less the blank), the current one kept within ORIENT_HYSTERESIS.  Decided
+        when a view is built and again on Crop / Uncrop (the shape changes), never on a resize;
+        before the arrangement has a size (the first build) the decision waits for its first
+        arrangement (_on_arranged).  Returns whether the orientation changed.
+        """
+        arr = self._arrangement
+        if arr is None:
+            return False
+        cur = self.cell_rotated
+        scores = {}
+        for flag in (cur, not cur):
+            self._set_cell_rotation(flag)
+            s = arr.best_score()
+            if s is None:
+                self._set_cell_rotation(cur)
+                self._orient_pending = True
+                return False
+            scores[flag] = s[0]
+        best = cur if scores[cur] >= scores[not cur] - self.ORIENT_HYSTERESIS else (not cur)
+        self._set_cell_rotation(best)
+        self._orient_pending = False
+        print(f"{self.mode}: the unit-cell panels {'turned 90 degrees' if best else 'as drawn'} "
+              f"(fit {scores[best]:.3f}; the other way {scores[not best]:.3f}).")
+        return best != cur
+
+    def _on_arranged(self, name):
+        """After an arrangement: an orientation decision that waited for the arrangement's first size is made now (deferred past the arrangement's own pass; the arrangement then follows it)."""
+        if self._orient_pending:
+            QtCore.QTimer.singleShot(0, self._orient_now)
+
+    def _orient_now(self):
+        if self._orient_pending and self._choose_orientation():
+            self._rearrange()
 
     # --- the crop of the placement topo (as the sm4_Browser Line window's crop cursors) ---
 
@@ -1248,8 +1328,9 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
 
     def _draw_cursors(self):
         """
-        The crop cursors on the placement topo: two vertical lines at the x cursors and two
-        horizontal ones at the y cursors (draggable; a press on one is theirs before any marker's),
+        The crop cursors on the placement topo: two lines at the x cursors and two at the y
+        cursors across the panel (vertical and horizontal as drawn, the other way round when the
+        panel is turned; draggable; a press on one is theirs before any marker's),
         the grey shade outside each pair, and the boxes riding with them (_place_cursor_boxes).
         Every cursor is first made valid for the current extent.
         """
@@ -1282,22 +1363,24 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         self.fig.canvas.draw_idle()
 
     def _place_cursor_boxes(self):
-        """The cursor boxes filled and moved onto their cursors: the x ones in the band over the panel, the y ones in the band at its right (controls.RideBand)."""
+        """
+        The cursor boxes filled and moved onto their cursors (controls.RideBand): each in the band
+        its cursor's line runs along (as drawn the x boxes in the band over the panel, the y boxes
+        in the band at its right; the other way round when the panel is turned), at the line's
+        canvas position (Axes.transData, which knows the turn).
+        """
         ax, panel = self._crop_ax, self._crop_panel
         if ax is None or panel is None or self._cursors is None or ax not in self.fig.axes:
             return
-        x0, y0, w, h = ax._px_rect()
-        xl0, xl1 = ax.get_xlim()
-        yl0, yl1 = ax.get_ylim()
+        H = self.fig._canvas_size()[1]
         for (axis, k), box in self._cursor_boxes.items():
             v = float(self._cursors[axis][k])
             box.set(self._cursor_text(v))
-            if axis == 'x':
-                f = (v - xl0) / (xl1 - xl0) if xl1 != xl0 else 0.5
-                panel.band_x.set_pos((axis, k), x0 + w * float(np.clip(f, 0.0, 1.0)))
-            else:
-                f = (v - yl0) / (yl1 - yl0) if yl1 != yl0 else 0.5
-                panel.band_y.set_pos((axis, k), y0 + h * (1.0 - float(np.clip(f, 0.0, 1.0))))
+            px, py = ax.transData.transform([[v, v]])[0]            # the line's canvas position (its own coordinate)
+            if (axis == 'x') != self.cell_rotated:                  # the line is vertical on screen: the top band, by x
+                panel.band_x.set_pos((axis, k), px)
+            else:                                                   # horizontal: the side band, by y from the top
+                panel.band_y.set_pos((axis, k), H - py)
 
     def _crop_ranges(self):
         """(x range, y range) the cursors mean for a crop: a pair left at its axis's ends keeps that axis's crop as it is."""
@@ -1325,7 +1408,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
                 ax.set_ylim(*y_rng)
 
     def _on_crop(self, event=None):
-        """'Crop': what lies between the cursors is kept, on both axes; the cursors then sit at the new edges; the arrangement and the window follow the new shape."""
+        """'Crop': what lies between the cursors is kept, on both axes; the cursors then sit at the new edges; the unit-cell panels' orientation is decided again for the new shape, and the arrangement and the window follow."""
         if self._crop_ax is None:
             return
         if self._cursors is None:
@@ -1334,7 +1417,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         self._apply_crop()
         self._reset_cursors()
         self._draw_cursors()
-        self._rearrange()
+        self._rearrange(orient=True)
 
     def _on_uncrop(self, event=None):
         """'Uncrop': the full extent of the drawn cells again, the cursors back at the ends."""
@@ -1345,7 +1428,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
             self._apply_crop()
             self._reset_cursors()
             self._draw_cursors()
-            self._rearrange()
+            self._rearrange(orient=True)
 
     def _draw_map_slice(self, ax, slice_data, v_max, use_diverging, has_mag):
         """One energy map on `ax`: the slice over the 2 x 2 cells drawn (one raster at four offsets), the colour scale of the view."""
@@ -2067,6 +2150,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
                     cells = []
                     for _ in range(nepts):
                         ax_m, cell = self._cell_axes()
+                        ax_m.set_rotated(self.cell_rotated)
                         self.map_axes.append(ax_m)
                         cells.append(cell)
                     bar = None
