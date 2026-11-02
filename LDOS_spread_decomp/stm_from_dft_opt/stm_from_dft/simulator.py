@@ -1014,9 +1014,10 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         above and beside it); in Line / Path the heatmap row (its label over it); in Map the
         Global Topo and Map Topo pair (their boxes above) and the energy maps' wrapping block.  The
         curve panels (Tip Height and Partitioned LDOS, beside or over each other by their room;
-        the spectrum alone in Map) take the room left, at least readable and at most the cap of
-        the view (_curves_readable, _curves_cap); in Single Point the spectrum is a first-class
-        panel beside the placement topo.  The arrangement is chosen
+        the spectrum alone in Map) keep their readable size (_curves_readable, _curves_cap) and the
+        heatmaps and topographies take the rest, the topographies at most twice a heatmap
+        (_topo_cap); in Single Point the spectrum is a first-class panel beside the placement topo.
+        The arrangement is chosen
         again and the window trimmed (Figure.fit_window) on every view change, rebuild, crop and
         resize.  The controls of the view are shown and the others hidden, then
         _update_all(full_refresh=True).  Called at the first show and on every view change; the
@@ -1043,7 +1044,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         elif mode in ('Line', 'Path'):
             # The placement topo; the heatmap row (rebuilt by _update_all each refresh, the LDOS h box
             # above the Line Topo panel or above the Path stripe) under its label; the Tip Height
-            # profile and the spectrum in the room left (readable, capped: rule 11), side by side or stacked by that room's shape.
+            # profile and the spectrum at their readable size (rule 11), side by side or stacked by that room's shape.
             self.ax_map, topo = self._placement()
             self._cluster_row = plt.PanelRow(spacing=4)
             cluster = controls.Titled(plt.RowWidget(self._cluster_row), self._cluster_label.qt)
@@ -1062,8 +1063,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         elif mode == 'Map':
             # The Global Topo (the crop panel) and the Map Topo (LDOS h above it) side by side as one
             # shaped row; the energy maps as a wrapping block under its label (rebuilt by _update_all
-            # when the counts change); the spectrum in the room left (readable, capped at one energy map's
-            # height: rule 11).  The topo panels keep
+            # when the counts change); the spectrum at its readable size (rule 11).  The topo panels keep
             # set_aspect('equal') and take the same crop.
             row = plt.PanelRow(spacing=10)
             self.ax_map_global, topo = self._placement()
@@ -1078,9 +1078,10 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
             self.cax_list = []
             self.marks = self.ax_map.scatter([], [], s=150, edgecolors='black', zorder=15, picker=5)
             fig.align_row(self.ax_map_global, self.ax_map)
-        # The sizing (rule 11): the heat maps first; the curve panels at least readable, their plot box at
-        # most one energy map's box tall (Map) or the heatmaps' (Line / Path); in Single Point the spectrum
-        # is a first-class panel beside the placement topo (Arrangement free_min / free_cap / free_scored).
+        # The sizing (rule 11): the heatmaps and the topographies fill the window (the topographies at most
+        # twice a heatmap, in width and in height); the curve panels keep their readable size, never grown
+        # to fill blank space; in Single Point the spectrum is a first-class panel beside the placement topo
+        # (Arrangement free_min / free_cap / free_scored / group_cap).
         self._arrangement = controls.Arrangement(groups, free, spacing=8, free_min=self._curves_readable,
                                                  free_cap=self._curves_cap(mode, groups),
                                                  free_scored=mode == 'Single Point',
@@ -1096,7 +1097,6 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         self._rearrange()
 
     CURVE_BOX_MIN_PX = (220, 140)      # a curve panel's readable plot box at text zoom 1 (its labels come on top)
-    CURVE_MAX_ASPECT = 2.0             # a curve panel's plot box at most this many times as wide as its capped height
 
     def _curve_axes(self):
         """The curve panels of the view: the spectrum, with the Tip Height profile before it in Line / Path."""
@@ -1124,43 +1124,14 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
 
     def _curves_cap(self, mode, groups):
         """
-        The Arrangement's free_cap of the view (None in Single Point): the spectrum's plot box at
-        most one energy map's box tall (Map: MapBlock.map_box_height in the block's region) or the
-        heatmaps' box (Line / Path: the cluster's region less its label and the heatmaps' own
-        labels; the row reports that height, PanelRow), so the curve panels' region is that box plus the spectrum's own top and bottom
-        labels; each panel's plot box at most CURVE_MAX_ASPECT times that height wide.
+        The Arrangement's free_cap of the view (None in Single Point): the curve panels (the
+        spectrum, and the Tip Height profile in Line / Path) keep their readable size
+        (_curves_readable): never shrunk below it, never grown to fill blank space; the heatmaps
+        and the topographies take the rest.
         """
-        def spec_decor():
-            l, t, r, b = self.ax_spec._decor_px()
-            return l + r, t + b
-
-        def region(box):
-            lr, tb = spec_decor()
-            n = len(self._curve_axes())
-            return (n * (self.CURVE_MAX_ASPECT * box + lr) + 6 * (n - 1), box + tb)
-
-        if mode == 'Map':
-            maps = groups[1]
-
-            def cap(rects):
-                r = rects.get(maps)
-                if r is None:
-                    return None
-                box = self._map_block.map_box_height(r[2], max(r[3] - maps._label_h(), 1.0))
-                return None if box is None else region(box)
-            return cap
-        if mode in ('Line', 'Path'):
-            cluster = groups[1]
-
-            def cap(rects):
-                r = rects.get(cluster)
-                if r is None:
-                    return None
-                hm = getattr(self, 'line_decomp_axes', None) or []
-                hm_tb = max([a._decor_px()[1] + a._decor_px()[3] for a in hm] + [0.0])
-                return region(max(r[3] - cluster._label_h() - hm_tb, 1.0))
-            return cap
-        return None
+        if mode not in ('Map', 'Line', 'Path'):
+            return None
+        return lambda rects: self._curves_readable()
 
     TOPO_MAX_FACTOR = 2.0              # a topography's plot box at most this many times a heatmap's (Map, Line, Path)
 
@@ -1173,39 +1144,42 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
     def _topo_cap(self, mode, groups):
         """
         The Arrangement's group_cap of the view (None in Single Point: no heatmap): the topography
-        group's plot box at most TOPO_MAX_FACTOR times one heatmap's (Map: one energy map's box,
-        MapBlock.map_box_height; Line / Path: the heatmap row's box, as _curves_cap reads it).  A
-        topo's box in a region is the region's height less the room around its box: the crop
-        panel's boxes and band above it and the axes' title and x axis (fixed quantities, never the
-        window's current geometry, so the arrangement does not chase its own last layout).
+        group's plot box at most TOPO_MAX_FACTOR times one heatmap's, in width and in height (Map:
+        one energy map's box, MapBlock.map_box; Line / Path: one heatmap of the row).  A box's
+        height in a region is the region's height less the room around the box; its width follows
+        from the panel's own shape (Axes._aspect_want: the unit cell's ratio for a topo and a map).
+        The room around the placement topo's box: the crop panel's boxes and band above it and the
+        axes' title and x axis (fixed quantities, never the window's current geometry, so the
+        arrangement does not chase its own last layout).
         """
         if mode not in ('Map', 'Line', 'Path'):
             return None
         topo_group, heat_group = groups[0], groups[1]
 
         def around():
-            # The room over and around the placement topo's box: the crop panel's boxes and band above it
-            # (CropPanel._box_h) and the axes' title and x axis (the cell's _decor): fixed quantities, not
-            # the window's current geometry, so the arrangement never chases its own last layout.
             panel = getattr(self, '_crop_panel', None)
             if panel is None:
                 return 0.0
             l, t, r, b = panel.cell._decor()
             return panel._box_h() + t + b
 
+        def with_width(h, ax):
+            ratio = ax._aspect_want() if ax is not None else None
+            return (h / ratio if ratio else None, h)
+
         def box_a(rect):
-            return max(rect[3] - around(), 1.0)
+            return with_width(max(rect[3] - around(), 1.0), getattr(self, '_crop_ax', None))
 
         if mode == 'Map':
             def box_b(rect):
-                return self._map_block.map_box_height(rect[2], max(rect[3] - heat_group._label_h(), 1.0))
+                return self._map_block.map_box(rect[2], max(rect[3] - heat_group._label_h(), 1.0))
         else:
             def box_b(rect):
                 hm = getattr(self, 'line_decomp_axes', None) or []
                 if not hm:
                     return None
                 hm_tb = max(a._decor_px()[1] + a._decor_px()[3] for a in hm)
-                return max(rect[3] - heat_group._label_h() - hm_tb, 1.0)
+                return with_width(max(rect[3] - heat_group._label_h() - hm_tb, 1.0), hm[0])
         return (topo_group, heat_group, self.TOPO_MAX_FACTOR, box_a, box_b)
 
     def _rearrange(self):

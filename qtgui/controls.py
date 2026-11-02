@@ -1950,12 +1950,12 @@ class MapBlock(QtWidgets.QWidget):
         w, h, box_w, n = self._best(W, H)
         return (w, h)
 
-    def map_box_height(self, W, H):
-        """One map's plot box height when the block is given W x H (the columns chosen as fit chooses them); None without maps."""
+    def map_box(self, W, H):
+        """One map's plot box (w, h) when the block is given W x H (the columns chosen as fit chooses them); None without maps."""
         if not self._groups:
             return None
         w, h, box_w, n = self._best(W, H)
-        return box_w * self._ratio()
+        return box_w, box_w * self._ratio()
 
     def height_for_width(self, w):
         return self._best(w, 1.0e9)[1] if self._groups else None
@@ -2047,9 +2047,9 @@ class Arrangement(QtWidgets.QWidget):
     blank.  With `free_scored` (the simulator's Single Point view) the free widget is a
     first-class panel instead: it is scored as a group (its scale against the whole window) and
     the one group and it are sized to one scale.  `group_cap` (A, B, k, box_a, box_b): group A's
-    plot box never more than k times group B's (box_a(rect), box_b(rect): their plot box heights
-    in a region; the simulator: the topographies at most twice a heatmap); a candidate that
-    breaks it is sized again with A limited (_candidates).  The candidate arrangements for two groups A, B and the free widget F:
+    plot box never more than k times group B's in width or in height (box_a(rect), box_b(rect):
+    their plot boxes (w, h) in a region; the simulator: the topographies at most twice a heatmap);
+    a candidate that breaks it is sized again with A limited (_candidates).  The candidate arrangements for two groups A, B and the free widget F:
 
         row_top   A and B in one row across the top, F below
         a_left    A at the left with the window's height; B over F at its right
@@ -2221,13 +2221,15 @@ class Arrangement(QtWidgets.QWidget):
         return _shaped_size(w, W, H)
 
     def _within(self, cand):
-        """Whether a candidate keeps group_cap: group A's plot box at most k times group B's (box_a, box_b of their rects; a box not known yet counts as kept)."""
+        """Whether a candidate keeps group_cap: group A's plot box at most k times group B's in every dimension (box_a, box_b of their rects give (w, h), a side None when it is not known; a box not known yet counts as kept)."""
         A, B, k, box_a, box_b = self._group_cap
         rects = cand[2]
         if A not in rects or B not in rects:
             return True
         a, b = box_a(rects[A]), box_b(rects[B])
-        return a is None or b is None or a <= k * b + 0.5
+        if a is None or b is None:
+            return True
+        return all(x is None or y is None or x <= k * y + 0.5 for x, y in zip(a, b))
 
     def _candidates(self, W, H):
         """
