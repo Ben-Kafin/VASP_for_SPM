@@ -1843,11 +1843,14 @@ class MapBlock(QtWidgets.QWidget):
     that fit the block's region (`fit`); each partition may have a colour-bar cell at its right
     spanning its rows, or one bar serves the whole block at its right.  The cells are placed by
     the block itself (rule 11: the row of each visual line shares one band, Figure.align_row).
-    `set_groups([(cells, bar_or_None), ...], shared_bar=None, extra=None)` gives it the cells (the
-    block takes them as children; the old ones are the window's to remove); `extra` is one more
-    cell of a map's size (the simulator's spectrum) placed in the free slot of the last row, or in
-    a row of its own when the last row is full (alone in the block before there are maps); it
-    counts in the block's shape but not in the maps' room for titles and tick axes.
+    `set_groups([(cells, bar_or_None), ...], shared_bar=None, extra=None, cell_bars=None)` gives
+    it the cells (the block takes them as children; the old ones are the window's to remove);
+    `extra` is one more cell of a map's size (the simulator's spectrum) placed in the free slot of
+    the last row, or in a row of its own when the last row is full (alone in the block before
+    there are maps); it counts in the block's shape but not in the maps' room for titles and tick
+    axes.  `cell_bars` ({cell: bar cell}) puts a narrow colour-bar cell right of each map named,
+    inside the map's column (the simulator's 'cmap norm': every map its own scale and bar, as the
+    sm4_Browser grid view).
     """
 
     def __init__(self, fig, spacing=4):
@@ -1857,18 +1860,23 @@ class MapBlock(QtWidgets.QWidget):
         self._groups = []             # [(cells, bar)]
         self._shared = None
         self._extra = None            # the extra cell (set_groups), one map's size at the first free slot
+        self._cell_bars = {}          # {cell: bar cell} beside each map named (set_groups cell_bars)
         self.cols = 1
         pol = QtWidgets.QSizePolicy.Policy
         self.setSizePolicy(pol.Expanding, pol.Expanding)
 
-    def set_groups(self, groups, shared_bar=None, extra=None):
+    def set_groups(self, groups, shared_bar=None, extra=None, cell_bars=None):
         self._groups = [(list(cells), bar) for cells, bar in groups]
         self._shared = shared_bar
         self._extra = extra
+        self._cell_bars = dict(cell_bars or {})
         for cells, bar in self._groups:
             for c in cells + ([bar] if bar is not None else []):
                 c.setParent(self)
                 c.show()
+        for b in self._cell_bars.values():
+            b.setParent(self)
+            b.show()
         if shared_bar is not None:
             shared_bar.setParent(self)
             shared_bar.show()
@@ -1912,6 +1920,12 @@ class MapBlock(QtWidgets.QWidget):
             return 0.0
         return float(max(b.sizeHint().width() for b in bars)) + self._sp
 
+    def _cell_bar_w(self):
+        """The room a map's own colour bar takes in its column (the widest bar cell plus the spacing); 0 without cell bars."""
+        if not self._cell_bars:
+            return 0.0
+        return float(max(b.sizeHint().width() for b in self._cell_bars.values())) + self._sp
+
     def _lines(self, k, cols):
         """The rows partition k takes at `cols` columns (the extra cell counted with the last partition)."""
         n = len(self._groups[k][0]) + (1 if self._extra is not None and k == len(self._groups) - 1 else 0)
@@ -1944,9 +1958,10 @@ class MapBlock(QtWidgets.QWidget):
             return (1.0, 1.0, 0.0)
         lr, _ = self._decor()
         r = self._ratio()
+        cbw = self._cell_bar_w()                                 # a map's own colour bar beside it, in its column
         # Every partition's rows carry that partition's own room (titles on the first partition only).
         tb_sum = sum(self._lines(k, n) * self._tb_of(cells) for k, (cells, _) in enumerate(self._groups))
-        cw = (W - self._bar_w() - (n - 1) * self._sp) / n
+        cw = (W - self._bar_w() - (n - 1) * self._sp) / n - cbw
         box_w = max(cw - lr, 1.0)
         box_h = box_w * r
         total = R * box_h + tb_sum + (R - 1) * self._sp
@@ -1954,7 +1969,7 @@ class MapBlock(QtWidgets.QWidget):
             box_h = max((H - (R - 1) * self._sp - tb_sum) / R, 1.0)
             box_w = box_h / r
         cw = max(box_w + lr, self._title_w() + 4.0)             # a cell at least as wide as its title
-        w = n * cw + (n - 1) * self._sp + self._bar_w()
+        w = n * (cw + cbw) + (n - 1) * self._sp + self._bar_w()
         h = R * (box_w * r) + tb_sum + (R - 1) * self._sp
         return (w, h, box_w)
 
@@ -2011,6 +2026,7 @@ class MapBlock(QtWidgets.QWidget):
         lr, _ = self._decor()
         r = self._ratio()
         cw = max(box_w + lr, self._title_w() + 4.0)
+        cbw = self._cell_bar_w()
         bar_w = self._bar_w() - self._sp if self._bar_w() > 0 else 0.0
         y = 0.0
         rows_for_align = []
@@ -2026,19 +2042,24 @@ class MapBlock(QtWidgets.QWidget):
                 if col == 0 and i > 0:
                     rows_for_align.append(row)
                     row = []
-                x = col * (cw + self._sp)
-                c.setGeometry(int(round(x)), int(round(y0 + line * (ch + self._sp))), int(round(cw)), int(round(ch)))
+                x = col * (cw + cbw + self._sp)
+                cy = y0 + line * (ch + self._sp)
+                c.setGeometry(int(round(x)), int(round(cy)), int(round(cw)), int(round(ch)))
                 row.append(c)
+                b = self._cell_bars.get(c)
+                if b is not None:                                # the map's own colour bar, right of it
+                    b.setGeometry(int(round(x + cw + self._sp)), int(round(cy)), int(round(max(cbw - self._sp, 1.0))), int(round(ch)))
+                    row.append(b)
             if row:
                 rows_for_align.append(row)
             lines = -(-len(placed) // n)
             gh = lines * ch + (lines - 1) * self._sp
             if bar is not None:
-                bx = n * cw + (n - 1) * self._sp + self._sp
+                bx = n * (cw + cbw) + (n - 1) * self._sp + self._sp
                 bar.setGeometry(int(round(bx)), int(round(y0)), int(round(bar_w)), int(round(gh)))
             y = y0 + gh + self._sp
         if self._shared is not None:
-            bx = n * cw + (n - 1) * self._sp + self._sp
+            bx = n * (cw + cbw) + (n - 1) * self._sp + self._sp
             self._shared.setGeometry(int(round(bx)), 0, int(round(bar_w)), int(round(max(y - self._sp, 1.0))))
         for row in rows_for_align:
             axes = [o for c in row for o in c._bound if isinstance(o, plt.Axes)]

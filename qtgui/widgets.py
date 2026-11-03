@@ -60,6 +60,7 @@ SPECS = {
     'Metal curve': _spec('check', 1.2, 0.3),                        # decomp_window: the metal curve drawn
     'Segmentation': _spec('check', 1.2, 0.3),                       # spread_collapse: under Horizontal
     'Norm': _spec('check', 0.7, 0.3),                               # state_decomposition_plot: per-curve normalization
+    'cmap norm': _spec('check', 1.1, 0.3),                          # the simulator's Map view: each energy map its own colour scale (the sm4_Browser Map window's toggle)
     # --- toggle boxes (several rows) ---
     'sim toggles': _spec('checks', 1.2, 1.4, labels=['Atoms', 'Decay', '0-clamp', 'Norm', 'Mag', 'Cell', 'Extend']),   # the simulator ('0-clamp' indented under 'Decay')
     'broadening': _spec('checks', 0.6, 0.6, labels=None),           # the simulator: one row per atom type (labels per file)
@@ -111,7 +112,7 @@ LABELS = {'sim toggles': None, 'broadening': None, 'collapse': None, 'spread vie
 SHORT_LABELS = {
     # toggles and boxes
     'Vertical': 'Vert', 'Horizontal': 'Horiz', 'Amplitude': 'Amp', 'Segmentation': 'Seg', 'Metal curve': 'Metal',
-    'Orbital': 'Orb', 'broadening': 'broad',
+    'Orbital': 'Orb', 'broadening': 'broad', 'cmap norm': 'cmap',
     # radio options
     'Single Point': 'Point',
     # buttons

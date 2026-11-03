@@ -320,6 +320,25 @@ def pt2px(pt):
     return float(pt) * DPI / 72.0
 
 
+def total_min_hfw(lay, w):
+    """
+    QLayout.totalMinimumHeightForWidth(w): the smallest height the layout needs at width w (Qt's
+    qlayout.cpp: minimumHeightForWidth, which holds the layout's own contents margins, plus the
+    parent widget's margins when the layout is that widget's own, plus a menu bar's height).  Some
+    PySide6 builds do not expose it: then minimumHeightForWidth with the parent widget's contents
+    margins added (the figure's layout has no menu bar).
+    """
+    f = getattr(lay, 'totalMinimumHeightForWidth', None)
+    if f is not None:
+        return int(f(int(w)))
+    side = top = 0
+    parent = lay.parentWidget()
+    if parent is not None and parent.layout() is lay:
+        m = parent.contentsMargins()
+        side, top = m.left() + m.right(), m.top() + m.bottom()
+    return int(lay.minimumHeightForWidth(int(w) - side)) + top
+
+
 # matplotlib's named font sizes in points (relative to the 10 pt default, factors of 1.2).
 _FONT_SIZES = {'xx-small': 5.79, 'x-small': 6.94, 'small': 8.33, 'medium': 10.0, 'large': 12.0,
                'x-large': 14.4, 'xx-large': 17.28, 'larger': 12.0, 'smaller': 8.33}
@@ -6712,7 +6731,7 @@ class Figure:
                     # A row of controls that wraps: the smallest height the layout needs at this width (the
                     # panel rows count their minimum, not their natural height: a window may be shorter than
                     # its panels ask, they shrink; rule 11's fit is Figure.fit_window's).
-                    m = QtCore.QSize(m.width(), max(m.height(), lay.totalMinimumHeightForWidth(max(W, m.width()))))
+                    m = QtCore.QSize(m.width(), max(m.height(), total_min_hfw(lay, max(W, m.width()))))
                 if fits_controls((m.width(), m.height()), (W, H), zc, self._fit_zoom):
                     self._fit_zoom = zc
                     return

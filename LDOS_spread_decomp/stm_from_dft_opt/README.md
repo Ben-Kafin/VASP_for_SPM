@@ -46,6 +46,7 @@ screenshot, or the curves as CSV.
 | `broadening` box | left column | one check per atom type with its `σ <type>` box (eV, 0 to 1, two decimals), shown while the check is on: extra Gaussian broadening of that type's DOS |
 | `RUN` / `STOP` | left column, bottom | starts and stops the computation; on STOP the line endpoints / path nodes and marker positions are printed in the form `run_interactive` takes |
 | toggles | beside RUN | `Atoms`, `Decay`, `0-clamp` (under Decay), `Norm`, `Mag`, `Cell`, `Extend` |
+| `cmap norm` | bottom strip, Map only | off: every energy map on one colour scale, the largest value over all of them, with one colour bar; on: each map its own scale with its own bar beside it (as the sm4_Browser Map window's `cmap norm`). The maps' colour map is the constructor's `cmap_map` (`'nipy_spectral'` by default; any matplotlib colour-map name or Colormap, as the browser's `cmap_map`) |
 | `Topo h`, `LDOS h` | columns beside the topography panels | the tip heights (Å, 0 to the cell top above the highest atom) with a `Rerun` button each: the height applies when Rerun is pressed while running |
 | bottom strip | under the panels | `Cells` (0 to 4 periodic images each way), `Path Pts` (Path view, 2 to 12 nodes), `Markers` (1 to 10), `E Pts` (Map view, 1 to 20 energy maps), `E Min`, `E Max` (eV, -5 to 5), `LDOS γ` (the heatmaps' power-law colour scale, re-colours only) |
 

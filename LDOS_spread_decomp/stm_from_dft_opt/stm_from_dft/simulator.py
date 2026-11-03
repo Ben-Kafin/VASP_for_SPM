@@ -484,11 +484,16 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
     The physics and the caches are Unified_STM_Simulator's, called as before.
     """
 
-    def __init__(self, filepath, erange, ldos_height, cmap_topo, unit_cell_num=1):
+    def __init__(self, filepath, erange, ldos_height, cmap_topo, unit_cell_num=1, cmap_map='nipy_spectral'):
         super().__init__(filepath, unit_cell_num=unit_cell_num)
         self.parse_vasp_outputs("LOCPOT")
         self.p1, self.p2 = None, None
         self.erange, self.ldos_height, self.cmap_topo = list(erange), ldos_height, cmap_topo
+        # The Map view's energy maps' colour map (as the sm4_Browser's cmap_map: any matplotlib colour-map
+        # name or Colormap), and its 'cmap norm': off, every map on one colour scale, the maximum over all
+        # of them, with one colour bar; on, each map its own scale with its own bar beside it.
+        self.cmap_map = cmap_map
+        self.cmap_norm = False
         self.npts = 72
         self.is_running, self.normalize, self.show_mag = False, False, False
         self.show_atoms, self.show_unit_cell = True, False
@@ -767,6 +772,9 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         self.s_ldos_gamma = controls.GammaBox(fig, self.ldos_gamma, name='LDOS γ', fmt='.2f')
         for c in (self.s_cell, self.s_path_pts, self.s_num_marks, self.s_nepts, self.s_emin, self.s_emax, self.s_ldos_gamma):
             c.on_change(self._on_ui_change)
+        # 'cmap norm' (Map): each energy map its own colour scale and bar, or one scale and bar for all.
+        self.chk_cmap_norm = controls.make(fig, 'cmap norm', value=self.cmap_norm)
+        self.chk_cmap_norm.on_change(self._on_cmap_norm)
         # Extra broadening: one check per atom type, its σ box shown only while the check is on.
         broad_chk_init = [self.extra_broadening.get(t, 0.0) > 0 for t in self.atomtypes]
         self.chk_broad = controls.make(fig, 'broadening', labels=list(self.atomtypes), values=broad_chk_init)
@@ -839,7 +847,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         self._strip_boxes = {}
         for c, name in ((self.s_cell, 'Cells'), (self.s_path_pts, 'Path Pts'), (self.s_num_marks, 'Markers'),
                         (self.s_nepts, 'E Pts'), (self.s_emin, 'E Min'), (self.s_emax, 'E Max'),
-                        (self.s_ldos_gamma, 'LDOS γ')):
+                        (self.s_ldos_gamma, 'LDOS γ'), (self.chk_cmap_norm, 'cmap norm')):
             frame = controls.box(c)
             self._strip_boxes[name] = frame
             strip.addWidget(frame)
@@ -1039,6 +1047,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         mode = self.mode
         self._strip_boxes['Path Pts'].setVisible(mode == 'Path')
         self._strip_boxes['E Pts'].setVisible(mode == 'Map')
+        self._strip_boxes['cmap norm'].setVisible(mode == 'Map')
         # The counts the view reads, put in the boxes without firing.
         self.s_num_marks.set(len(self.marker_ratios) if mode in ('Line', 'Path') else len(self.marker_coords))
         if mode == 'Path':
@@ -1435,8 +1444,36 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         elif self.show_mag and has_mag:
             ax.tricontourf(self.grid_xy[:, 0], self.grid_xy[:, 1], slice_data, levels=40, cmap='hot', norm=plt.PowerNorm(self.ldos_gamma, vmin=0, vmax=v_max), offsets=offs)
         else:
-            ax.tricontourf(self.grid_xy[:, 0], self.grid_xy[:, 1], slice_data, levels=40, cmap='nipy_spectral', norm=plt.PowerNorm(self.ldos_gamma, vmin=0, vmax=v_max), offsets=offs)
+            ax.tricontourf(self.grid_xy[:, 0], self.grid_xy[:, 1], slice_data, levels=40, cmap=self.cmap_map, norm=plt.PowerNorm(self.ldos_gamma, vmin=0, vmax=v_max), offsets=offs)
         ax.set_aspect('equal')
+
+    def _map_cmap(self, use_diverging, has_mag):
+        """The energy maps' colour map: 'bwr' for a signed magnetization, 'hot' for |m|, else cmap_map."""
+        return 'bwr' if use_diverging else ('hot' if (self.show_mag and has_mag) else self.cmap_map)
+
+    def _map_vmax(self, slice_data, group_vmax):
+        """An energy map's colour-scale maximum: its own (the largest |value| of the slice) with 'cmap norm' on, else its group's (the partition's with show_dcmp_norm, the whole set's otherwise); never 0."""
+        v = float(np.max(np.abs(slice_data))) if self.cmap_norm else float(group_vmax)
+        return v if v > 0 else 1e-15
+
+    def _draw_map_cbar(self, cax, v_max, use_diverging, has_mag, labelsize=None):
+        """One colour bar of the energy maps into `cax`: their colour map over 0..v_max (-v_max..v_max for a signed magnetization), the ticks in units of 10^exp with the exponent as the bar's title."""
+        cax.clear()
+        norm_choice = plt.Normalize(vmin=-v_max, vmax=v_max) if use_diverging else plt.Normalize(vmin=0, vmax=v_max)
+        sm = plt.cm.ScalarMappable(cmap=self._map_cmap(use_diverging, has_mag), norm=norm_choice)
+        sm.set_array([])
+        cb = self.fig.colorbar(sm, cax=cax)
+        exp = int(np.floor(np.log10(v_max)))
+        cb.ax.yaxis.set_major_formatter(plt.ticker.FuncFormatter(lambda x, pos, e=exp: f"{x / (10 ** e):.1f}"))
+        cax.set_title(f"1e{exp}", fontsize=10 if labelsize is None else labelsize)
+        if labelsize is not None:
+            cax.tick_params(labelsize=labelsize)
+
+    def _on_cmap_norm(self, flag):
+        """'cmap norm' (Map): each energy map on its own colour scale with its own colour bar (on), or every map on one scale, the maximum over all of them, with one bar (off); the map block is rebuilt with the bars."""
+        self.cmap_norm = bool(flag)
+        if self.mode == 'Map' and self.is_running:
+            self._update_all(full_refresh=True)
 
     def _cell_offsets_2x2(self):
         """The offsets of the 2 x 2 cells an energy map shows (the cell and its three neighbours along +a and +b)."""
@@ -2142,7 +2179,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
                 # them largest (controls.MapBlock; rule 11), a colour bar cell per partition
                 # (show_dcmp_norm) or one for the whole block (automatic layout).
                 self._clear_map_rows()
-                groups = []
+                groups, cell_bars = [], {}
                 for r in range(num_p):
                     cells = []
                     for _ in range(nepts):
@@ -2150,20 +2187,26 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
                         ax_m.set_rotated(self.cell_rotated)
                         self.map_axes.append(ax_m)
                         cells.append(cell)
+                        if self.cmap_norm:
+                            # 'cmap norm': every map its own colour bar beside it (cax_list by the map's index).
+                            bar = self.fig.cell(inner_w=12)
+                            self._panel_cells.append(bar)
+                            self.cax_list.append(self.fig.add_axes(cell=bar))
+                            cell_bars[cell] = bar
                     bar = None
-                    if self.show_dcmp_norm:
+                    if self.show_dcmp_norm and not self.cmap_norm:
                         bar = self.fig.cell(inner_w=15)
                         self._panel_cells.append(bar)
                         self.cax_list.append(self.fig.add_axes(cell=bar))
                     groups.append((cells, bar))
-                    self._map_cells += cells + ([bar] if bar is not None else [])
+                    self._map_cells += cells + ([bar] if bar is not None else []) + [cell_bars[c] for c in cells if c in cell_bars]
                 shared = None
-                if not self.show_dcmp_norm:
+                if not self.show_dcmp_norm and not self.cmap_norm:
                     shared = self.fig.cell(inner_w=15)
                     self._panel_cells.append(shared)
                     self.cax_list.append(self.fig.add_axes(cell=shared))
                     self._map_cells.append(shared)
-                self._map_block.set_groups(groups, shared_bar=shared, extra=self._spec_cell)
+                self._map_block.set_groups(groups, shared_bar=shared, extra=self._spec_cell, cell_bars=cell_bars)
                 self._rearrange()                  # the block is new: the arrangement and the window follow (rule 11)
 
             if not hasattr(self, 'map_e_targets') or len(self.map_e_targets) != nepts or full_refresh:
@@ -2192,14 +2235,16 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
                 global_vmax = 1e-15
 
             for p_idx, (p_label, t_data) in enumerate(processed_partitions):
-                v_max = np.max(np.abs(t_data)) if self.show_dcmp_norm else global_vmax
-                if v_max == 0:
-                    v_max = 1e-15
+                p_vmax = np.max(np.abs(t_data)) if self.show_dcmp_norm else global_vmax
                 for i, target_e in enumerate(self.map_e_targets):
-                    ax = self.map_axes[p_idx * nepts + i]
+                    k = p_idx * nepts + i
+                    ax = self.map_axes[k]
                     ax.clear()
                     slice_data = t_data[:, i]
+                    v_max = self._map_vmax(slice_data, p_vmax)
                     self._draw_map_slice(ax, slice_data, v_max, use_diverging, has_mag)
+                    if self.cmap_norm:
+                        self._draw_map_cbar(self.cax_list[k], v_max, use_diverging, has_mag, labelsize=6)
                     ax.scatter(m_coords_np[:, 0], m_coords_np[:, 1], color=self.m_colors[:len(m_coords_np)], s=30, edgecolors='white', zorder=5)
                     title_str = f"E = {target_e:.3f} eV" if p_idx == 0 else ""
                     if self.plot_level >= 3:
@@ -2213,29 +2258,11 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
                     ax.set_xticks([])
                     ax.set_yticks([])
 
-                if self.show_dcmp_norm:
-                    cax = self.cax_list[p_idx]
-                    cax.clear()
-                    cmap_choice = 'bwr' if use_diverging else ('hot' if (self.show_mag and has_mag) else 'nipy_spectral')
-                    norm_choice = plt.Normalize(vmin=-v_max, vmax=v_max) if use_diverging else plt.Normalize(vmin=0, vmax=v_max)
-                    sm = plt.cm.ScalarMappable(cmap=cmap_choice, norm=norm_choice)
-                    sm.set_array([])
-                    cb = self.fig.colorbar(sm, cax=cax)
-                    exp = int(np.floor(np.log10(v_max)))
-                    cb.ax.yaxis.set_major_formatter(plt.ticker.FuncFormatter(lambda x, pos, e=exp: f"{x / (10 ** e):.1f}"))
-                    cax.set_title(f"1e{exp}", fontsize=10)
+                if self.show_dcmp_norm and not self.cmap_norm:
+                    self._draw_map_cbar(self.cax_list[p_idx], p_vmax if p_vmax > 0 else 1e-15, use_diverging, has_mag)
 
-            if not self.show_dcmp_norm and len(processed_partitions) > 0:
-                cax = self.cax_list[0]
-                cax.clear()
-                cmap_choice = 'bwr' if use_diverging else ('hot' if (self.show_mag and has_mag) else 'nipy_spectral')
-                norm_choice = plt.Normalize(vmin=-global_vmax, vmax=global_vmax) if use_diverging else plt.Normalize(vmin=0, vmax=global_vmax)
-                sm = plt.cm.ScalarMappable(cmap=cmap_choice, norm=norm_choice)
-                sm.set_array([])
-                cb = self.fig.colorbar(sm, cax=cax)
-                exp = int(np.floor(np.log10(global_vmax)))
-                cb.ax.yaxis.set_major_formatter(plt.ticker.FuncFormatter(lambda x, pos, e=exp: f"{x / (10 ** e):.1f}"))
-                cax.set_title(f"1e{exp}", fontsize=10)
+            if not self.show_dcmp_norm and not self.cmap_norm and len(processed_partitions) > 0:
+                self._draw_map_cbar(self.cax_list[0], global_vmax, use_diverging, has_mag)
 
             self._cluster_label.set_text(f"LDOS: {self.active_element}" if self.plot_level >= 3 else "LDOS")
 
@@ -2277,13 +2304,15 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
             global_vmax = 1e-15
 
         for p_idx, (p_label, t_data) in enumerate(processed_partitions):
-            ax = self.map_axes[p_idx * nepts + i]
+            k = p_idx * nepts + i
+            ax = self.map_axes[k]
             ax.clear()
-            v_max = np.max(np.abs(t_data)) if self.show_dcmp_norm else global_vmax
-            if v_max == 0:
-                v_max = 1e-15
+            p_vmax = np.max(np.abs(t_data)) if self.show_dcmp_norm else global_vmax
             slice_data = t_data[:, i]
+            v_max = self._map_vmax(slice_data, p_vmax)
             self._draw_map_slice(ax, slice_data, v_max, use_diverging, has_mag)
+            if self.cmap_norm:
+                self._draw_map_cbar(self.cax_list[k], v_max, use_diverging, has_mag, labelsize=6)
             ax.scatter(m_coords_np[:, 0], m_coords_np[:, 1], color=self.m_colors[:len(m_coords_np)], s=30, edgecolors='white', zorder=5)
             title_str = f"E = {target_e:.3f} eV" if p_idx == 0 else ""
             if self.plot_level >= 3:
