@@ -38,6 +38,7 @@ from qtgui.qtplot import QtWidgets, QtCore
 
 from .doscar_parser import SpinAwareDosParser, SpinMode
 from .locpot_manager import LocpotManager
+from . import contour
 
 
 # --- CORE UTILITIES ---
@@ -469,6 +470,10 @@ DESIGN = (20, 14)        # the window's design size (inches): its text zoom is i
 # The colour map of the Map view's energy maps and their colour bars: the sm4_Browser's MAP_CMAP (plots.py there,
 # "custom_map", midnight blue to light sky blue), the default of the constructor's cmap_map.
 MAP_CMAP = plt.LinearSegmentedColormap.from_list("custom_map", ["midnightblue", "lightskyblue"])
+# The Map view's contour slice (the sm4_Browser Map window's): its traces on the energy maps (one colour, 1 pt,
+# never the topo's pixels) and its level line on the topo colour bar (cyan shows on the topo ramp).
+CONTOUR_COLOR = 'white'
+CONTOUR_LEVEL_COLOR = 'cyan'
 
 
 class Interactive_STM_Simulator(Unified_STM_Simulator):
@@ -544,6 +549,10 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         self.cached_path_extend = None
         self.fig = None                   # the window (run_interactive); its controls are made once (_make_controls)
         self.cell_rotated = False         # the unit-cell panels turned 90 degrees (Axes.set_rotated): _choose_orientation
+        self.z_frac = 0.5                 # the contour slice: its level as a fraction of the Map Topo's height range
+        self._contour_artists = []        # the slice's traces on the energy maps
+        self._level_line = None           # the slice's level line on the topo colour bar
+        self.cax_topo = None              # Map: the topo colour bar beside the Map Topo
         self._orient_pending = False      # an orientation decision waiting for the arrangement's first size
         self._extra_boxes = []            # control boxes another window adds to the left column (add_control_box)
 
@@ -1013,6 +1022,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         self._empty_layout(self._panel_area, self._kept_widgets())
         self._arrangement = None
         self._spec_cell = None
+        self._contour_artists, self._level_line, self.cax_topo = [], None, None
         self._crop_ax = self._crop_panel = None
         self._cursor_artists, self._shade_artists = [], []
         self._panel_cells = []
@@ -1093,6 +1103,11 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
             row.addWidget(topo, 10)
             self.ax_map = self._panel_with_box(row, self._box_ldos_h, stretch=10)
             self.ax_map.set_rotated(self.cell_rotated)
+            # The topo colour bar beside the Map Topo (the browser's: the ramp, no numbers), carrying the
+            # contour slice's level line; the Map Topo's iso-line at that level goes on every energy map.
+            self.cax_topo = self._panel(row, inner_w=9)
+            self._draw_topo_cbar(self.cax_topo)
+            self._draw_level_line()
             topos = plt.RowWidget(row)
             self._map_block = controls.MapBlock(fig, spacing=4)
             maps = controls.Titled(self._map_block, self._cluster_label.qt)
@@ -1105,7 +1120,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
             self.map_axes = []
             self.cax_list = []
             self.marks = self.ax_map.scatter([], [], s=150, edgecolors='black', zorder=15, picker=5)
-            fig.align_row(self.ax_map_global, self.ax_map)
+            fig.align_row(self.ax_map_global, self.ax_map, self.cax_topo)
         # The sizing (rule 11): the heatmaps and the topographies are sized first and fill the window (the
         # topographies at most twice a heatmap, in width and in height); the curve panels, at least readable,
         # take the room those leave (Line / Path: the Tip Height profile and the spectrum in the room beside
@@ -1200,6 +1215,89 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
                 hm_tb = max(a._decor_px()[1] + a._decor_px()[3] for a in hm)
                 return with_width(max(rect[3] - heat_group._label_h() - hm_tb, 1.0), hm[0])
         return (topo_group, heat_group, self.TOPO_MAX_FACTOR, box_a, box_b)
+
+    # --- the contour slice (the level line on the topo colour bar, the Map Topo's iso-line on the energy maps) ---
+
+    def _draw_topo_cbar(self, ax):
+        """The topo colour bar beside the Map Topo (the sm4_Browser's draw_topo_cbar): the topo colour map's ramp, low at the bottom, no ticks and no numbers, 'topo' above it; it spans 0 to 1, the fraction of the Map Topo's height range, and carries the contour slice's level line."""
+        ax.set_navigate(False)
+        ramp = np.linspace(0.0, 1.0, 256)[:, None]
+        ax.imshow(ramp, aspect='auto', origin='lower', cmap=self.cmap_topo, extent=[0, 1, 0, 1])
+        ax.set_xticks([])
+        ax.set_yticks([])
+        ax.set_title('topo', fontsize=7, pad=2)
+
+    def _draw_level_line(self):
+        """The contour slice's level line on the topo colour bar: one pickable horizontal line at z_frac (CONTOUR_LEVEL_COLOR, label '_zlevel': _on_pick), drawn once per build; _set_level moves it."""
+        if self.cax_topo is None:
+            return
+        self._level_line = self.cax_topo.axhline(self.z_frac, color=CONTOUR_LEVEL_COLOR, lw=1.5, label='_zlevel',
+                                                 picker=6, zorder=3.0)
+
+    def _set_level(self, frac):
+        """The contour slice's level set to `frac` of the Map Topo's height range (clipped to 0 .. 1): the level line moved, the traces made anew on every energy map."""
+        frac = float(np.clip(frac, 0.0, 1.0))
+        if frac == self.z_frac:
+            return
+        self.z_frac = frac
+        if self._level_line is not None:
+            self._level_line.set_ydata([frac, frac])
+        self._draw_contour_artists()
+        self.fig.canvas.draw_idle()
+
+    def _ramp_fraction(self, event, ax):
+        """The cursor's height on the topo colour bar `ax` as the fraction of its range, from the event's canvas pixel row and the bar's drawn box (Axes.get_window_extent, both from the bottom): the drag follows the cursor's height even when it leaves the narrow bar sideways.  None without a position."""
+        if event.y is None:
+            return None
+        x0, y0, w, h = ax.get_window_extent().bounds
+        if not h:
+            return None
+        return (float(event.y) - y0) / h
+
+    def _contour_segments(self):
+        """
+        The contour slice's traces in the plane, (n, 2, 2): contour.iso_segments
+        on the Map Topo's heights (current_z_map, grid_res x grid_res over the
+        unit cell's fractional grid, as the Map Topo is drawn) at the level
+        z_frac of their range (the lowest to the highest height, the colour
+        range the Map Topo is drawn on), placed on the lattice at the 2 x 2
+        images an energy map shows (contour.to_cell, _cell_offsets_2x2); empty
+        without heights.
+        """
+        z = getattr(self, 'current_z_map', None)
+        if z is None:
+            return np.zeros((0, 2, 2))
+        n = int(round(np.sqrt(len(z))))
+        if n < 2 or n * n != len(z):
+            return np.zeros((0, 2, 2))
+        img = np.asarray(z, dtype=np.float64).reshape(n, n)
+        ok = np.isfinite(img)
+        if not ok.any():
+            return np.zeros((0, 2, 2))
+        lo, hi = float(img[ok].min()), float(img[ok].max())
+        return contour.to_cell(contour.iso_segments(img, lo + self.z_frac * (hi - lo)), img.shape, self.lv,
+                               self._cell_offsets_2x2())
+
+    def _draw_contour_artists(self):
+        """The contour slice drawn anew (the old traces removed) on every energy map, never on a topo panel: one LineCollection per map in CONTOUR_COLOR, 1 pt, above the map's colours and under the markers (WSxM's flooding, as outlines); nothing outside Map or before the maps exist."""
+        for art in self._contour_artists:
+            try:
+                art.remove()
+            except Exception:
+                pass
+        self._contour_artists = []
+        if self.mode != 'Map' or not getattr(self, 'map_axes', None):
+            return
+        segs = self._contour_segments()
+        if not len(segs):
+            return
+        figure_axes = self.fig.axes
+        for ax in self.map_axes:
+            if ax not in figure_axes:
+                continue
+            lc = plt.LineCollection(segs, colors=CONTOUR_COLOR, linewidths=1.0, zorder=4.5)
+            ax.add_collection(lc)
+            self._contour_artists.append(lc)
 
     def _rearrange(self, orient=False):
         """The arrangement chosen again for the panels as they now are, and the window trimmed to them (rule 11); with `orient` the unit-cell panels' orientation is decided first (_choose_orientation)."""
@@ -2267,6 +2365,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
 
             if not self.show_dcmp_norm and not self.cmap_norm and len(processed_partitions) > 0:
                 self._draw_map_cbar(self.cax_list[0], global_vmax, use_diverging, has_mag)
+            self._draw_contour_artists()           # the contour slice on the maps as drawn
 
             self._cluster_label.set_text(f"LDOS: {self.active_element}" if self.plot_level >= 3 else "LDOS")
 
@@ -2329,6 +2428,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
             ax.set_aspect('equal')
             ax.set_xticks([])
             ax.set_yticks([])
+        self._draw_contour_artists()               # the cleared map's trace again (all are cheap)
 
     def _on_pick(self, event):
         label = event.artist.get_label() if hasattr(event.artist, 'get_label') else ''
@@ -2337,6 +2437,9 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
             self.active_obj = ('cursor', axis, int(k))
             return
         if self.active_obj is not None and self.active_obj[0] == 'cursor':
+            return
+        if label == '_zlevel':                                             # the contour slice's level line
+            self.active_obj = ('zlevel', event.artist.axes)
             return
         if event.artist == getattr(self, 'ends', None) and self.mode == 'Line':
             self.active_obj = ('end', event.ind[0])
@@ -2387,6 +2490,13 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         return 'grey'
 
     def _on_motion(self, event):
+        if self.active_obj is not None and self.active_obj[0] == 'zlevel':
+            # The contour slice's level line follows the cursor's height on the bar it was picked on
+            # while the button is down, wherever the cursor is sideways (_ramp_fraction).
+            frac = self._ramp_fraction(event, self.active_obj[1])
+            if frac is not None:
+                self._set_level(frac)
+            return
         if self.active_obj is None or event.xdata is None:
             return
         if self.active_obj[0] == 'cursor':
