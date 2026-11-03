@@ -3817,13 +3817,16 @@ class PanelCell(QtWidgets.QWidget):
         return float(p.x()), float(p.y()), float(self.width()), float(self.height())
 
     def _changed(self):
-        # The bound objects are placed together at the end of the event-loop turn (Figure._queue_place,
-        # one batch for the whole figure): two panels whose axes are linked are never seen at different
-        # geometries (the batch places them one after the other, as the immediate placement did), and a
-        # cell moved several times in one turn (the arrangement's passes) places its axes once.  The
-        # figure flushes the batch itself before it measures (Figure._relayout, fit_window) or saves.
+        # Placed at once (not on a timer): two panels whose axes are linked must never be seen at
+        # different geometries, or the link maps one's range onto the other's off by the difference.
+        # (Batching the placements to the end of the event-loop turn was tried: it kept removed axes
+        # alive into the next turn and, under load, surfaced a crash in the binding's override lookup.)
         for obj in list(self._bound):
-            self.figure._queue_place(obj)
+            place = getattr(obj, '_place', None)
+            if place is not None:
+                place()
+            else:
+                obj._request_place()
 
     def _watch_ancestors(self):
         """A move of any widget holding the cell moves the cell on the canvas too: watched here."""
@@ -6635,35 +6638,7 @@ class Figure:
 
     # --- layout ---
 
-    def _queue_place(self, obj):
-        """`obj` (an Axes or a cell-bound Text) placed with every other queued one at the end of this event-loop turn (_flush_places), once however often its cell moved meanwhile (PanelCell._changed)."""
-        if getattr(self, '_closed', False):
-            return
-        q = self.__dict__.setdefault('_place_queue', [])
-        if obj not in q:
-            q.append(obj)
-        if not getattr(self, '_place_queued', False):
-            self._place_queued = True
-            QtCore.QTimer.singleShot(0, self._flush_places)
-
-    def _flush_places(self):
-        """The queued placements done now, in one batch: at the end of the turn, and before the figure measures itself (_relayout, fit_window) or saves (savefig)."""
-        self._place_queued = False
-        q = self.__dict__.pop('_place_queue', [])
-        if getattr(self, '_closed', False):
-            return
-        for obj in q:
-            cell = getattr(obj, '_cell', None)
-            if cell is not None and obj not in cell._bound:
-                continue                           # removed since it was queued (a view rebuilt: Axes.remove and Text.remove unbind it; its cell is being deleted)
-            place = getattr(obj, '_place', None)
-            if place is not None:
-                place()
-            else:
-                obj._request_place()
-
     def _relayout(self):
-        self._flush_places()
         new_measure_pass()
         if self._shown and (not self._embedded or self.canvas.isVisible()):
             vp = self.canvas.viewport()
@@ -6929,7 +6904,6 @@ class Figure:
             # move the natural height a little; the loop ends when the canvas meets it (2 px).
             for _ in range(4):
                 QtWidgets.QApplication.sendPostedEvents()
-                self._flush_places()
                 vp = self.canvas.viewport()
                 W, H = vp.width(), vp.height()
                 dw = dh = 0
@@ -6960,7 +6934,6 @@ class Figure:
                 QtWidgets.QApplication.sendPostedEvents()
                 self._relayout()
                 QtWidgets.QApplication.sendPostedEvents()
-                self._flush_places()
                 if (win.width(), win.height()) == before:
                     break                          # the window cannot change (its minimum): done
                 resized = True
@@ -7416,7 +7389,6 @@ class Figure:
         (export_vector: QPdfWriter / QSvgGenerator, EPS through Ghostscript) and the raster
         formats as 'screen', after a console note.
         """
-        self._flush_places()                   # every panel at its place before anything is read off the figure
         path = str(path)
         ext = os.path.splitext(path)[1].lower()
         if how is None:
