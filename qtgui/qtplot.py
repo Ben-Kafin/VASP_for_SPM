@@ -320,6 +320,14 @@ def pt2px(pt):
     return float(pt) * DPI / 72.0
 
 
+_EPOCH = [0]            # the layout pass (new_measure_pass): a PanelCell's room is measured once per pass (PanelCell._decor)
+
+
+def new_measure_pass():
+    """A new layout pass: every panel cell measures its room (its axes' tick axes and title, Qt calls) again at its next size question (PanelCell._decor).  The arrangement, the map block, the figure's relayout and an axes' placement start one."""
+    _EPOCH[0] += 1
+
+
 def total_min_hfw(lay, w):
     """
     QLayout.totalMinimumHeightForWidth(w): the smallest height the layout needs at width w (Qt's
@@ -3650,6 +3658,7 @@ class PanelCell(QtWidgets.QWidget):
     def __init__(self, figure, min_px=(40, 40), stretch=(True, True), inner_w=None):
         super().__init__()
         self.figure = figure
+        self._decor_epoch, self._decor_val = -1, None      # the room measured in the current layout pass (_decor)
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
         pol = QtWidgets.QSizePolicy.Policy
@@ -3705,6 +3714,14 @@ class PanelCell(QtWidgets.QWidget):
         return None
 
     def _decor(self):
+        """The room around the panel's box (_measure_decor), measured once per layout pass (new_measure_pass): the arrangement asks a cell its size hundreds of times in one pass."""
+        if self._decor_epoch == _EPOCH[0] and self._decor_val is not None:
+            return self._decor_val
+        self._decor_val = self._measure_decor()
+        self._decor_epoch = _EPOCH[0]
+        return self._decor_val
+
+    def _measure_decor(self):
         """
         The room around the panel's box, (left, top, right, bottom) px: its axes' tick axes and title
         (Axes._decor_px); in an aligned row (Figure.align_row, a colour bar beside) the row's top and
@@ -4530,6 +4547,7 @@ class Axes:
         keep_legend_clear re-run on a size change.
         """
         self._place_pending = False
+        new_measure_pass()                             # a placement: the cells' room may have changed
         if getattr(self.figure, '_closed', False):
             return                                     # a placement queued (a row member re-placed) after the window closed
         self._notify_shape()
@@ -6598,6 +6616,7 @@ class Figure:
     # --- layout ---
 
     def _relayout(self):
+        new_measure_pass()
         if self._shown and (not self._embedded or self.canvas.isVisible()):
             vp = self.canvas.viewport()
             self.canvas._size_px = (vp.width(), vp.height())

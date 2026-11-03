@@ -1861,11 +1861,35 @@ class MapBlock(QtWidgets.QWidget):
         self._shared = None
         self._extra = None            # the extra cell (set_groups), one map's size at the first free slot
         self._cell_bars = {}          # {cell: bar cell} beside each map named (set_groups cell_bars)
+        self._metrics_cache = None    # the cells' Qt-measured room (_metrics), kept for one layout pass (_invalidate)
+        self._best_cache = {}         # _best per (W, H) within that pass
         self.cols = 1
         pol = QtWidgets.QSizePolicy.Policy
         self.setSizePolicy(pol.Expanding, pol.Expanding)
 
+    def _invalidate(self):
+        """The cells' measured room forgotten: measured again at the next size question (a new layout pass: set_groups, a resize, a layout request, rearrange)."""
+        self._metrics_cache = None
+        self._best_cache = {}
+
+    def _metrics(self):
+        """
+        The cells' room measured once per layout pass (Qt calls: the tick axes, titles and bar
+        widths; _invalidate drops it): 'lr' the room left and right of a map's box, 'tb' the room
+        above and below per partition, 'title_w' the widest title, 'bar_w' the partition / shared
+        bars' width, 'cell_bar_w' a map's own bar's.  The arrangement asks the block its size
+        hundreds of times in one pass (the candidates, their bisections): without this each
+        question measured every cell again.
+        """
+        m = self._metrics_cache
+        if m is None:
+            m = {'lr': self._decor()[0], 'tb': [self._tb_of(cells) for cells, _ in self._groups],
+                 'title_w': self._title_w(), 'bar_w': self._bar_w(), 'cell_bar_w': self._cell_bar_w()}
+            self._metrics_cache = m
+        return m
+
     def set_groups(self, groups, shared_bar=None, extra=None, cell_bars=None):
+        self._invalidate()
         self._groups = [(list(cells), bar) for cells, bar in groups]
         self._shared = shared_bar
         self._extra = extra
@@ -1956,25 +1980,29 @@ class MapBlock(QtWidgets.QWidget):
         R = self._rows(n)
         if R == 0:
             return (1.0, 1.0, 0.0)
-        lr, _ = self._decor()
+        m = self._metrics()
+        lr, bar_w, cbw = m['lr'], m['bar_w'], m['cell_bar_w']   # cbw: a map's own colour bar beside it, in its column
         r = self._ratio()
-        cbw = self._cell_bar_w()                                 # a map's own colour bar beside it, in its column
         # Every partition's rows carry that partition's own room (titles on the first partition only).
-        tb_sum = sum(self._lines(k, n) * self._tb_of(cells) for k, (cells, _) in enumerate(self._groups))
-        cw = (W - self._bar_w() - (n - 1) * self._sp) / n - cbw
+        tb_sum = sum(self._lines(k, n) * m['tb'][k] for k in range(len(self._groups)))
+        cw = (W - bar_w - (n - 1) * self._sp) / n - cbw
         box_w = max(cw - lr, 1.0)
         box_h = box_w * r
         total = R * box_h + tb_sum + (R - 1) * self._sp
         if total > H:
             box_h = max((H - (R - 1) * self._sp - tb_sum) / R, 1.0)
             box_w = box_h / r
-        cw = max(box_w + lr, self._title_w() + 4.0)             # a cell at least as wide as its title
-        w = n * (cw + cbw) + (n - 1) * self._sp + self._bar_w()
+        cw = max(box_w + lr, m['title_w'] + 4.0)                 # a cell at least as wide as its title
+        w = n * (cw + cbw) + (n - 1) * self._sp + bar_w
         h = R * (box_w * r) + tb_sum + (R - 1) * self._sp
         return (w, h, box_w)
 
     def _best(self, W, H):
-        """(w, h, box_w, cols) inside W x H over every column count: the largest maps whose block fits the width."""
+        """(w, h, box_w, cols) inside W x H over every column count: the largest maps whose block fits the width (memoized per (W, H) within a layout pass)."""
+        key = (round(float(W), 2), round(float(H), 2))
+        hit = self._best_cache.get(key)
+        if hit is not None:
+            return hit
         n_max = max([len(c) for c, _ in self._groups] + [1])
         best = None
         for n in range(1, n_max + 1):
@@ -1983,6 +2011,9 @@ class MapBlock(QtWidgets.QWidget):
                 continue                                 # the titles do not fit side by side at this count
             if best is None or box_w > best[2] + 0.5:
                 best = (w, h, box_w, n)
+        if len(self._best_cache) > 2048:
+            self._best_cache = {}
+        self._best_cache[key] = best
         return best
 
     def fit(self, W, H):
@@ -2021,13 +2052,16 @@ class MapBlock(QtWidgets.QWidget):
         if not self._has_cells() or self.width() <= 0 or self.height() <= 0:
             return
         W, H = float(self.width()), float(self.height())
+        self._invalidate()                                       # a placement: the cells measured anew
+        plt.new_measure_pass()
         w, h, box_w, n = self._best(W, H)
         self.cols = n
-        lr, _ = self._decor()
+        m = self._metrics()
+        lr = m['lr']
         r = self._ratio()
-        cw = max(box_w + lr, self._title_w() + 4.0)
-        cbw = self._cell_bar_w()
-        bar_w = self._bar_w() - self._sp if self._bar_w() > 0 else 0.0
+        cw = max(box_w + lr, m['title_w'] + 4.0)
+        cbw = m['cell_bar_w']
+        bar_w = m['bar_w'] - self._sp if m['bar_w'] > 0 else 0.0
         y = 0.0
         rows_for_align = []
         groups = self._groups or [([], None)]
@@ -2035,7 +2069,7 @@ class MapBlock(QtWidgets.QWidget):
             # The extra cell after the last partition's maps: the free slot of its last row, or a new row.
             placed = list(cells) + ([self._extra] if self._extra is not None and k == len(groups) - 1 else [])
             y0 = y
-            ch = box_w * r + self._tb_of(cells)                 # this partition's row height
+            ch = box_w * r + (m['tb'][k] if k < len(m['tb']) else 0.0)   # this partition's row height
             row = []
             for i, c in enumerate(placed):
                 col, line = i % n, i // n
@@ -2175,8 +2209,10 @@ class Arrangement(QtWidgets.QWidget):
         self._arrange()
 
     def event(self, ev):
-        if ev.type() == QtCore.QEvent.Type.LayoutRequest:
-            self._arrange()
+        if ev.type() == QtCore.QEvent.Type.LayoutRequest and not self._pending:
+            # The requests of one event-loop turn (every child placed posts one) make one arrangement.
+            self._pending = True
+            QtCore.QTimer.singleShot(0, self._later)
         return super().event(ev)
 
     def minimumSizeHint(self):
@@ -2243,7 +2279,7 @@ class Arrangement(QtWidgets.QWidget):
         """A and B in one row of width W, height at most H: the largest common height whose widths fit; ((wA, hA), (wB, hB))."""
         lo, hi = 1.0, float(H)
         best = None
-        for _ in range(30):
+        for _ in range(16):                                  # to 1/65536 of the range: well under a pixel
             h = 0.5 * (lo + hi)
             a, b = self._sz(A, W, h), self._sz(B, W, h)
             if a is None or b is None:
@@ -2258,7 +2294,7 @@ class Arrangement(QtWidgets.QWidget):
         """A over B in one column of height H, width at most W: the largest common width whose heights fit."""
         lo, hi = 1.0, float(W)
         best = None
-        for _ in range(30):
+        for _ in range(16):
             w = 0.5 * (lo + hi)
             a, b = self._sz(A, w, H), self._sz(B, w, H)
             if a is None or b is None:
@@ -2292,11 +2328,12 @@ class Arrangement(QtWidgets.QWidget):
         [(name, blank, {widget: (x, y, w, h)}, valid)] at the size W x H (_candidates_at); with
         group_cap, a candidate whose group A is more than k times group B (their plot boxes) is
         sized again with A limited to the largest share of its size that keeps the cap (a
-        bisection of 10 steps on that candidate alone; the room A gives up goes to B and the free
+        bisection of 7 steps on that candidate alone; the room A gives up goes to B and the free
         widget as the candidate's geometry gives it).
         """
         self._lim = {}
-        base = self._candidates_at(W, H)
+        fmin = self._free_min(W, H)                 # measured once per search (Qt calls behind it)
+        base = self._candidates_at(W, H, fmin=fmin)
         if self._group_cap is None or len(self.shaped) < 2:
             return base
         A = self._group_cap[0]
@@ -2307,10 +2344,10 @@ class Arrangement(QtWidgets.QWidget):
                 continue
             name, ra = cand[0], cand[2][A]
             lo, hi, best = 0.05, 1.0, None
-            for _ in range(10):
+            for _ in range(7):
                 f = 0.5 * (lo + hi)
                 self._lim = {A: (ra[2] * f, ra[3] * f)}
-                c = next((c for c in self._candidates_at(W, H, only=name) if c[0] == name), None)
+                c = next((c for c in self._candidates_at(W, H, only=name, fmin=fmin) if c[0] == name), None)
                 if c is not None and self._within(c):
                     best, lo = c, f
                 else:
@@ -2319,11 +2356,11 @@ class Arrangement(QtWidgets.QWidget):
             out.append(best if best is not None else cand)
         return out
 
-    def _candidates_at(self, W, H, only=None):
-        """[(name, blank, {widget: (x, y, w, h)}, valid)] at the size W x H, the groups within their limits (_lim); `only`: that candidate alone (two groups)."""
+    def _candidates_at(self, W, H, only=None, fmin=None):
+        """[(name, blank, {widget: (x, y, w, h)}, valid)] at the size W x H, the groups within their limits (_lim); `only`: that candidate alone (two groups); `fmin`: the free widget's minimum, measured by the caller."""
         want = lambda name: only is None or only == name
         sp = self._sp
-        fw, fh = self._free_min(W, H)
+        fw, fh = self._free_min(W, H) if fmin is None else fmin
         F = self.free
         out = []
         R = QtCore.QRectF
@@ -2457,6 +2494,7 @@ class Arrangement(QtWidgets.QWidget):
         W, H = float(self.width()), float(self.height())
         if W <= 0 or H <= 0 or not self.shaped:
             return None
+        plt.new_measure_pass()
         scored = self._scored(W, H)
         if not scored:
             return None
@@ -2497,15 +2535,24 @@ class Arrangement(QtWidgets.QWidget):
         W, H = float(self.width()), float(self.height())
         if W <= 0 or H <= 0 or not self.shaped:
             return
-        best = self._choose(W, H)
-        if best is None:
-            return
-        name, blank, rects, _ = best
-        self.layout_name, self._blank, self._placed = name, blank, rects
+        plt.new_measure_pass()
+        # The same size, the same group shapes and the same free minimum as the last arrangement give the
+        # same arrangement: it is applied again without the search (a layout request from a child placed).
+        sig = (round(W, 1), round(H, 1), tuple(_shaped_size(w, W, H) for w in self.shaped), self._free_min(W, H),
+               self._free_scored, self.layout_name)
+        if self._placed and sig == getattr(self, '_last_sig', None):
+            rects = self._placed
+        else:
+            best = self._choose(W, H)
+            if best is None:
+                return
+            name, blank, rects, _ = best
+            self.layout_name, self._blank, self._placed = name, blank, rects
+            self._last_sig = (sig[0], sig[1], sig[2], sig[3], sig[4], name)
         for w, (x, y, ww, hh) in rects.items():
             w.setGeometry(int(round(x)), int(round(y)), max(int(round(ww)), 1), max(int(round(hh)), 1))
         if self._cb is not None:
-            self._cb(name)
+            self._cb(self.layout_name)
 
     # --- what the window reads ---
 
