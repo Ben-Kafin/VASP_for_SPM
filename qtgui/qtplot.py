@@ -324,8 +324,23 @@ _EPOCH = [0]            # the layout pass (new_measure_pass): a PanelCell's room
 
 
 def new_measure_pass():
-    """A new layout pass: every panel cell measures its room (its axes' tick axes and title, Qt calls) again at its next size question (PanelCell._decor).  The arrangement, the map block, the figure's relayout and an axes' placement start one."""
+    """A new layout pass: every panel cell measures its room (its axes' tick axes and title, Qt calls) again at its next size question (PanelCell._decor, pass_cached).  The arrangement, the map block, the figure's relayout and an axes' placement start one; so does anything that changes what a pass measures (a panel's shape, a control's font or label, a band's items)."""
     _EPOCH[0] += 1
+
+
+def pass_cached(obj, key, compute):
+    """
+    `compute()`'s value for `obj` under `key`, kept for the rest of the current layout pass
+    (new_measure_pass drops it): a measurement the arrangement asks hundreds of times in one
+    pass (a cell's shape, a crop panel's box and band sizes, a band's size hint) is made once.
+    """
+    c = obj.__dict__.get('_pass_cache')
+    if c is None or c[0] != _EPOCH[0]:
+        c = obj.__dict__['_pass_cache'] = (_EPOCH[0], {})
+    d = c[1]
+    if key not in d:
+        d[key] = compute()
+    return d[key]
 
 
 def total_min_hfw(lay, w):
@@ -3701,7 +3716,10 @@ class PanelCell(QtWidgets.QWidget):
     # --- the panel's shape (rule 11 of the guide: panels know their shape; the window arranges itself) ---
 
     def shape_ratio(self):
-        """The height over width the panel asks for (its axes' locked aspect or box aspect), or None for a free panel."""
+        """The height over width the panel asks for (its axes' locked aspect or box aspect), or None for a free panel; measured once per layout pass (a changed shape starts one: Axes._notify_shape)."""
+        return pass_cached(self, 'shape', self._shape_now)
+
+    def _shape_now(self):
         for obj in self._bound:
             want = getattr(obj, '_aspect_want', None)
             if want is not None:
@@ -3782,11 +3800,13 @@ class PanelCell(QtWidgets.QWidget):
         """Place `obj` (it has _request_place) in this cell from now on."""
         if obj not in self._bound:
             self._bound.append(obj)
+            new_measure_pass()                         # the cell's shape and room may be another's now
         self._watch_ancestors()
 
     def unbind(self, obj):
         try:
             self._bound.remove(obj)
+            new_measure_pass()
         except ValueError:
             pass
 
@@ -3797,14 +3817,13 @@ class PanelCell(QtWidgets.QWidget):
         return float(p.x()), float(p.y()), float(self.width()), float(self.height())
 
     def _changed(self):
-        # Placed at once (not on a timer): two panels whose axes are linked must never be seen at
-        # different geometries, or the link maps one's range onto the other's off by the difference.
+        # The bound objects are placed together at the end of the event-loop turn (Figure._queue_place,
+        # one batch for the whole figure): two panels whose axes are linked are never seen at different
+        # geometries (the batch places them one after the other, as the immediate placement did), and a
+        # cell moved several times in one turn (the arrangement's passes) places its axes once.  The
+        # figure flushes the batch itself before it measures (Figure._relayout, fit_window) or saves.
         for obj in list(self._bound):
-            place = getattr(obj, '_place', None)
-            if place is not None:
-                place()
-            else:
-                obj._request_place()
+            self.figure._queue_place(obj)
 
     def _watch_ancestors(self):
         """A move of any widget holding the cell moves the cell on the canvas too: watched here."""
@@ -4379,6 +4398,7 @@ class Axes:
         key = None if r is None else round(float(r), 4)
         if key != getattr(self, '_shape_told', 'never'):
             self._shape_told = key
+            new_measure_pass()                         # the shape kept for this pass (PanelCell.shape_ratio) is old
             cell.updateGeometry()
 
     def _own_height(self):
@@ -6615,7 +6635,35 @@ class Figure:
 
     # --- layout ---
 
+    def _queue_place(self, obj):
+        """`obj` (an Axes or a cell-bound Text) placed with every other queued one at the end of this event-loop turn (_flush_places), once however often its cell moved meanwhile (PanelCell._changed)."""
+        if getattr(self, '_closed', False):
+            return
+        q = self.__dict__.setdefault('_place_queue', [])
+        if obj not in q:
+            q.append(obj)
+        if not getattr(self, '_place_queued', False):
+            self._place_queued = True
+            QtCore.QTimer.singleShot(0, self._flush_places)
+
+    def _flush_places(self):
+        """The queued placements done now, in one batch: at the end of the turn, and before the figure measures itself (_relayout, fit_window) or saves (savefig)."""
+        self._place_queued = False
+        q = self.__dict__.pop('_place_queue', [])
+        if getattr(self, '_closed', False):
+            return
+        for obj in q:
+            cell = getattr(obj, '_cell', None)
+            if cell is not None and obj not in cell._bound:
+                continue                           # removed since it was queued (a view rebuilt: Axes.remove and Text.remove unbind it; its cell is being deleted)
+            place = getattr(obj, '_place', None)
+            if place is not None:
+                place()
+            else:
+                obj._request_place()
+
     def _relayout(self):
+        self._flush_places()
         new_measure_pass()
         if self._shown and (not self._embedded or self.canvas.isVisible()):
             vp = self.canvas.viewport()
@@ -6684,6 +6732,7 @@ class Figure:
                     f(z)
                 except RuntimeError:
                     pass
+        new_measure_pass()                             # the controls' size hints follow the font
 
     # --- automatic layout: the one rule for every window (nothing placed by hand) ---
 
@@ -6880,6 +6929,7 @@ class Figure:
             # move the natural height a little; the loop ends when the canvas meets it (2 px).
             for _ in range(4):
                 QtWidgets.QApplication.sendPostedEvents()
+                self._flush_places()
                 vp = self.canvas.viewport()
                 W, H = vp.width(), vp.height()
                 dw = dh = 0
@@ -6910,6 +6960,7 @@ class Figure:
                 QtWidgets.QApplication.sendPostedEvents()
                 self._relayout()
                 QtWidgets.QApplication.sendPostedEvents()
+                self._flush_places()
                 if (win.width(), win.height()) == before:
                     break                          # the window cannot change (its minimum): done
                 resized = True
@@ -7257,6 +7308,7 @@ class Figure:
                     f(flag)
                 except Exception:
                     traceback.print_exc()
+        new_measure_pass()                             # the labels' size hints follow their text
         if relayout:
             self._relayout()
 
@@ -7364,6 +7416,7 @@ class Figure:
         (export_vector: QPdfWriter / QSvgGenerator, EPS through Ghostscript) and the raster
         formats as 'screen', after a console note.
         """
+        self._flush_places()                   # every panel at its place before anything is read off the figure
         path = str(path)
         ext = os.path.splitext(path)[1].lower()
         if how is None:

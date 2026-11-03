@@ -329,7 +329,8 @@ class PanelWithBox(QtWidgets.QWidget):
             self.setSizePolicy(pol.Fixed, pol.Expanding)
 
     def _box_h(self):
-        return 0.0 if self.above.isHidden() else float(self.above.sizeHint().height()) + self._sp
+        hidden = self.above.isHidden()
+        return plt.pass_cached(self, ('box_h', hidden), lambda: 0.0 if hidden else float(self.above.sizeHint().height()) + self._sp)
 
     def height_for_width(self, w):
         h = self.cell.height_for_width(w)
@@ -514,8 +515,12 @@ class RideBand(QtWidgets.QWidget):
         w.show()
         self._items[key] = [w, None]
         self.updateGeometry()
+        plt.new_measure_pass()
 
     def sizeHint(self):
+        return plt.pass_cached(self, ('hint', len(self._items)), self._hint_now)      # once per layout pass
+
+    def _hint_now(self):
         # As thick as the thickest item will really be: the larger of its hint and its minimum (a
         # number box's minimum width is often the larger), so that a shape counting the band is right.
         hints = [(it[0].sizeHint(), it[0].minimumSizeHint()) for it in self._items.values()]
@@ -535,6 +540,7 @@ class RideBand(QtWidgets.QWidget):
         w.hide()
         w.setParent(None)
         self.updateGeometry()
+        plt.new_measure_pass()
         return w
 
     def set_pos(self, key, coord_px):
@@ -1810,13 +1816,19 @@ class CropPanel(QtWidgets.QWidget):
         self._sp = int(spacing)
 
     def _box_h(self):
+        # Measured once per layout pass (plt.pass_cached): the arrangement asks it hundreds of times in one.
+        key = ('box_h', self.above.isHidden(), self.band_x.isHidden())
+        return plt.pass_cached(self, key, self._box_h_now)
+
+    def _box_h_now(self):
         h = 0.0 if self.above.isHidden() else float(self.above.sizeHint().height()) + self._sp
         if not self.band_x.isHidden():
             h += float(self.band_x.sizeHint().height()) + self._sp
         return h
 
     def _band_w(self):
-        return 0.0 if self.band_y.isHidden() else float(self.band_y.sizeHint().width()) + self._sp
+        hidden = self.band_y.isHidden()
+        return plt.pass_cached(self, ('band_w', hidden), lambda: 0.0 if hidden else float(self.band_y.sizeHint().width()) + self._sp)
 
     def height_for_width(self, w):
         h = self.cell.height_for_width(max(float(w) - self._band_w(), 1.0))
@@ -1877,14 +1889,15 @@ class MapBlock(QtWidgets.QWidget):
         The cells' room measured once per layout pass (Qt calls: the tick axes, titles and bar
         widths; _invalidate drops it): 'lr' the room left and right of a map's box, 'tb' the room
         above and below per partition, 'title_w' the widest title, 'bar_w' the partition / shared
-        bars' width, 'cell_bar_w' a map's own bar's.  The arrangement asks the block its size
-        hundreds of times in one pass (the candidates, their bisections): without this each
-        question measured every cell again.
+        bars' width, 'cell_bar_w' a map's own bar's, 'ratio' a map's height over its width.  The
+        arrangement asks the block its size hundreds of times in one pass (the candidates, their
+        bisections): without this each question measured every cell again.
         """
         m = self._metrics_cache
         if m is None:
             m = {'lr': self._decor()[0], 'tb': [self._tb_of(cells) for cells, _ in self._groups],
-                 'title_w': self._title_w(), 'bar_w': self._bar_w(), 'cell_bar_w': self._cell_bar_w()}
+                 'title_w': self._title_w(), 'bar_w': self._bar_w(), 'cell_bar_w': self._cell_bar_w(),
+                 'ratio': self._ratio()}
             self._metrics_cache = m
         return m
 
@@ -1982,7 +1995,7 @@ class MapBlock(QtWidgets.QWidget):
             return (1.0, 1.0, 0.0)
         m = self._metrics()
         lr, bar_w, cbw = m['lr'], m['bar_w'], m['cell_bar_w']   # cbw: a map's own colour bar beside it, in its column
-        r = self._ratio()
+        r = m['ratio']
         # Every partition's rows carry that partition's own room (titles on the first partition only).
         tb_sum = sum(self._lines(k, n) * m['tb'][k] for k in range(len(self._groups)))
         cw = (W - bar_w - (n - 1) * self._sp) / n - cbw
@@ -2028,7 +2041,7 @@ class MapBlock(QtWidgets.QWidget):
         if not self._groups:
             return None
         w, h, box_w, n = self._best(W, H)
-        return box_w, box_w * self._ratio()
+        return box_w, box_w * self._metrics()['ratio']
 
     def _has_cells(self):
         return bool(self._groups) or self._extra is not None
@@ -2058,7 +2071,7 @@ class MapBlock(QtWidgets.QWidget):
         self.cols = n
         m = self._metrics()
         lr = m['lr']
-        r = self._ratio()
+        r = m['ratio']
         cw = max(box_w + lr, m['title_w'] + 4.0)
         cbw = m['cell_bar_w']
         bar_w = m['bar_w'] - self._sp if m['bar_w'] > 0 else 0.0
