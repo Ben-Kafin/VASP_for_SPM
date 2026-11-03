@@ -466,6 +466,9 @@ class Unified_STM_Simulator:
 
 
 DESIGN = (20, 14)        # the window's design size (inches): its text zoom is its size relative to this (qtplot.window_zoom)
+# The colour map of the Map view's energy maps and their colour bars: the sm4_Browser's MAP_CMAP (plots.py there,
+# "custom_map", midnight blue to light sky blue), the default of the constructor's cmap_map.
+MAP_CMAP = plt.LinearSegmentedColormap.from_list("custom_map", ["midnightblue", "lightskyblue"])
 
 
 class Interactive_STM_Simulator(Unified_STM_Simulator):
@@ -484,14 +487,15 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
     The physics and the caches are Unified_STM_Simulator's, called as before.
     """
 
-    def __init__(self, filepath, erange, ldos_height, cmap_topo, unit_cell_num=1, cmap_map='nipy_spectral'):
+    def __init__(self, filepath, erange, ldos_height, cmap_topo, unit_cell_num=1, cmap_map=MAP_CMAP):
         super().__init__(filepath, unit_cell_num=unit_cell_num)
         self.parse_vasp_outputs("LOCPOT")
         self.p1, self.p2 = None, None
         self.erange, self.ldos_height, self.cmap_topo = list(erange), ldos_height, cmap_topo
-        # The Map view's energy maps' colour map (as the sm4_Browser's cmap_map: any matplotlib colour-map
-        # name or Colormap), and its 'cmap norm': off, every map on one colour scale, the maximum over all
-        # of them, with one colour bar; on, each map its own scale with its own bar beside it.
+        # The Map view's energy maps' colour map (MAP_CMAP, the sm4_Browser's, unless given: any matplotlib
+        # colour-map name or Colormap, as the browser's cmap_map), and its 'cmap norm': off, every map on one
+        # colour scale, the maximum over all of them, with one colour bar; on, each map its own scale with
+        # its own bar beside it.
         self.cmap_map = cmap_map
         self.cmap_norm = False
         self.npts = 72

@@ -28,7 +28,8 @@ sim = Interactive_STM_Simulator(
     ldos_height=1.25,              # Å above highest atom for LDOS sampling
     cmap_topo=LinearSegmentedColormap.from_list("t", ["black", "firebrick", "yellow"]),
     unit_cell_num=2,
-    cmap_map='nipy_spectral',      # the Map view's energy maps: any matplotlib colour-map name or Colormap (the browser's cmap_map)
+    # cmap_map='nipy_spectral',    # the Map view's energy maps: MAP_CMAP (midnight blue to light sky blue, the
+                                   # sm4_Browser's) unless given; any matplotlib colour-map name or Colormap
 )
 
 sim.run_interactive(
