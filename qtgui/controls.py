@@ -1889,13 +1889,17 @@ class MapBlock(QtWidgets.QWidget):
         The cells' room measured once per layout pass (Qt calls: the tick axes, titles and bar
         widths; _invalidate drops it): 'lr' the room left and right of a map's box, 'tb' the room
         above and below per partition, 'title_w' the widest title, 'bar_w' the partition / shared
-        bars' width, 'cell_bar_w' a map's own bar's, 'ratio' a map's height over its width.  The
+        bars' width, 'cell_bar_w' a map's own bar's, 'ratio' a map's height over its width,
+        'tb_cells' the room above and below of every cell per partition and 'tb_extra' the extra
+        cell's (_row_tb: each row is as tall as its own cells ask).  The
         arrangement asks the block its size hundreds of times in one pass (the candidates, their
         bisections): without this each question measured every cell again.
         """
         m = self._metrics_cache
         if m is None:
             m = {'lr': self._decor()[0], 'tb': [self._tb_of(cells) for cells, _ in self._groups],
+                 'tb_cells': [[self._tb_of([c]) for c in cells] for cells, _ in self._groups],
+                 'tb_extra': self._tb_of([self._extra]) if self._extra is not None else 0.0,
                  'title_w': self._title_w(), 'bar_w': self._bar_w(), 'cell_bar_w': self._cell_bar_w(),
                  'ratio': self._ratio()}
             self._metrics_cache = m
@@ -1987,6 +1991,23 @@ class MapBlock(QtWidgets.QWidget):
                             pass
         return tw
 
+    def _row_tb(self, cols):
+        """
+        The room above and below each row at `cols` columns, in order: the widest among the row's
+        own cells (the extra cell counted in the last partition's last row).  A row of maps alone
+        is no taller than its maps need; the row holding the spectrum (its tick labels and label
+        below) is taller, and only that row (rule 11: the row of each visual line shares one band).
+        """
+        m = self._metrics()
+        out = []
+        for k, (cells, _) in enumerate(self._groups):
+            tbs = list(m['tb_cells'][k]) + ([m['tb_extra']] if self._extra is not None and k == len(self._groups) - 1 else [])
+            for i in range(0, len(tbs), cols):
+                out.append(max(tbs[i:i + cols]))
+        if not self._groups and self._extra is not None:
+            out.append(m['tb_extra'])
+        return out
+
     def _size_at(self, cols, W, H):
         """(w, h, box_w) of the block at `cols` columns inside W x H: the largest maps that fit by width, then by height."""
         n = max(1, min(cols, max([len(c) for c, _ in self._groups] + [1])))
@@ -1996,8 +2017,8 @@ class MapBlock(QtWidgets.QWidget):
         m = self._metrics()
         lr, bar_w, cbw = m['lr'], m['bar_w'], m['cell_bar_w']   # cbw: a map's own colour bar beside it, in its column
         r = m['ratio']
-        # Every partition's rows carry that partition's own room (titles on the first partition only).
-        tb_sum = sum(self._lines(k, n) * m['tb'][k] for k in range(len(self._groups)))
+        # Every row carries its own room (_row_tb: titles on the first partition's rows, the spectrum's labels on its row).
+        tb_sum = sum(self._row_tb(n))
         cw = (W - bar_w - (n - 1) * self._sp) / n - cbw
         box_w = max(cw - lr, 1.0)
         box_h = box_w * r
@@ -2078,11 +2099,15 @@ class MapBlock(QtWidgets.QWidget):
         y = 0.0
         rows_for_align = []
         groups = self._groups or [([], None)]
+        row_tb = self._row_tb(n)                                 # each row's own room above and below
+        line0 = 0                                                # the first row of this partition in row_tb
         for k, (cells, bar) in enumerate(groups):
             # The extra cell after the last partition's maps: the free slot of its last row, or a new row.
             placed = list(cells) + ([self._extra] if self._extra is not None and k == len(groups) - 1 else [])
             y0 = y
-            ch = box_w * r + (m['tb'][k] if k < len(m['tb']) else 0.0)   # this partition's row height
+            lines = -(-len(placed) // n)
+            heights = [box_w * r + row_tb[line0 + j] for j in range(lines)]   # this partition's row heights
+            tops = [y0 + sum(heights[:j]) + j * self._sp for j in range(lines)]
             row = []
             for i, c in enumerate(placed):
                 col, line = i % n, i // n
@@ -2090,7 +2115,7 @@ class MapBlock(QtWidgets.QWidget):
                     rows_for_align.append(row)
                     row = []
                 x = col * (cw + cbw + self._sp)
-                cy = y0 + line * (ch + self._sp)
+                cy, ch = tops[line], heights[line]
                 c.setGeometry(int(round(x)), int(round(cy)), int(round(cw)), int(round(ch)))
                 row.append(c)
                 b = self._cell_bars.get(c)
@@ -2099,8 +2124,8 @@ class MapBlock(QtWidgets.QWidget):
                     row.append(b)
             if row:
                 rows_for_align.append(row)
-            lines = -(-len(placed) // n)
-            gh = lines * ch + (lines - 1) * self._sp
+            line0 += lines
+            gh = sum(heights) + (lines - 1) * self._sp
             if bar is not None:
                 bx = n * (cw + cbw) + (n - 1) * self._sp + self._sp
                 bar.setGeometry(int(round(bx)), int(round(y0)), int(round(bar_w)), int(round(gh)))
