@@ -32,7 +32,7 @@ an arrow-key digit step applies it (curves are updated in place, no rebuild).
 An Amplitude check plots sqrt(ov) instead of ov for the sticks; its
 curve-mode meaning is defined by the pipeline below.
 
-The window is a qtgui figure (the shared Qt layer at the repository root):
+The window is a qtgui figure (the shared Qt layer, this package's own copy):
 automatic layout (plt.subplots fills the grid of cells, the controls sit in a
 strip under it), hover labels through widgets.HoverLabels (a left click on a
 panel arms them, a right click clears and disarms them), and the toolbar's

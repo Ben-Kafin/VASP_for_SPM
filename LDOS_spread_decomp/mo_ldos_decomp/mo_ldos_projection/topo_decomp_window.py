@@ -68,7 +68,7 @@ Exports (Save data) are always the RAW projection coefficients p per
 grid point per found entity — probability (p²) and amplitude (|p|) views
 are exactly reconstructable and no display normalization is baked in.
 
-Window (the shared Qt layer, qtgui at the repository root): the R × C grid
+Window (the shared Qt layer, the simulator's qtgui copy): the R × C grid
 is rebuilt on every toggle (fig.clf and a GridSpec in the figure's
 automatic grid of cells: automatic layout, nothing placed by hand), each
 map a tricontourf drawn through a lookup table with a colour bar in a

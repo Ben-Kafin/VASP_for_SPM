@@ -34,8 +34,8 @@ a live gamma number box on every figure (controls.GammaBox: Enter,
 leaving the box after an edit, or an arrow-key digit step applies the
 new gamma at once; any finite gamma > 0, above 1 and above 2 included).
 
-The figure is a window of the shared Qt layer (qtgui at the repository
-root): the panels fill the figure's automatic grid with one colour bar
+The figure is a window of the shared Qt layer (the simulator's qtgui
+copy): the panels fill the figure's automatic grid with one colour bar
 beside the last (automatic layout, nothing placed by hand) and the
 gamma box sits under them; the PNG is written through the layer's
 publication export (matplotlib) before the box is attached.
@@ -310,7 +310,7 @@ def _resolve_cmap(name: str, invert: bool) -> str:
     return name[:-2] if name.endswith("_r") else name + "_r"
 
 
-from mo_ldos_projection._imports import resolve_qt  # noqa: E402
+from mo_ldos_projection._resolve import resolve_qt  # noqa: E402
 plt, controls, widgets, mplexport = resolve_qt()
 
 

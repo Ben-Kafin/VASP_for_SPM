@@ -74,7 +74,7 @@ So the two curve forms are:
 In stick mode Amplitude keeps its original meaning (stick height sqrt(ov),
 unnormalized); the pipeline above applies to curves only.
 
-The window is a qtgui figure (the shared Qt layer at the repository root): a
+The window is a qtgui figure (the shared Qt layer, this package's own copy): a
 persistent figure whose _build_ui() does fig.clf() and rebuilds the per-mode
 subplot layout in the window's grid of cells (automatic layout); the controls
 (the checks, the Segmentation check shown while Horizontal is on, the σ box

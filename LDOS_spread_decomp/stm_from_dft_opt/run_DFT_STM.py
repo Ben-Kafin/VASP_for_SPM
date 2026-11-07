@@ -8,7 +8,6 @@ Created on Fri Apr  3 19:18:23 2026
 # run_stm.py
 import os, sys
 
-from stm_from_dft.qtgui.qtplot import LinearSegmentedColormap
 from stm_from_dft import Interactive_STM_Simulator
 
 # Point at the VASP directory containing DOSCAR, LOCPOT, POSCAR/CONTCAR
@@ -20,10 +19,10 @@ sim = Interactive_STM_Simulator(
     filepath=v_dir,
     erange=[-3, 0.5],          # initial energy slider range
     ldos_height=1.25,              # Å above highest atom for LDOS sampling
-    cmap_topo=LinearSegmentedColormap.from_list("t", ["black", "firebrick", "yellow"]),
+    cmap_set='default 1',
     unit_cell_num=2,
-    # cmap_map='nipy_spectral',    # the Map view's energy maps: MAP_CMAP (midnight blue to light sky blue, the
-                                   # sm4_Browser's) unless given; any matplotlib colour-map name or Colormap
+    # cmap_set: the colour maps the window opens with, 'default 1' (the topo black / firebrick / yellow, MAP_CMAP,
+    # 'nipy_spectral', 'bwr', 'hot') or 'default 2' ('CET-L3', 'CET-L6', 'CET-R1', 'CET-D1A', 'CET-L19')
 )
 
 sim.run_interactive(

@@ -26,7 +26,7 @@ walking).
 The rules are the layer's: the panels fill an automatic grid of cells and the controls are real
 widgets in a strip under them (nothing is placed by hand, nothing overlaps at any window size, the
 window never scrolls, a row of panels is as tall as its spatial panels ask and a window is never
-trimmed to its panels); every text scales with the window's size; a panel's title shows its short
+trimmed to its panels); every text scales with the window's size and is never below 10 pt; a panel's title shows its short
 name and the details after the first `: ` or `, ` (the entity's energy, the component names) go to
 the information panel docked at the bottom of the window. The toolbar has Home, Pan, Zoom and
 Save; Save writes PDF, EPS, SVG, PNG or TIFF through matplotlib (publication files), a PNG or SVG

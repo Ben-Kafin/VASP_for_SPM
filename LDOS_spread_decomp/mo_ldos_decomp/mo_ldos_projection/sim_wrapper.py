@@ -82,7 +82,7 @@ class StmDecompSession:
         run_dir: str,
         erange=(-3.0, 0.5),
         ldos_height: float = 1.25,
-        cmap_topo=None,
+        cmap_set='default 1',
         unit_cell_num: int = 1,
         sigma: float = SIGMA_DEFAULT,
         sim_kwargs: Optional[Dict[str, Any]] = None,
@@ -103,12 +103,9 @@ class StmDecompSession:
         self.threshold = float(threshold)
         self.topo_decomp_offsets = [int(o) for o in topo_decomp_offsets]
 
-        if cmap_topo is None:
-            cmap_topo = plt.LinearSegmentedColormap.from_list(
-                "t", ["black", "firebrick", "yellow"])
         self._ctor_kwargs = dict(
             erange=list(erange), ldos_height=float(ldos_height),
-            cmap_topo=cmap_topo, unit_cell_num=int(unit_cell_num))
+            cmap_set=cmap_set, unit_cell_num=int(unit_cell_num))
 
         # run_interactive kwargs (simulator defaults unless overridden).
         self.sim_kwargs: Dict[str, Any] = dict(

@@ -111,7 +111,7 @@ regardless of the toggles; the per-marker projections (incl. p_met) and
 the block factor ride in the header, so the probability view is exactly
 reconstructable and the magnitude view is its pointwise sqrt.
 
-Window (the shared Qt layer, qtgui at the repository root): the panel grid
+Window (the shared Qt layer, the simulator's qtgui copy): the panel grid
 is rebuilt on every toggle (fig.clf and a GridSpec in the figure's
 automatic grid of cells: automatic layout, nothing placed by hand); the
 controls are made once and sit in one strip under the grid (the 'collapse'

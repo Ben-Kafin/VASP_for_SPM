@@ -3,7 +3,7 @@ DOS plotter with energy cursors and level markers: the total DOS, then (a click 
 descends, a click beside the curves ascends) the Au / molecule partition, the atom types, the
 atoms of one type, and one atom's orbital curves with hover labels (widgets.HoverLabels) and, in
 SOC mode, the |m| overlay toggled with the 'm' key.  Drawn with the suite's shared Qt layer
-(qtgui at the repository root: PySide6 + pyqtgraph); the parsing is unchanged.
+(qtgui, this package's own copy: PySide6 + pyqtgraph); the parsing is unchanged.
 """
 import re
 import os as _os
@@ -22,11 +22,11 @@ if __package__ in (None, ''):
         _sys.path.insert(0, _pkg_parent)
     from stm_from_dft.qtgui import qtplot as plt
     from stm_from_dft.qtgui import widgets
+    from stm_from_dft.doscar_parser import SpinAwareDosParser, SpinMode
 else:
     from .qtgui import qtplot as plt
     from .qtgui import widgets
-
-from doscar_parser import SpinAwareDosParser, SpinMode
+    from .doscar_parser import SpinAwareDosParser, SpinMode
 
 DESIGN = (6.4, 4.8)        # the window's design size (inches): its text zoom is its size relative to this (qtplot.window_zoom)
 

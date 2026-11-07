@@ -1,6 +1,6 @@
 """
 The rectangular MOPMatcher colour plot (RectAEPAWColorPlotter) and the readers of the matcher's
-outputs.  The figure is a qtgui window (the shared Qt layer at the repository root): one row of
+outputs.  The figure is a qtgui window (the shared Qt layer, this package's own copy): one row of
 panels per component and the full system (automatic layout: the layer's grid of cells), the
 sticks as line collections, and the hover labels of widgets.HoverLabels on every panel (a left
 click on a panel arms them, a right click clears and disarms them).

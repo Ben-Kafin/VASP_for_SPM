@@ -3,8 +3,8 @@
 Interactive STM Simulator: Multi-Tiered GPU Optimization
 Auto-detects ISPIN=1, ISPIN=2, and NCL/SOC calculations.
 
-The window (Interactive_STM_Simulator) is drawn with the suite's shared Qt layer (qtgui at the
-repository root: PySide6 + pyqtgraph): its panels are cells of one Qt layout and its controls
+The window (Interactive_STM_Simulator) is drawn with the suite's shared Qt layer (qtgui, this
+package's own copy: PySide6 + pyqtgraph): its panels are cells of one Qt layout and its controls
 real Qt widgets (automatic layout: the one rule for every window, nothing placed by hand), every
 slider of the old figure a number box, the orbital hover labels widgets.HoverLabels.
 
@@ -937,8 +937,20 @@ class Unified_STM_Simulator:
 
 DESIGN = (20, 14)        # the window's design size (inches): its text zoom is its size relative to this (qtplot.window_zoom)
 # The colour map of the Map view's energy maps and their colour bars: the sm4_Browser's MAP_CMAP (plots.py there,
-# "custom_map", midnight blue to light sky blue), the default of the constructor's cmap_map.
+# "custom_map", midnight blue to light sky blue), default 1's Map entry (CMAP_SETS).
 MAP_CMAP = plt.LinearSegmentedColormap.from_list("custom_map", ["midnightblue", "lightskyblue"])
+# The window's two colour-map sets (the constructor's cmap_set; the 'cmap set' choice in the left column), one map
+# per role: 'topo' (the global topo, the Map Topo, the Line Topo, the Line / Path stripe, the topo colour bar),
+# 'map' (the Map view's energy maps and their colour bars), 'heatmap' (the Line and Path LDOS heatmaps, one map
+# for both), 'mag' (Mag, the signed spin density of a collinear spin-polarized run, up minus down) and '|m|' (Mag,
+# |m| of an NCL / SOC run, never negative), the last two in the energy maps and the heatmaps alike.
+# 'default 1' holds the maps the window had before the sets; 'default 2' pyqtgraph's CET maps, by name
+# (qtplot.to_cmap).
+CMAP_SETS = {
+    'default 1': {'topo': plt.LinearSegmentedColormap.from_list("t", ["black", "firebrick", "yellow"]),
+                  'map': MAP_CMAP, 'heatmap': 'nipy_spectral', 'mag': 'bwr', '|m|': 'hot'},
+    'default 2': {'topo': 'CET-L3', 'map': 'CET-L6', 'heatmap': 'CET-R1', 'mag': 'CET-D1A', '|m|': 'CET-L19'},
+}
 # The Map view's contour slice (the sm4_Browser Map window's): its traces on the energy maps (one colour, 1 pt,
 # never the topo's pixels) and its level line on the topo colour bar (cyan shows on the topo ramp).
 CONTOUR_COLOR = 'white'
@@ -985,16 +997,16 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
     The physics and the caches are Unified_STM_Simulator's, called as before.
     """
 
-    def __init__(self, filepath, erange, ldos_height, cmap_topo, unit_cell_num=1, cmap_map=MAP_CMAP):
+    def __init__(self, filepath, erange, ldos_height, cmap_set='default 1', unit_cell_num=1):
         super().__init__(filepath, unit_cell_num=unit_cell_num)
         self.parse_vasp_outputs("LOCPOT")
         self.p1, self.p2 = None, None
-        self.erange, self.ldos_height, self.cmap_topo = list(erange), ldos_height, cmap_topo
-        # The Map view's energy maps' colour map (MAP_CMAP, the sm4_Browser's, unless given: any matplotlib
-        # colour-map name or Colormap, as the browser's cmap_map), and its 'cmap norm': off, every map on one
+        self.erange, self.ldos_height = list(erange), ldos_height
+        # The colour-map set the window shows ('default 1' or 'default 2', CMAP_SETS; the 'cmap set' choice
+        # changes it: _on_cmap_set), and the Map view's 'cmap norm': off, every map on one
         # colour scale, the maximum over all of them, with one colour bar; on, each map its own scale with
         # its own bar beside it.
-        self.cmap_map = cmap_map
+        self.cmap_set = cmap_set
         self.cmap_norm = False
         self.npts = 72
         self.is_running, self.normalize, self.show_mag = False, False, False
@@ -1320,7 +1332,14 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         # automatic layout: the one rule for every window (nothing placed by hand).
         self.ui_radio = controls.make(fig, 'mode', value=self.mode)
         self.ui_radio.on_change(self._on_mode_change)
+        # The colour-map set: 'default 1' or 'default 2' (CMAP_SETS), every panel recoloured in place on a change.
+        self.ui_cmap_set = controls.Radio(fig, 'cmap set', value=self.cmap_set, labels=list(CMAP_SETS), title='cmap set')
+        self.ui_cmap_set.on_change(self._on_cmap_set)
         self.btn_run = controls.make(fig, 'RUN')
+        # Its label names what a click does ('RUN' while stopped, 'STOP' while running: _toggle_run): the
+        # settings section lists it (controls.settings_text).
+        self.btn_run.stateful = True
+        self.btn_run.setting_label = 'RUN button'
         self.btn_run.set_text('STOP' if self.is_running else 'RUN')
         self.btn_run.on_change(self._toggle_run)
         # One list defines every toggle: label and the attribute it drives.
@@ -1416,6 +1435,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         self._hook_layout.setSpacing(round(4 / (1000 / 72) * plt.em_px()))
         self._left_column = controls.column(
             controls.box(self.ui_radio),
+            controls.box(self.ui_cmap_set),
             controls.box(self.chk_broad, controls.column(*self.s_broad.values()), title='broadening'),
             self._hook_layout,
             'stretch',
@@ -1569,7 +1589,8 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         lay.addWidget(self._btn_back.qt)           # detached (hidden) since the last build
         bar = QtWidgets.QScrollBar(QtCore.Qt.Orientation.Vertical)
         pol = bar.sizePolicy()
-        pol.setRetainSizeWhenHidden(True)
+        pol.setRetainSizeWhenHidden(True)          # its strip kept while it is hidden
+        pol.setVerticalPolicy(QtWidgets.QSizePolicy.Policy.Ignored)   # the stack's full height, never a minimum of its own
         bar.setSizePolicy(pol)
         bar.setSingleStep(20)                      # QScrollArea's own single step
         bar.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.PreventContextMenu)   # a right press goes back (_LegendEvents)
@@ -2032,6 +2053,10 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         self._box_ldos_h.setVisible(mode != 'Single Point')
         self._cluster_label.show(mode != 'Single Point')
         self._cluster_label.set_text('LDOS')
+        # The info panel's lines of the view: the map energies (none until the view's maps are drawn) and the
+        # contour level (Map).
+        self._map_energies_changed()
+        self._contour_level_changed()
 
         self.cached_emin, self.cached_emax = None, None
         self._update_all(full_refresh=True)
@@ -2086,7 +2111,8 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         group's plot box at most TOPO_MAX_FACTOR times one heatmap's, in width and in height (Map:
         one energy map's box, MapBlock.map_box; Line / Path: one heatmap of the row).  A box's
         height in a region is the region's height less the room around the box; its width follows
-        from the panel's own shape (Axes._aspect_want: the unit cell's ratio for a topo and a map).
+        from the panel's own shape (Axes._aspect_want: the unit cell's ratio for a topo and a map;
+        in Line a heatmap counted as square, as its row sizes it).
         The room around the placement topo's box: the crop panel's boxes and band above it and the
         axes' title and x axis (fixed quantities, never the window's current geometry, so the
         arrangement does not chase its own last layout).
@@ -2118,7 +2144,10 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
                 if not hm:
                     return None
                 hm_tb = max(a._decor_px()[1] + a._decor_px()[3] for a in hm)
-                return with_width(max(rect[3] - heat_group._label_h() - hm_tb, 1.0), hm[0])
+                h = max(rect[3] - heat_group._label_h() - hm_tb, 1.0)
+                if mode == 'Line':
+                    return (h, h)      # one heatmap's box counted as square (ratio 1.0): the row's first panel is the Line Topo (2:3)
+                return with_width(h, hm[0])
         return (topo_group, heat_group, self.TOPO_MAX_FACTOR, box_a, box_b)
 
     # --- the contour slice (the level line on the topo colour bar, the Map Topo's iso-line on the energy maps) ---
@@ -2127,7 +2156,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         """Machinery: the topo colour bar beside the Map Topo (the sm4_Browser's draw_topo_cbar): the topo colour map's ramp, low at the bottom, no ticks and no numbers, 'topo' above it; it spans 0 to 1, the fraction of the Map Topo's height range, and carries the contour slice's level line."""
         ax.set_navigate(False)
         ramp = np.linspace(0.0, 1.0, 256)[:, None]
-        ax.imshow(ramp, aspect='auto', origin='lower', cmap=self.cmap_topo, extent=[0, 1, 0, 1])
+        ax.imshow(ramp, aspect='auto', origin='lower', cmap=self._cmap('topo'), extent=[0, 1, 0, 1])
         ax.set_xticks([])
         ax.set_yticks([])
         ax.set_title('topo', fontsize=7, pad=2)
@@ -2140,7 +2169,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
                                                  picker=6, zorder=3.0)
 
     def _set_level(self, frac):
-        """Machinery: the contour slice's level set to `frac` of the Map Topo's height range (clipped to 0 .. 1): the level line moved, the traces made anew on every energy map."""
+        """Machinery: the contour slice's level set to `frac` of the Map Topo's height range (clipped to 0 .. 1): the level line moved, the traces made anew on every energy map, the window's contour level line (_contour_level_changed)."""
         frac = float(np.clip(frac, 0.0, 1.0))
         if frac == self.z_frac:
             return
@@ -2148,6 +2177,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         if self._level_line is not None:
             self._level_line.set_ydata([frac, frac])
         self._draw_contour_artists()
+        self._contour_level_changed()
         self.fig.canvas.draw_idle()
 
     def _ramp_fraction(self, event, ax):
@@ -2407,7 +2437,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         return out[0], out[1]
 
     def _apply_crop(self):
-        """Machinery: the placement topo's limits at the applied crop (both axes; the full extent where there is none); in Map the Map Topo takes the same."""
+        """Machinery: the placement topo's limits at the applied crop (both axes; the full extent where there is none); in Map the Map Topo takes the same; the window's crop line follows (_crop_changed)."""
         (ex, ey) = self._full_extent()
         x_rng = self.crop_x if self.crop_x is not None else ex
         y_rng = self.crop_y if self.crop_y is not None else ey
@@ -2418,6 +2448,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
             if ax is not None and ax in self.fig.axes:
                 ax.set_xlim(*x_rng)
                 ax.set_ylim(*y_rng)
+        self._crop_changed()
 
     def _on_crop(self, event=None):
         """Machinery: 'Crop': what lies between the cursors is kept, on both axes; the cursors then sit at the new edges; the unit-cell panels' orientation is decided again for the new shape, and the arrangement follows (the window keeps its size)."""
@@ -2446,17 +2477,17 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         """Machinery: one energy map on `ax`: the slice over the 2 x 2 cells drawn (one raster at four offsets), the colour scale of the view; returns its contour set (_set_map_slice removes it when the map is drawn again)."""
         offs = self._cell_offsets_2x2()
         if use_diverging:
-            cs = ax.tricontourf(self.grid_xy[:, 0], self.grid_xy[:, 1], cp.asnumpy(slice_data), levels=40, cmap='bwr', vmin=v_min, vmax=v_max, offsets=offs)
+            cs = ax.tricontourf(self.grid_xy[:, 0], self.grid_xy[:, 1], cp.asnumpy(slice_data), levels=40, cmap=self._cmap('mag'), vmin=v_min, vmax=v_max, offsets=offs)
         elif self.show_mag and has_mag:
-            cs = ax.tricontourf(self.grid_xy[:, 0], self.grid_xy[:, 1], cp.asnumpy(slice_data), levels=40, cmap='hot', norm=plt.PowerNorm(self.ldos_gamma, vmin=v_min, vmax=v_max), offsets=offs)
+            cs = ax.tricontourf(self.grid_xy[:, 0], self.grid_xy[:, 1], cp.asnumpy(slice_data), levels=40, cmap=self._cmap('|m|'), norm=plt.PowerNorm(self.ldos_gamma, vmin=v_min, vmax=v_max), offsets=offs)
         else:
-            cs = ax.tricontourf(self.grid_xy[:, 0], self.grid_xy[:, 1], cp.asnumpy(slice_data), levels=40, cmap=self.cmap_map, norm=plt.PowerNorm(self.ldos_gamma, vmin=v_min, vmax=v_max), offsets=offs)
+            cs = ax.tricontourf(self.grid_xy[:, 0], self.grid_xy[:, 1], cp.asnumpy(slice_data), levels=40, cmap=self._cmap('map'), norm=plt.PowerNorm(self.ldos_gamma, vmin=v_min, vmax=v_max), offsets=offs)
         ax.set_aspect('equal')
         return cs
 
     def _map_cmap(self, use_diverging, has_mag):
-        """Machinery: the energy maps' colour map: 'bwr' for a signed magnetization, 'hot' for |m|, else cmap_map."""
-        return 'bwr' if use_diverging else ('hot' if (self.show_mag and has_mag) else self.cmap_map)
+        """Machinery: the energy maps' colour map in the window's colour-map set (_cmap): its 'mag' map for a signed magnetization, its '|m|' map for |m|, else its 'map'."""
+        return self._cmap('mag') if use_diverging else (self._cmap('|m|') if (self.show_mag and has_mag) else self._cmap('map'))
 
     def _map_vmax(self, slice_data, group_vmax):
         """Machinery: an energy map's colour-scale maximum: its own (the largest |value| of the slice) with 'cmap norm' on, else its group's (the partition's with show_dcmp_norm, the whole set's otherwise); never 0."""
@@ -2486,6 +2517,57 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         self.cmap_norm = bool(flag)
         if self.mode == 'Map' and self.is_running:
             self._update_all(full_refresh=True)
+
+    def _cmap(self, role):
+        """Machinery: the colour map of `role` ('topo', 'map', 'heatmap', 'mag' or '|m|') in the window's colour-map set (cmap_set, CMAP_SETS)."""
+        return CMAP_SETS[self.cmap_set][role]
+
+    def _on_cmap_set(self, label):
+        """
+        Machinery: the colour-map set chosen ('cmap set': 'default 1' or 'default 2', CMAP_SETS), running or not:
+        every panel drawn now takes, in place (set_cmap; nothing recomputed, made anew or arranged again), the
+        new set's map of the role it is drawn in: the filled contours of the topo panels (the global topo, the
+        Map Topo, the Line Topo) and the topo colour bar's ramp ('topo'), the Line / Path stripe ('topo'), each
+        heatmap (its colour bar follows its mesh), each energy map (the role of the branch it was drawn in, from
+        its _set_map_slice signature) and the energy maps' colour bars; then one draw.  What is drawn later takes
+        the set's maps where it is drawn (_cmap).
+        """
+        old = self.cmap_set
+        if label == old:
+            return
+        self.cmap_set = label
+
+        def same_role(c):
+            # The new set's map of the role the kept map `c` (a heatmap's, a colour bar's) has in the old set.
+            for role, m in CMAP_SETS[old].items():
+                if m is c or m == c:
+                    return self._cmap(role)
+            return c
+
+        topo = self._cmap('topo')
+        figure_axes = self.fig.axes
+        for ax in (self.ax_map, getattr(self, 'ax_map_global', None), self.ax_line_topo):
+            if ax is not None and ax in figure_axes:
+                for cs in ax.collections:
+                    if isinstance(cs, plt.TriContourSet):
+                        cs.set_cmap(topo)
+        if self.cax_topo is not None:
+            for im in self.cax_topo.images:
+                im.set_cmap(topo)
+        if self._stripe_lc is not None:
+            self._stripe_lc.set_cmap(topo)
+        for p_idx, mesh in enumerate(self._heat_meshes):
+            if mesh is not None:
+                self._heat_cmaps[p_idx] = same_role(self._heat_cmaps[p_idx])
+                mesh.set_cmap(self._heat_cmaps[p_idx])
+        for st in self._map_state.values():
+            if st['cs'] is not None:
+                diverging, abs_m = st['sig'][0], st['sig'][1]
+                st['cs'].set_cmap(self._cmap('mag') if diverging else (self._cmap('|m|') if abs_m else self._cmap('map')))
+        for st in self._map_cbar_state.values():
+            st['cmap'] = same_role(st['cmap'])
+            st['cb'].mappable.set_cmap(st['cmap'])
+        self.fig.canvas.draw_idle()
 
     def _cell_offsets_2x2(self):
         """Machinery: the offsets of the 2 x 2 cells an energy map shows (the cell and its three neighbours along +a and +b)."""
@@ -2697,9 +2779,9 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
             z_data = self.global_z_map
 
             offs = self._cell_offsets(n)
-            t_ax.tricontourf(self.grid_xy[:, 0], self.grid_xy[:, 1], z_data, levels=60, cmap=self.cmap_topo, zorder=1, offsets=offs)
+            t_ax.tricontourf(self.grid_xy[:, 0], self.grid_xy[:, 1], z_data, levels=60, cmap=self._cmap('topo'), zorder=1, offsets=offs)
             if self.mode == 'Map':
-                self.ax_map.tricontourf(self.grid_xy[:, 0], self.grid_xy[:, 1], self.current_z_map, levels=60, cmap=self.cmap_topo, zorder=1, offsets=offs)
+                self.ax_map.tricontourf(self.grid_xy[:, 0], self.grid_xy[:, 1], self.current_z_map, levels=60, cmap=self._cmap('topo'), zorder=1, offsets=offs)
             if self.show_atoms:
                 # The atoms of one type over every image as one item (one colour, one scatter).
                 tr = np.repeat(self.atomtypes, self.atomnums)
@@ -2824,7 +2906,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
                 self.cached_bias_energy_map, self.cached_d_topo_map = v_b, decay_model
                 self.ax_map.clear()
                 n = int(self.s_cell.val)
-                self.ax_map.tricontourf(self.grid_xy[:, 0], self.grid_xy[:, 1], self.current_z_map, levels=60, cmap=self.cmap_topo, zorder=1, offsets=self._cell_offsets(n))
+                self.ax_map.tricontourf(self.grid_xy[:, 0], self.grid_xy[:, 1], self.current_z_map, levels=60, cmap=self._cmap('topo'), zorder=1, offsets=self._cell_offsets(n))
                 self.ax_map.set_aspect('equal')
                 self.ax_map.add_collection(self.marks)
                 self._apply_crop()                 # the Map Topo takes the placement topo's crop
@@ -3023,6 +3105,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
             if built or self._contour_z is None or not np.array_equal(self._contour_z, self.current_z_map):
                 self._draw_contour_artists()
                 self._contour_z = np.array(self.current_z_map, copy=True)
+            self._map_energies_changed()           # the info panel's map energies line: the energies of the maps drawn
 
             quantity = "(dI/dV)/(I/V)" if self.feenstra else "LDOS"
             self._cluster_label.set_text(f"{quantity}: {self.active_element}" if self.plot_level >= 3 else quantity)
@@ -3219,7 +3302,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
                         all_ry.append(rot_y[mask])
                         all_z.append(self.global_z_map[mask])
                 all_rx, all_ry, all_z = np.concatenate(all_rx), np.concatenate(all_ry), np.concatenate(all_z)
-                arts.append(self.ax_line_topo.tricontourf(all_rx, all_ry, all_z, levels=60, cmap=self.cmap_topo, zorder=1))
+                arts.append(self.ax_line_topo.tricontourf(all_rx, all_ry, all_z, levels=60, cmap=self._cmap('topo'), zorder=1))
 
                 if self.show_atoms:
                     tr = np.repeat(self.atomtypes, self.atomnums)
@@ -3254,7 +3337,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
                          np.array([np.zeros_like(p_dist), p_dist]).T[1:]]).transpose(1, 0, 2)
         z_norm = plt.Normalize(float(self.current_z_line.min()), float(self.current_z_line.max()))
         if self._stripe_lc is None:
-            lc = plt.LineCollection(segs, cmap=self.cmap_topo, norm=z_norm, linewidth=40)
+            lc = plt.LineCollection(segs, cmap=self._cmap('topo'), norm=z_norm, linewidth=40)
             lc.set_array(self.current_z_line[:-1])
             self.ax_stripe.add_collection(lc)
             self._stripe_lc = lc
@@ -3279,7 +3362,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
                 v_max = 1e-15
             v_min = float(cp.min(t_data)) if self.show_dcmp_norm else global_vmin
 
-            cmap = 'bwr' if use_diverging else ('hot' if (self.show_mag and has_mag) else 'nipy_spectral')
+            cmap = self._cmap('mag') if use_diverging else (self._cmap('|m|') if (self.show_mag and has_mag) else self._cmap('heatmap'))
             mesh, grid = self._heat_meshes[p_idx], self._heat_grids[p_idx]
             new_mesh = (mesh is None or not np.array_equal(grid[0], self.cached_eg) or not np.array_equal(grid[1], p_dist))
             if new_mesh:
@@ -3287,12 +3370,12 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
                 if mesh is not None:
                     mesh.remove()
                 if use_diverging:
-                    mesh = ax_l.pcolormesh(self.cached_eg, p_dist, cp.asnumpy(t_data), cmap='bwr', shading='auto', vmin=v_min, vmax=v_max)
+                    mesh = ax_l.pcolormesh(self.cached_eg, p_dist, cp.asnumpy(t_data), cmap=self._cmap('mag'), shading='auto', vmin=v_min, vmax=v_max)
                 elif self.show_mag and has_mag:
                     # NCL: |m| is non-negative, use sequential colormap
-                    mesh = ax_l.pcolormesh(self.cached_eg, p_dist, cp.asnumpy(t_data), cmap='hot', shading='auto', norm=plt.PowerNorm(self.ldos_gamma, vmin=v_min, vmax=v_max))
+                    mesh = ax_l.pcolormesh(self.cached_eg, p_dist, cp.asnumpy(t_data), cmap=self._cmap('|m|'), shading='auto', norm=plt.PowerNorm(self.ldos_gamma, vmin=v_min, vmax=v_max))
                 else:
-                    mesh = ax_l.pcolormesh(self.cached_eg, p_dist, cp.asnumpy(t_data), cmap='nipy_spectral', shading='auto', norm=plt.PowerNorm(self.ldos_gamma, vmin=v_min, vmax=v_max))
+                    mesh = ax_l.pcolormesh(self.cached_eg, p_dist, cp.asnumpy(t_data), cmap=self._cmap('heatmap'), shading='auto', norm=plt.PowerNorm(self.ldos_gamma, vmin=v_min, vmax=v_max))
                 self._heat_meshes[p_idx] = mesh
                 self._heat_grids[p_idx] = (np.array(self.cached_eg, copy=True), np.array(p_dist, copy=True))
             else:
@@ -3731,6 +3814,49 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         self.fig.set_info_line('markers', "markers: " + (", ".join(marks) if marks else "none"))
         self.fig.set_info_line('line', line)
 
+    def _map_energies_changed(self):
+        """
+        Machinery: the window's map energies line in the info panel (set_info_line, key 'map energies'), once the
+        window exists: in Map, while its energy maps are drawn (their block built, _block_key), the snapped energy
+        of each map in map order (energies[map_e_idx], in eV as the maps' titles give them); none otherwise (the
+        other views, or Map before its maps are drawn).
+        """
+        if getattr(self, 'fig', None) is None:
+            return
+        text = ''
+        if (self.mode == 'Map' and getattr(self, '_block_key', None) is not None
+                and getattr(self, 'map_e_idx', None) is not None):
+            text = "map energies: " + ", ".join(f"{e:.3f} eV" for e in self.energies[self.map_e_idx])
+        self.fig.set_info_line('map energies', text)
+
+    def _crop_changed(self):
+        """
+        Machinery: the window's crop line in the info panel (set_info_line, key 'crop'), once the window exists: the
+        applied crop's rectangle on the placement topo, x and y each from lo to hi in Å (an axis with no crop of
+        its own at the drawn cells' full extent, as _apply_crop draws it), or 'none' when nothing is cropped.
+        """
+        if getattr(self, 'fig', None) is None:
+            return
+        if self.crop_x is None and self.crop_y is None:
+            text = "crop: none"
+        else:
+            ex, ey = self._full_extent()
+            x_rng = self.crop_x if self.crop_x is not None else ex
+            y_rng = self.crop_y if self.crop_y is not None else ey
+            text = f"crop: x {x_rng[0]:.2f} to {x_rng[1]:.2f} Å, y {y_rng[0]:.2f} to {y_rng[1]:.2f} Å"
+        self.fig.set_info_line('crop', text)
+
+    def _contour_level_changed(self):
+        """
+        Machinery: the window's contour level line in the info panel (set_info_line, key 'contour level'), once the
+        window exists: in Map, the contour slice's level z_frac, the fraction of the Map Topo's height range the
+        level line on the topo colour bar marks (_set_level); none in the other views.
+        """
+        if getattr(self, 'fig', None) is None:
+            return
+        text = f"contour level: {self.z_frac:.3f} of the Map Topo's height range" if self.mode == 'Map' else ''
+        self.fig.set_info_line('contour level', text)
+
     def _get_element_by_index_helper(self, a):
         curr = 0
         for idx, count in enumerate(self.atomnums):
@@ -3892,6 +4018,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
                 redraw += [i for i in range(len(order)) if order[i] != i and i != redraw[0]]
             for i in redraw:
                 self._redraw_map_slice(i)
+            self._map_energies_changed()           # the info panel's map energies line: the snapped energies, in map order
             self.fig.canvas.draw_idle()
         elif (self.active_obj is not None and self._drag_moved
               and (self.active_obj[0] in ('end', 'path_node')

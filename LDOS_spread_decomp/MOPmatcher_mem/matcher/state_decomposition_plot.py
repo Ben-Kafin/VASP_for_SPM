@@ -69,7 +69,7 @@ by the normalization and amplitude transforms below. The σ (eV) number box
 (controls.SigmaBox, shown in curve mode) sets sigma in eV live: Enter,
 leaving the box after an edit, or an arrow-key digit step applies it.
 
-The window is a qtgui figure (the shared Qt layer at the repository root):
+The window is a qtgui figure (the shared Qt layer, this package's own copy):
 automatic layout (the row of panels fills the window's grid of cells, the
 controls sit in a strip under it), hover labels through widgets.HoverLabels
 (original-states and curve panels: a left click arms them, a right click

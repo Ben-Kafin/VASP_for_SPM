@@ -61,6 +61,17 @@ Branch: `claude/jolly-babbage-ppmbdj`. Base of part 1's work: b051547.
     module as arguments and its maths uses CuPy only when given CuPy arrays (no CuPy import needed in sm4_Browser);
     one colour per unique grid point (the grid's duplicate edge left out), each point's quad centred on it, tiled
     by the cell offsets like the filled contours.
+    The module (`cmap_shading.py`, workflow wf_4a9307b3-b2d: sources fetched, module written, reviewed by fidelity
+    and by derivation, fixed) adds these readings, stated in its docstrings: relief.m's gradient is Kovesi's
+    derivative5 (Farid-Simoncelli 5-tap) as in his own copy (peterkovesi.com/matlabfns/Geosci/relief.m, identical to
+    codeberg.org/peterkovesi/matlabfns); for the periodic cell the taps wrap around the cell (`periodic=True`),
+    relief.m's own border handling being for non-periodic images; gradscale 1 applies to the slope in x, y (height
+    per length, "converted to x and y"); a flat shade leaves the colours unshaded, a non-finite shade is not drawn,
+    the floor lies in 0..1; `panel_turn` and `periodic` are required keywords (the simulator passes K11 (a)'s turn).
+    Integration readings: the box untitled like the 'cmap norm' box, its Height / Relief radio named 'shading by'
+    (its info-panel label); in Shading the maps' colours are continuous through the colour map and norm (one colour
+    per grid point, no 40-level banding). Risk to watch on the owner's machine: qtplot's QuadItem draws one path per
+    distinct colour, so a shaded map (every quad its own colour, times the tiles) may draw slowly.
 12. The owner's answers to O1-O18 and K1-K11 (2026-11-07): `RESPONSE_PARTS2_3.md` (this folder). In short: O1 (a); O2 the
     owner's rule (Map's energy markers and maps kept through every toggle and view change; only E Min / E Max / E Pts
     rebuild them; LDOS-altering changes recompute at the kept energies; display-only toggles redraw; every decomp step

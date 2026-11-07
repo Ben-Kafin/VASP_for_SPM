@@ -35,7 +35,7 @@ All broadening uses the one shared _gauss_sum implementation at the live σ
 on a _curve_grid-style grid. Standalone-runnable via the stub-package
 __main__ pattern at the bottom.
 
-Window (the shared Qt layer, qtgui at the repository root): one panel in
+Window (the shared Qt layer, the simulator's qtgui copy): one panel in
 the figure's automatic grid (automatic layout, nothing placed by hand),
 the curves made once and given new data on every σ change, and under it
 the σ number box (controls.SigmaBox: Enter, leaving the box after an
