@@ -1,67 +1,74 @@
-# Chen linearized decay as a sub-toggle of Decay (temporary plan; deleted when done)
+# Linearized decay as a sub-toggle of Decay (temporary plan; deleted when done)
 
-**Approved by the owner (2026-11-07):** Decay on/off as now. With Decay on, a sub-toggle chooses the weight:
-- **exact** (default): exactly today's code with Decay on: the WKB tilted barrier (`gpu_chen_tunneling_factor`), the
-  frozen-bias topography at V_b, the per-V `chen_sweep` dI/dV, the `'decay_tilt'` caches. Untouched.
-- **linearized**: Chen's linearized weight w = exp(-2 kappa0 d + kappa0 (E - V/2) d / phi) (the README's and the
-  physics block's form, Chen Eq. 2.40 as the repository states it), dw/dV = -(kappa0 d / (2 phi)) w. The topography
-  and the LDOS bias treatments are the same as the exact option's (frozen bias at V_b; swept dI/dV), but because the
-  weight is separable, w = exp(-2 kappa0 d) exp(kappa0 d E / phi) exp(-kappa0 d V / (2 phi)), the swept LDOS uses a
-  single cumulative integral from 0 V for all energies (integral_from_zero's rule), giving dI/dV and the current at
-  every requested V, in a linearized mode of the GPU kernel. Its own model name and caches.
+Approved by the owner, 2026-11-07 ("approved. Begin."). This file governs the implementation.
 
-Scoping (read-only, wf_4951f6d3-893): the result is in the session scratchpad; the code map lists every place the model
-touches (physics block, kernel tilt_weight and its call sites, _compute_channel's three branches, _topo_current and
-_converge_tip_height, _effective_decay_model and the records, _on_ui_change, toggle_defs with indents=, _on_rel's
-hard-coded 'decay_tilt', run_DFT_STM.py, run_stm_decomp.py, sim_wrapper's defaults, the README rows). The former
-linearized code: simulator.py at eb6ce36 (weight lines 86-91; its separable one-walk kernel, float64, trapezoid rule).
+## Sources
 
-**Choices put to the owner:** see the conversation; recorded here when answered.
+- The owner's file for the linearized decay: the repository's simulator.py at b051547 (the upload is byte-identical):
+  `gpu_chen_tunneling_factor` (the linearized weight and dw/dV, lines 88-101), its separable one-walk kernel
+  `_CHEN_SWEEP_SRC` (comment 125-136, source 137-245), `_chen_sweep_kernel` (246-254).
+- The owner chose (b): that weight and that one-walk design, run under the package's current numerics.
+- Both Decay-on models are Chen's decay; "exact" and "linearized" name them throughout; no name that tells them
+  apart contains "chen".
 
-**The owner's source (2026-11-07):** "This has the linearized form of the decay implemented as I have described. you
-shouldn't need to make anything up, just mesh this version of the decay as that secondary linearized toggle." The
-uploaded simulator.py is byte-identical to the repository's simulator.py at b051547 (the owner's disk file installed
-before part 1). Its decay: `gpu_chen_tunneling_factor` (the linearized weight and dw/dV, lines 88-101), its separable
-one-walk `chen_sweep` kernel (`_CHEN_SWEEP_SRC`, lines 137-245: dI/dV = sum rho(V) w(V,V) + w(0,V)/w(0,0)
-integral_0^V rho dw(E,0)/dV dE, and the current), `_integral_from_zero` (the trapezoid rule with a linear 0 V value),
-float64 GPU arrays, the topography by `gpu_simpson` over the typed bias window. Open with the owner: whether its
-numerics come with it, or its weight and one-walk design run under the package's float32 and quadrature rules.
+## 1. The exact decay: same computation, new names
 
-## Decided (owner: "b", 2026-11-07) and what follows from the sources
+The weight, the per-V sweep kernel, the frozen-bias topography and the swept dI/dV compute exactly as now. Renames:
+`gpu_chen_tunneling_factor` -> `gpu_exact_factor`; `_CHEN_SWEEP_SRC` / `chen_sweep` / `_chen_sweep_kernel` (and its
+build cache) -> `_EXACT_SWEEP_SRC` / `exact_sweep` / `_exact_sweep_kernel`; the CUDA device function `tilt_weight` ->
+`exact_weight`; the model name `'decay_tilt'` -> `'decay_exact'` (the cache suffix with it: the existing `_decay_tilt`
+topography caches are not found and are computed once more under `_decay_exact`).
 
-- **(b):** the owner's linearized weight, its derivative and its separable one-walk kernel (b051547's
-  `gpu_chen_tunneling_factor` and `_CHEN_SWEEP_SRC`) run under the package's current numerics: float32 on the GPU
-  (part 2 section 9, energies formed from indices e0 + (i - k0) step), the integration rule of
-  `quadrature.integral_from_zero` (the stencil cubic around 0 V, the unequal pair, Simpson pairs; the current exact
-  kernel already carries this rule in CUDA, per V: the walk takes the same steps once, cumulatively, giving every
-  requested V), the snapped V_b, the same topography path as the exact option (frozen bias at V_b, integrated from 0 V).
-- **From the owner's file:** phi is the local barrier per tip point (phi_local, as the exact option); no guard on phi
-  (the file has none).
-- **The control:** see the Names section (two rows, 'exact' and 'linearized', one always on); ignored while Decay is
-  off (a change then changes no model, so nothing is recomputed).
-- **The exact option:** untouched (its weight, kernel, topography, caches 'decay_tilt').
-- **Everywhere the model is compared or passed:** a third name through `_effective_decay_model`; `_on_ui_change`
-  compares models (not the Decay bool); `_on_rel` passes Map's kept model; the topography and LDOS calls pass the model.
-- **Texts:** the physics block and module docstring, the README's toggles / Decay / Feenstra / simulator rows, the
-  run scripts' comments (Chen only, ruling 3).
+## 2. The linearized decay, new
 
-## Names (owner, 2026-11-07)
+- Physics, from the owner's file: w = exp(-2 kappa0 d + kappa0 d (E - V/2) / phi), dw/dV = -(kappa0 d / (2 phi)) w,
+  in the physics block as `gpu_linearized_factor`; its single-walk kernel, w(E,V) = w(E,0) w(0,V) / w(0,0), as
+  `_LINEARIZED_SWEEP_SRC` / `linearized_sweep` / `_linearized_sweep_kernel`: one pass from 0 V gives dI/dV(V) = sum
+  over the atom's images of rho(V) w(V,V) + w(0,V)/w(0,0) integral_0^V rho(E) dw(E,0)/dV dE, and the current
+  I(V) = sum w(0,V)/w(0,0) integral_0^V rho(E) w(E,0) dE, at every requested V.
+- Numerics, the package's: float32 with energies formed from the index (e0 + (i - k0) step); the integration rule of
+  `quadrature.integral_from_zero` (the stencil cubic around 0 V, the unequal pair, the Simpson pair chains; the steps
+  taken from the exact kernel's CUDA, which already implements the rule per V); the snapped V_b.
+- The same as the exact option: phi the local barrier per tip point; the frozen-bias topography at V_b, integrated
+  from 0 V; the swept LDOS; the Feenstra current from the same pass; the console line 'x/n spectra calculated'.
+- Model name `'decay_linearized'`, its own caches. No guard on phi (the owner's file has none).
 
-"both the exact and linearized are chen's decay, so neither should have the name chen for only that decay", then
-"exact and linearized are good identifying names for the two. keep those throughout". So "exact" and "linearized" name
-the two Decay-on models everywhere; no name that tells them apart contains "chen"; texts may still say both are Chen's.
-The exact option's computation is unchanged; only its names change.
-- Model names (and cache suffixes): 'decay_exact' (was 'decay_tilt'), 'decay_linearized', off 'decay_k0' (unchanged).
-  The existing '_decay_tilt' topography caches are then not found and are computed once again under '_decay_exact'.
-- Physics functions: `gpu_chen_tunneling_factor` -> `gpu_exact_factor`; new `gpu_linearized_factor`; off
-  `gpu_decay_off_factor` (unchanged).
-- Kernels: `_CHEN_SWEEP_SRC` / `chen_sweep` / `_chen_sweep_kernel` (and its build cache) -> `_EXACT_SWEEP_SRC` /
-  `exact_sweep` / `_exact_sweep_kernel`, its CUDA device function `tilt_weight` -> `exact_weight`; new
-  `_LINEARIZED_SWEEP_SRC` / `linearized_sweep` / `_linearized_sweep_kernel`.
-- The control (owner, 2026-11-07: "when exact or linearized toggles are clicked, the other should automatically un
-  toggle"): two indented rows under Decay, 'exact' and 'linearized'. Clicking one turns it on and the other off.
-  Claude's reading, recorded as such: exactly one of the two is always on (clicking the one already on leaves it on),
-  'exact' at start; the choice is kept while Decay is off and ignored then; run_interactive keyword
-  `decay_linearized=False` (True starts on 'linearized'); the info panel lists both rows.
-- Every reference outside simulator.py (stm_from_dft/__init__.py, quadrature.py, the stm README, sim_wrapper if any)
-  follows; nothing in wrong_decays/ is written (ruling 4).
+## 3. The control
+
+Two indented rows under Decay in the toggle list: 'exact' and 'linearized'. Clicking one turns it on and the other
+off; exactly one is always on (clicking the one already on leaves it on); 'exact' at start. Both are ignored while
+Decay is off (a change then changes no model, so nothing is recomputed). run_interactive keyword
+`decay_linearized=False`. show_decay_toggle=False hides both rows with Decay. The info panel lists both rows.
+
+## 4. Everywhere the model is used or compared
+
+`_effective_decay_model` gives 'decay_exact' / 'decay_linearized' / 'decay_k0' (the cache suffixes follow);
+`_on_ui_change` compares models, not the Decay bool (the same drops on a model change); the topography calls
+(`_topo_current`, `_converge_tip_height`, their callers), the LDOS calls and the energy-marker drag (Map's kept model)
+pass the model; sim_wrapper's Decay-off rule for the decomposition unchanged.
+
+## 5. '0-clamp'
+
+The 'sim toggles' line and its comment in the three `qtgui/widgets.py` copies become the simulator's real rows,
+'exact' and 'linearized' indented under 'Decay' (the two package copies byte-identical). The `Claude outputs/` folder
+is already removed (774172a).
+
+## 6. Documentation
+
+Every text describing the current simulator: the stm README's toggles / Decay / Feenstra / simulator.py rows; the
+physics block's text and the module docstring (physics apart from machinery, Chen the only citation);
+`_calculate_ldos_at_points_gpu`'s docstring; stm_from_dft/__init__.py and quadrature.py where they name the old
+functions; the run_DFT_STM.py and run_stm_decomp.py comments and their `decay_linearized` keyword.
+
+## Not touched
+
+Everything in `wrong_decays/`; the README's `wrong_decays/` row; the historical `CHANGE_REPORT.md`.
+
+## Process
+
+One workflow on the branch: three implementation stages in sequence (names, model and control; the linearized kernel;
+texts, run scripts, widgets.py), three reviewers (fidelity to the owner's file and this plan, with the exact option's
+diff renames only; every formula derived, the walk against quadrature.py line by line; correctness: CUDA argument
+lists, every caller, no old name left outside wrong_decays/ and the history), a fixer (anything needing a choice comes
+back to the owner unchosen). py_compile every changed file; the matcher's qtgui copy from the package copy; commit and
+push the branch; the change list; this folder deleted in a last commit; main fast-forwarded only on the owner's OK.
