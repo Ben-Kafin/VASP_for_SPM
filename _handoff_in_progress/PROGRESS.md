@@ -12,6 +12,9 @@ Branch: `claude/jolly-babbage-ppmbdj`. Base of part 1's work: b051547.
    imported relatively, with the example `from .qtgui import qtplot as plt, controls, widgets` from
    inside the package. The module list above it stays unchanged.
 
+2. Part 2: `PART2_ANSWERS.md` — every R of `PART2_QUESTIONS.md` accepted except A1, A2, A4, A9, A11, A15 as
+   answered there; group B approved as a block; C noted. Plus the three added part-2 sections.
+
 ## Conventions given to the implementing agents (part 1)
 
 - Size API in the simulator's qtgui copy (`qtplot.py`): `base_font()`, `em_px()`, `px_per_pt()`, `pt2px(pt)`;
@@ -34,10 +37,12 @@ Branch: `claude/jolly-babbage-ppmbdj`. Base of part 1's work: b051547.
 - [ ] Copy `stm_from_dft/qtgui/` over `matcher/qtgui/`; check byte-identical
 - [ ] Part 1: py_compile every changed file; commit; per-file change list (rule 7)
 - [x] Part 2: pre-flight (read-only mapping of every bullet onto the code) done; questions in `PART2_QUESTIONS.md`
-- [ ] Owner's answers to `PART2_QUESTIONS.md`
+- [x] Owner's answers to `PART2_QUESTIONS.md`: `PART2_ANSWERS.md` (they override the plan; they also add three
+      part-2 items: the synthetic DOSCAR removed, procar_dos.py moved to PROCAR_tools/, Map panels kept in
+      increasing energy; and restate ruling 1)
 - [ ] Part 2 sections 2-11; py_compile; commit; per-file change list
 - [ ] Delete this folder in the final commit
 
 ## Open questions for the owner
 
-- Part 2: every item of `PART2_QUESTIONS.md` (groups A and B).
+(none outstanding)
