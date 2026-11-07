@@ -1,7 +1,8 @@
 # PROCAR_tools
 
-One PROCAR reader (`procar_parser.py`) and the tools built on it. Every tool imports
-`ProcarParser`; none parses PROCAR itself.
+The one shared PROCAR reader (`procar_parser.py`) and the tools built on it. Every tool imports
+`ProcarParser`; none parses PROCAR itself. The folder also holds `procar_dos.py`, a separate strict
+reader for LORBIT=14 noncollinear single-Γ PROCARs with validation, which the tools here do not use.
 
 ## `procar_parser.py`
 
@@ -16,6 +17,19 @@ views: `get_states()` (one dict per spin, k-point, band), `states_by_index()`. T
 tools of the former `complex_procar_parser.py` live here (`build_state_types`, `filter_states`,
 `combine_kpoint_bands`, `export_combined_bands`, `run`). `orbital_groups()` maps the file's column
 names to s/p/d/f groups.
+
+## `procar_dos.py`
+
+`parse_procar(path, spot_check_bands=12)` reads a LORBIT=14 noncollinear PROCAR with a single Γ
+k-point (the phase-augmented layout) and returns `ProcarData`: the raw eigenvalues (`energies`),
+`occupancies`, the real projections of the total, mx, my and mz blocks (`total`, `mx`, `my`, `mz`,
+each bands × ions × orbital columns) and the file's own `tot` rows (`tot_rows`). Every structural
+assumption is asserted against the file: the header counts against the block structure and the
+file length, a single k-point, per band the ion sum of the total block against its `tot` row and
+each ion row's `tot` column against its orbital sum (print-precision tolerances), and the phase
+block's own identities (the per-ion Σ|c|² column, the `charge` row); the |c|² to total-block scale
+is reported, not asserted. The Fermi energy comes only from the DOSCAR header (`read_doscar_header`
+in `LDOS_spread_decomp/stm_from_dft_opt/stm_from_dft/doscar_parser.py`).
 
 ## Tools
 

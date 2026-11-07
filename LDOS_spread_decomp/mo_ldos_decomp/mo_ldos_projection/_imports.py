@@ -107,6 +107,28 @@ def resolve_stm():
         return _simulator, _doscar_parser
 
 
+def resolve_doscar_parser():
+    """
+    Machinery: return the doscar_parser module of the stm_from_dft package
+    (read_doscar_header, SpinAwareDosParser). Found the same way
+    resolve_stm() finds it: the vendored copy (mo_ldos_projection/stm)
+    first, else stm_from_dft with stm_from_dft_opt/ two levels up on
+    sys.path. simulator.py is not imported (stm_from_dft/__init__.py
+    imports its submodules only on first access), so neither cupy nor a
+    CUDA device comes with it.
+    """
+    try:
+        from .stm import doscar_parser as _doscar_parser
+        return _doscar_parser
+    except ImportError:
+        _root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        _stm_dir = os.path.join(_root, "stm_from_dft_opt")
+        if os.path.isdir(_stm_dir) and _stm_dir not in sys.path:
+            sys.path.insert(0, _stm_dir)
+        from stm_from_dft import doscar_parser as _doscar_parser
+        return _doscar_parser
+
+
 def resolve_qt():
     """
     Return the (qtplot, controls, widgets, mplexport) modules of the

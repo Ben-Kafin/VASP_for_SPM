@@ -2,8 +2,8 @@
 """
 sim_wrapper.py — launcher around the stm_from_dft simulator (Module B, §8.3).
 
-Instantiates the Interactive_STM_Simulator against the current σ-tagged
-working directory (synthetic DOSCAR + provisioned inputs). Same window,
+Instantiates the Interactive_STM_Simulator on the run directory's real
+DOSCAR. Same window,
 same controls, identical behavior — plus two control boxes the wrapper
 adds to the simulator window's left column (Interactive_STM_Simulator.
 add_control_box, under the broadening box; the window's automatic layout
@@ -12,24 +12,13 @@ places them, nothing is placed by hand):
 1. The σ box (controls.SigmaBox, 0.01–1.0, default 0.2): a number box
    whose digits step with the arrow keys.  σ COMMIT = a value applied by
    the box (Enter, leaving the box after an edit, a digit step) that
-   differs from the current σ.  On commit: re-smear → write the new
-   σ-tagged dir → capture UI state → tear down the simulator instance →
-   re-instantiate on the new dir → restore UI state (energy-range values,
-   LDOS height, bias sign, every toggle state, γ and the other box
-   values, colormap, and all marker positions).  The commit runs on the
-   next turn of the event loop, after the box's own signal has returned.
-
-DOSCAR source option (session INPUT, decided at launch — deliberately not
-a toggle on the figure): use_synthetic_doscar=True (default) is the
-behavior above. use_synthetic_doscar=False runs the simulator directly on
-the run directory's REAL DOSCAR — no PROCAR parse, no σ-tagged working
-dirs, and the directory's existing topo caches stay in play. The σ widget
-remains, but a commit then only sets the smearing width of the MO spread
-curves for the NEXT "Send to decomposition" press (no teardown — the real
-DOSCAR does not depend on σ). NOTE: the real DOSCAR carries VASP's own
-smearing (ISMEAR/SIGMA), so the one-σ consistency between the site DOS
-and the spread curves that the synthetic route guarantees does not hold
-in this mode; that trade-off is the point of the option.
+   differs from the current σ.  A commit only sets the smearing width of
+   the MO spread curves for the NEXT "Send to decomposition" press (no
+   teardown — the real DOSCAR does not depend on σ).  The commit runs on
+   the next turn of the event loop, after the box's own signal has
+   returned.  NOTE: the real DOSCAR carries VASP's own smearing
+   (ISMEAR/SIGMA), so the site DOS and the spread curves are not smeared
+   with the same σ.
 
 2. A boxed "Send to decomp" control group (below the σ box, a box frame
    like the broadening box) holding TWO buttons:
@@ -60,8 +49,7 @@ in this mode; that trade-off is the point of the option.
 
 The wrapper's boxes are made once per simulator instance (_attach_widgets)
 and live in the simulator window's left column, which the window keeps
-across view changes; a σ commit makes a new simulator instance (a new
-window) and attaches new boxes to it.
+across view changes.
 """
 from __future__ import annotations
 
@@ -72,11 +60,10 @@ import numpy as np
 from scipy.integrate import simpson
 
 if __name__ != "__main__":
-    from ._imports import PlotConfig, resolve_stm, resolve_qt
-    from .procar_dos import parse_procar
-    from .synthetic_doscar import read_doscar_header, make_sigma_workdir
+    from ._imports import PlotConfig, resolve_stm, resolve_qt, resolve_doscar_parser
     from .decomp_window import DecompWindow, MO_AREA_NOISE_THRESHOLD
     from .topo_decomp_window import TopoDecompWindow
+    read_doscar_header = resolve_doscar_parser().read_doscar_header
     plt, controls, widgets, mplexport = resolve_qt()
     QtCore = plt.QtCore
 
@@ -87,8 +74,8 @@ SIGMA_DEFAULT = 0.2
 
 class StmDecompSession:
     """
-    One interactive session: PROCAR parsed once, real-DOSCAR header read
-    once, then simulator instances come and go per σ commit.
+    One interactive session: real-DOSCAR header read once, then simulator
+    instances come and go per σ commit.
     """
 
     def __init__(
@@ -102,16 +89,9 @@ class StmDecompSession:
         sim_kwargs: Optional[Dict[str, Any]] = None,
         cfg: Optional[PlotConfig] = None,
         threshold: float = MO_AREA_NOISE_THRESHOLD,
-        use_synthetic_doscar: bool = True,
         topo_decomp_offsets=(0,),
     ):
         """
-        use_synthetic_doscar : bool (session input, not a figure toggle)
-            True (default): σ-smeared synthetic DOSCAR in σ-tagged working
-            dirs; a σ commit re-smears and re-instantiates the simulator.
-            False: the simulator runs on the run directory's REAL DOSCAR;
-            σ then only smears the MO spread curves of the decomposition
-            window (committed value applies at the next Send press).
         topo_decomp_offsets : list of int (session input)
             HOMO-relative Kramers-entity offsets (spread_collapse
             comp_indices convention: 0 = HOMO, -1 = HOMO-1, +1 = LUMO,
@@ -122,7 +102,6 @@ class StmDecompSession:
         self.sigma = float(sigma)
         self.cfg = cfg if cfg is not None else PlotConfig()
         self.threshold = float(threshold)
-        self.use_synthetic_doscar = bool(use_synthetic_doscar)
         self.topo_decomp_offsets = [int(o) for o in topo_decomp_offsets]
 
         if cmap_topo is None:
@@ -142,44 +121,23 @@ class StmDecompSession:
         if sim_kwargs:
             self.sim_kwargs.update(sim_kwargs)
 
-        # The header carries the ONE Fermi energy used anywhere in Module B
-        # (read up front in both modes — cheap, and it validates the DOSCAR
-        # early). The PROCAR is only needed to build synthetic DOSCARs; the
-        # Γ-only scope it asserts is skipped in real-DOSCAR mode, where the
-        # matcher record already comes from the same single-k run.
+        # The header is read early to check the DOSCAR; it carries the ONE
+        # Fermi energy used anywhere in Module B.
         self.header = read_doscar_header(os.path.join(self.run_dir, "DOSCAR"))
-        if self.use_synthetic_doscar:
-            self.procar = parse_procar(os.path.join(self.run_dir, "PROCAR"))
-        else:
-            self.procar = None
-            print("[WRAPPER] use_synthetic_doscar=False: the simulator runs "
-                  "on the run directory's real DOSCAR; σ commits only set "
-                  "the MO spread smearing for the decomposition window.")
 
         self.sim = None
         self.decomp_window: Optional[DecompWindow] = None
         self.topo_window: Optional[TopoDecompWindow] = None
         self._widgets: Dict[str, Any] = {}
         self._sigma_pending = self.sigma
-        self._pending_prerun_state: Dict[str, Any] = {}
-        self._pending_postrun_state: Dict[str, Any] = {}
 
     # ------------------------------------------------------------------
-    def _prepare_workdir(self) -> str:
-        """The directory the simulator runs on: the σ-tagged synthetic
-        working dir (built/reused here), or the run directory itself in
-        real-DOSCAR mode."""
-        if not self.use_synthetic_doscar:
-            return self.run_dir
-        return make_sigma_workdir(
-            self.run_dir, self.sigma, self.procar, self.header)
-
     def launch(self):
         """Prepare the working directory and start the simulator
         (non-blocking: interactive mode, qtplot.ion; the run script holds
         the process with plt.ioff() and plt.show())."""
         plt.ion()
-        self._instantiate(self._prepare_workdir())
+        self._instantiate(self.run_dir)
         return self.sim
 
     # ------------------------------------------------------------------
@@ -188,25 +146,7 @@ class StmDecompSession:
         sim = simulator_mod.Interactive_STM_Simulator(
             filepath=workdir, **self._ctor_kwargs)
         self.sim = sim
-        # Pre-run state restore hooks (attributes consumed by _build_ui).
-        pre = self._pending_prerun_state
-        if pre:
-            for attr in ("mode", "normalize", "show_mag", "show_atoms",
-                         "show_unit_cell", "display_cells",
-                         "ldos_gamma", "active_marker_idx", "plot_level",
-                         "cached_nepts"):
-                if attr in pre:
-                    setattr(sim, attr, pre[attr])
         sim.run_interactive(**self.sim_kwargs)      # returns under plt.ion()
-        post = self._pending_postrun_state
-        if post:
-            if "marker_ratios" in post and post["marker_ratios"] is not None:
-                sim.marker_ratios = list(post["marker_ratios"])
-            if post.get("is_running"):
-                sim._toggle_run(None)
-            sim._update_all()
-        self._pending_prerun_state = {}
-        self._pending_postrun_state = {}
 
         # The wrapper's boxes in the simulator window's left column, kept by
         # the window across its view changes (add_control_box).
@@ -250,80 +190,17 @@ class StmDecompSession:
     # σ commit: re-smear → new σ-tagged dir → capture → tear down →
     # re-instantiate → restore.
     # ------------------------------------------------------------------
-    def capture_state(self) -> Dict[str, Any]:
-        sim = self.sim
-        state: Dict[str, Any] = {}
-        state["mode"] = sim.mode
-        state["normalize"] = sim.normalize
-        state["show_mag"] = sim.show_mag
-        state["show_atoms"] = sim.show_atoms
-        state["show_unit_cell"] = sim.show_unit_cell
-        state["display_cells"] = int(sim.s_cell.val)
-        state["ldos_gamma"] = float(sim.s_ldos_gamma.value)
-        state["active_marker_idx"] = sim.active_marker_idx
-        state["plot_level"] = sim.plot_level
-        state["is_running"] = bool(sim.is_running)
-        state["marker_ratios"] = list(sim.marker_ratios)
-        # The E Pts box is the Map view's (the window keeps it in every view, shown in Map).
-        state["cached_nepts"] = (int(sim.s_nepts.val)
-                                 if sim.mode == "Map"
-                                 else sim.cached_nepts)
-        # run_interactive kwargs for the next instance:
-        kw = dict(self.sim_kwargs)
-        kw["use_decay"] = bool(sim.use_decay)
-        kw["ldos_bias_sign"] = sim.ldos_bias_sign
-        kw["topo_height"] = float(sim.s_topo_h.val)
-        kw["topo_bias"] = sim.global_topo_bias
-        kw["marker_positions"] = [list(pt) for pt in sim.marker_coords]
-        kw["line_endpoints"] = ([list(sim.p1), list(sim.p2)]
-                                if sim.p1 is not None else None)
-        kw["extra_broadening"] = dict(sim.extra_broadening)
-        kw["path"] = ([list(map(float, n)) for n in sim.path_nodes]
-                      if sim.path_nodes is not None else None)
-        kw["path_extend"] = bool(sim.path_extend)
-        kw["reuse_cache"] = bool(sim.reuse_cache)
-        kw["show_decay_toggle"] = bool(sim.show_decay_toggle)
-        state["sim_kwargs"] = kw
-        # constructor kwargs:
-        ctor = dict(self._ctor_kwargs)
-        ctor["erange"] = [float(sim.s_emin.val), float(sim.s_emax.val)]
-        # The LDOS h box is shown in the Line / Path / Map views; in Single Point it holds the height as set.
-        ctor["ldos_height"] = (float(sim.s_ldos_h.val)
-                               if sim.mode != "Single Point"
-                               else float(sim.ldos_height))
-        state["ctor_kwargs"] = ctor
-        return state
-
     def commit_sigma(self, sigma: float):
         sigma = float(min(max(sigma, SIGMA_MIN), SIGMA_MAX))
-        if not self.use_synthetic_doscar:
-            # Real-DOSCAR mode: the site DOS does not depend on σ, so there
-            # is nothing to re-smear and no reason to tear the simulator
-            # down. The committed σ only smears the MO spread curves of the
-            # decomposition window, starting with the next Send press.
-            print(f"[WRAPPER] σ commit: {self.sigma:.4f} → {sigma:.4f} "
-                  "(real-DOSCAR mode: applies to the MO spread curves on "
-                  "the next 'Send to decomposition' press).")
-            self.sigma = sigma
-            self._sigma_pending = sigma
-            return
-        print(f"[WRAPPER] σ commit: {self.sigma:.4f} → {sigma:.4f}")
-        state = self.capture_state()
-        self.sim_kwargs = state["sim_kwargs"]
-        self._ctor_kwargs = state["ctor_kwargs"]
-        self._pending_prerun_state = state
-        self._pending_postrun_state = dict(
-            marker_ratios=state["marker_ratios"],
-            is_running=state["is_running"])
-        # Tear down the old instance before the new one chdirs elsewhere.
-        old_fig = self.sim.fig
-        plt.close(old_fig)
-        self.sim = None
+        # Real-DOSCAR mode: the site DOS does not depend on σ, so there
+        # is nothing to re-smear and no reason to tear the simulator
+        # down. The committed σ only smears the MO spread curves of the
+        # decomposition window, starting with the next Send press.
+        print(f"[WRAPPER] σ commit: {self.sigma:.4f} → {sigma:.4f} "
+              "(real-DOSCAR mode: applies to the MO spread curves on "
+              "the next 'Send to decomposition' press).")
         self.sigma = sigma
         self._sigma_pending = sigma
-        workdir = make_sigma_workdir(
-            self.run_dir, sigma, self.procar, self.header)
-        self._instantiate(workdir)
 
     # ------------------------------------------------------------------
     # "Send to decomposition"

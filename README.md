@@ -17,7 +17,7 @@ repository, which each window finds by walking up from its own file; `stm_from_d
 | `LDOS_spread_decomp/stm_from_dft_opt` | GPU (CuPy) STM / LDOS simulator from DFT output (constant-current topography, dI/dV maps, line scans) |
 | `LDOS_spread_decomp/mo_ldos_decomp` | MO to LDOS projection: attributes simulated LDOS features to the gas-phase molecular orbitals using the two packages above |
 | `dIdV_tip_sample` | dI/dV simulation from a sample LDOS and a tip LDOS |
-| `PROCAR_tools` | one shared PROCAR reader and the tools built on it: fatband plot, state filter/export, phase-sensitive DOS, GPU broadened orbital curves, band unfolding plot |
+| `PROCAR_tools` | one shared PROCAR reader and the tools built on it: fatband plot, state filter/export, phase-sensitive DOS, GPU broadened orbital curves, band unfolding plot; also `procar_dos.py`, the strict LORBIT=14 reader |
 | `PROJCAR_tools` | PROJCAR parser and LOCPROJ line generator |
 | `WAVECAR_tools` | WAVECAR coefficient parser, G-point facet-duplicate checker, wavefunction orthonormality test |
 | `charge_density` | CHGCAR / PARCHG / LOCPOT slicing and plotting, PARCHG naming and projections, planar averages |

@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-procar_dos.py — LORBIT=14 noncollinear PROCAR parser (Module B).
+procar_dos.py — LORBIT=14 noncollinear PROCAR parser.
 
 Parses the full system's PROCAR (VASP 6.5.2, SOC/noncollinear, LORBIT=14,
 single Γ k-point) in the phase-augmented "new format" layout, verified
@@ -40,7 +40,9 @@ Validation (hard, all asserted against the file being read):
     informational, never asserted.
 
 Energies are raw eigenvalues; the Fermi energy comes from the real DOSCAR
-header only (see synthetic_doscar.read_doscar_header) — no other alignment.
+header only (see read_doscar_header in
+LDOS_spread_decomp/stm_from_dft_opt/stm_from_dft/doscar_parser.py) — no
+other alignment.
 """
 from __future__ import annotations
 

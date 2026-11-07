@@ -36,9 +36,9 @@ never offset the overlay from the simulator axis.
 MO set: automatic — all molecule components' MOs, Kramers-combined via the
 shared kramers utility, no manual index lists.
 
-Spread curves: W_ent(E) = Σ_j p_ent(j) g_σ(E−E_j) at the committed σ (the
-same σ that built the synthetic DOSCAR), evaluated on the snapshot's LDOS
-energy grid (clipped to the LDOS window by construction).
+Spread curves: W_ent(E) = Σ_j p_ent(j) g_σ(E−E_j) at the committed σ,
+evaluated on the snapshot's LDOS energy grid (clipped to the LDOS window
+by construction).
 
 Threshold (noise filter): in-window area a_ent = trapz(W_ent, window);
 keep iff a_ent ≥ MO_AREA_NOISE_THRESHOLD (module constant, default 1e-4),
@@ -139,8 +139,9 @@ if __name__ != "__main__":
         pair_entities,
         homo_entity_offsets,
         resolve_qt,
+        resolve_doscar_parser,
     )
-    from .synthetic_doscar import read_doscar_header
+    read_doscar_header = resolve_doscar_parser().read_doscar_header
     plt, controls, widgets, mplexport = resolve_qt()
 
 # Near-zero numerical-noise filter on the in-window entity area (eV⁻¹·eV).

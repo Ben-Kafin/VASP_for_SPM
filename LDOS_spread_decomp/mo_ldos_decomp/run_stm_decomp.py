@@ -11,14 +11,11 @@ Flow:
      one (checksum/provenance-gated), then the matcher writes the extended
      run record and the txt outputs. A virgin set of VASP directories is
      fully processed here — no prior MOPMatcher run is required.
-  3. Launch the STM decomposition workflow: the simulator on a σ-tagged
-     working directory (synthetic DOSCAR), with the wrapper's σ box and
+  3. Launch the STM decomposition workflow: the simulator on the run
+     directory's real DOSCAR, with the wrapper's σ box and
      the "Send to decomp" box (an "ldos" button for
      the per-marker LDOS decomposition and a "topo" button for the MO
-     topo decomposition over topo_decomp_offsets). Set
-     use_synthetic_doscar = False below to run the simulator on the run
-     directory's REAL DOSCAR instead (σ then only smears the MO spread
-     curves of the decomposition window).
+     topo decomposition over topo_decomp_offsets).
 
 Module A (the global tri-partition figure) stays standalone-runnable:
     python -m mo_ldos_projection.global_decomposition
@@ -103,15 +100,6 @@ mo_area_threshold = MO_AREA_NOISE_THRESHOLD   # decomp-window noise filter
 # per offset per molecule component, built from the topo's own LDOS
 # curves over sorted([0, topo_bias]).
 topo_decomp_offsets = [-2, -1, 0, 1]
-
-# DOSCAR source (input option, decided at launch — not a figure toggle):
-#   True  = σ-smeared synthetic DOSCAR built from the PROCAR, in σ-tagged
-#           working dirs; σ commits re-smear and re-instantiate (the one-σ
-#           consistency between site DOS and MO spread curves holds).
-#   False = the simulator runs on the run directory's REAL DOSCAR (its own
-#           VASP smearing); σ commits then only set the MO spread smearing
-#           used by the decomposition window at the next Send press.
-use_synthetic_doscar = False
 
 erange = [-2.425, -1.225]               # initial energy slider range
 ldos_height = 1.0                 # Å above highest atom for LDOS sampling
@@ -198,8 +186,7 @@ if __name__ == "__main__":
                 f"matcher run finished but the record is not ready: {reason}")
 
     print("[RUN] Launching the STM decomposition workflow "
-          f"(σ = {sigma:.4f}, "
-          f"{'synthetic' if use_synthetic_doscar else 'real'} DOSCAR).")
+          f"(σ = {sigma:.4f}).")
     session = StmDecompSession(
         full_dir,
         erange=erange,
@@ -209,7 +196,6 @@ if __name__ == "__main__":
         sim_kwargs=sim_kwargs,
         cfg=cfg,
         threshold=mo_area_threshold,
-        use_synthetic_doscar=use_synthetic_doscar,
         topo_decomp_offsets=topo_decomp_offsets,
     )
     session.launch()

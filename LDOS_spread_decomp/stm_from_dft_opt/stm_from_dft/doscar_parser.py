@@ -9,6 +9,7 @@ Author: Benjamin Kafin
 
 import numpy as np
 from enum import Enum, auto
+from typing import Any, Dict
 
 
 class SpinMode(Enum):
@@ -187,3 +188,32 @@ class SpinAwareDosParser:
         if spin == "up" or not self.is_polarized:
             return self.spin_up_dos
         return self.spin_down_dos
+
+
+def read_doscar_header(path: str) -> Dict[str, Any]:
+    """
+    Read ONLY the six header lines of the real DOSCAR (no full parse —
+    the file may be hundreds of MB). Returns the five verbatim header
+    lines plus the parsed line-6 fields; EFERMI here is the one Fermi
+    energy used anywhere (same field SpinAwareDosParser reads).
+    """
+    lines = []
+    with open(path, "r") as f:
+        for _ in range(6):
+            line = f.readline()
+            if not line:
+                raise ValueError(f"{path}: fewer than 6 header lines.")
+            lines.append(line.rstrip("\n"))
+    fields = lines[5].split()
+    if len(fields) < 5:
+        raise ValueError(f"{path}: line 6 has {len(fields)} fields, "
+                         f"expected 'EMAX EMIN NEDOS EFERMI 1.0': {lines[5]!r}")
+    natoms = int(lines[0].split()[0])
+    return dict(
+        header_lines=lines[:5],
+        emax=float(fields[0]),
+        emin=float(fields[1]),
+        nedos=int(fields[2]),
+        efermi=float(fields[3]),
+        natoms=natoms,
+    )

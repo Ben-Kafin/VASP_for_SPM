@@ -2,21 +2,28 @@
 """
 Feenstra's normalized conductance (dI/dV)/(I/V) for the simulator's 'Feenstra' toggle.
 
-The simulated LDOS stands in for dI/dV, and its integral from 0 V stands in for the current:
+Physics: the simulated LDOS stands in for dI/dV, and its integral from 0 V stands in for the
+current:
 
     I(r, V) = integral from 0 to V of LDOS_total(r, E) dE        (current_from_ldos)
 
 with E the DOSCAR energy relative to E_F in eV, read as the sample bias V in volts.  I/V is
-then formed and, optionally, broadened by the rule of the sm4_Browser's feenstra.iv_broadened
-(iv_ratio), and every displayed array is divided by it along its energy axis (divide).
+then formed as the plain I(V)/V at each sample (iv_ratio), and every displayed array is divided
+by it along its energy axis (divide).
 
-The I/V rule is a port of sm4_Browser/feenstra.py (iv_broadened), with the parts that only
-apply to a measured current left out: no Hampel / Savitzky-Golay filters and no '0Vsub' (the
-current here is 0 at 0 V by construction).  The rows here are points and the columns energies
-(sm4 has energies down the rows and one spectrum per column); the arithmetic is the same.
+Machinery: the integral is quadrature.py's integral_from_zero, from exactly 0 V on the even DOS
+grid: the cubic through the two samples on each side of 0 V (through E-1, 0, E1, E2 above and
+E-2, E-1, 0, E1 below when a sample is at 0 V), its value at 0 V used by the unequal Simpson
+pair next to 0 V when the interval count is even, its exact integral over the interval next to
+0 V when the count is odd, Simpson pairs over the rest.  A sample exactly at 0 V, where I/V is
+0/0, is given the linear interpolation of its neighbours' I/V (iv_ratio), and where I/V is
+exactly 0 the division gives 0 (divide).
 
-Pure numpy, no GPU and no window code: the simulator computes the total LDOS on the GPU and
-hands the arrays here.
+CuPy, float32, and no window code: the simulator computes the total LDOS on the GPU and hands
+the arrays here, and what is computed here stays on the GPU.  Every array here is a float32
+CuPy array (the inputs are taken with cp.asarray and dtype float32, which does not copy the
+simulator's float32 GPU arrays), and scalars enter the arithmetic only as Python numbers or
+float32 0-d CuPy arrays, so nothing is promoted to float64.
 
 Reference: R. M. Feenstra, J. A. Stroscio and A. P. Fein, "Tunneling spectroscopy of the
 Si(111)2x1 surface", Surf. Sci. 181, 295 (1987), doi:10.1016/0039-6028(87)90170-1.
@@ -24,92 +31,83 @@ Si(111)2x1 surface", Surf. Sci. 181, 295 (1987), doi:10.1016/0039-6028(87)90170-
 Developed by Benjamin Kafin
 """
 
-import numpy as np
+import cupy as cp
+
+from . import quadrature
 
 
-def current_from_ldos(energies, ldos):
+def current_from_ldos(ldos, k0, step, e0):
     """
-    I(V) = integral from 0 to V of the LDOS, per point, at every sample of `energies`.
+    Physics: I(V) = integral from 0 to V of the LDOS, per point, at every sample of `ldos`.
 
-    energies: (n_e,) ascending, in eV relative to E_F; it must reach 0 (0 on a sample or between
-    two samples).  ldos: (n_pts, n_e), the total LDOS of each point at those energies.  The
-    trapezoid rule over the samples, with a sample at exactly 0 inserted (its LDOS linearly
-    interpolated between the two samples bracketing 0) so that I(0) = 0 exactly; the integral of
-    the linear interpolant of the LDOS from 0 to each sample.  V < 0 gives I < 0 for a
-    non-negative LDOS, so I/V is positive on both sides.  Returns (n_pts, n_e) float64 at the
-    given energies (the inserted sample is not returned).
+    ldos: (n_pts, n_e), the total LDOS of each point on consecutive DOS samples, a float32 CuPy
+    array.  k0 (int): the position among them of DOS sample k0, the last sample at or below 0 V.
+    step, e0 (np.float32): the DOS grid, step = (E max - E min)/(NEDOS - 1) and e0 the energy of
+    sample k0 (E - E_F), exactly 0.0 when a sample is at 0 V; the sample at position j is at
+    e0 + (j - k0) step, and no energy array is taken.  V < 0 gives I < 0 for a non-negative LDOS,
+    so I/V is positive on both sides; a sample exactly at 0 V gets I = 0.  Returns (n_pts, n_e)
+    float32 CuPy at the given samples.
+
+    Machinery: the integral is quadrature.integral_from_zero, the rule of quadrature.py from
+    exactly 0 V.  The samples must include E-2 to E2, the two on each side of 0 V (positions
+    k0 - 1 to k0 + 2, or k0 - 2 to k0 + 2 when e0 == 0.0), for the value at 0 V and the piece next
+    to it; nothing beyond a sample is integrated for its I.  None of this is checked.
     """
-    e = np.asarray(energies, dtype=np.float64)
-    L = np.atleast_2d(np.asarray(ldos, dtype=np.float64))
-    if e.ndim != 1 or L.shape[1] != len(e):
-        raise ValueError(f"current_from_ldos: energies {e.shape} and ldos {L.shape} do not match.")
-    if len(e) == 0 or e[0] > 0.0 or e[-1] < 0.0:
-        raise ValueError("current_from_ldos: the energies must reach 0 (E_F) to integrate from it.")
-    if len(e) > 1 and np.any(np.diff(e) <= 0):
-        raise ValueError("current_from_ldos: the energies must be strictly ascending.")
-    exact = np.flatnonzero(e == 0.0)
-    if len(exact):
-        k0 = int(exact[0])
-        e_full, L_full, inserted = e, L, None
-    else:
-        k0 = int(np.searchsorted(e, 0.0))                        # first sample above 0; e[k0 - 1] < 0 < e[k0]
-        t = (0.0 - e[k0 - 1]) / (e[k0] - e[k0 - 1])
-        L0 = L[:, k0 - 1] + t * (L[:, k0] - L[:, k0 - 1])
-        e_full = np.insert(e, k0, 0.0)
-        L_full = np.insert(L, k0, L0, axis=1)
-        inserted = k0
-    C = np.zeros_like(L_full)
-    if len(e_full) > 1:
-        C[:, 1:] = np.cumsum(0.5 * (L_full[:, 1:] + L_full[:, :-1]) * np.diff(e_full)[None, :], axis=1)
-    I_full = C - C[:, k0:k0 + 1]
-    if inserted is not None:
-        I_full = np.delete(I_full, inserted, axis=1)
-    return I_full
+    return quadrature.integral_from_zero(ldos, k0, step, e0, axis=-1)
 
 
-def iv_ratio(energies, current, broadening=0.0):
+def iv_ratio(energies, current):
     """
-    I/V per point at every sample of `energies` (the rule of sm4_Browser feenstra.iv_broadened).
+    Physics: I/V per point at every sample of `energies`, the plain I(V)/V.
 
-    energies: (n_e,) in volts (eV relative to E_F); current: (n_pts, n_e) from current_from_ldos.
-    broadening > 0: the exponentially weighted mean of I/V over the samples,
-        (sum_k (I_k / V_k) exp(-|V_k - V_i| / broadening)) / (sum_k exp(-|V_k - V_i| / broadening)),
-    a sample exactly at 0 V carrying no weight as a source and still receiving a value from its
-    neighbours.  broadening <= 0: the plain I/V, a sample exactly at 0 V given the linear
-    interpolation of its neighbours' I/V.  Returns (n_pts, n_e) float64.
+    energies: (n_e,) the GPU energies of the samples, e0 + (i - k0) step, in volts (eV relative
+    to E_F), a float32 CuPy array in any order; current: (n_pts, n_e), the current I at those
+    samples, a float32 CuPy array.  Returns (n_pts, n_e) float32 CuPy.
+
+    Machinery: a sample exactly at 0 V (0/0) is given the linear interpolation at 0 V of the I/V
+    of its neighbours among the given samples, the last one below 0 V and the first one above
+    (np.interp's rule, in float32: the two found with cp.searchsorted, every point at once, filled
+    in with cp.where); with samples on one side of 0 V only, the I/V of the nearest one.
     """
-    e = np.asarray(energies, dtype=np.float64)
-    I = np.atleast_2d(np.asarray(current, dtype=np.float64))
-    order = np.argsort(e)
+    e = cp.asarray(energies, dtype=cp.float32)
+    I = cp.atleast_2d(cp.asarray(current, dtype=cp.float32))
+    order = cp.argsort(e)
     es = e[order]
     Is = I[:, order]
     nz = es != 0.0
-    ratio = np.zeros_like(Is)
+    ratio = cp.zeros_like(Is)
     ratio[:, nz] = Is[:, nz] / es[nz][None, :]
-    if broadening > 0:
-        W = np.exp(-np.abs(es[:, None] - es[None, :]) / float(broadening))     # W[i, k]
-        W[:, ~nz] = 0.0                                                          # no source at 0 V
-        denom = (ratio @ W.T) / (W @ nz.astype(np.float64))[None, :]
-    else:
-        denom = ratio
-        if not nz.all():
-            for p in range(Is.shape[0]):
-                denom[p, ~nz] = np.interp(es[~nz], es[nz], ratio[p, nz])
-    out = np.empty_like(denom)
+    denom = ratio
+    if not nz.all():
+        # The samples at 0 V are one block of the sorted energies: lo is the last sample below it,
+        # hi the first above (-1 / n_e: none on that side).
+        zero = cp.zeros(1, dtype=cp.float32)
+        lo = int(cp.searchsorted(es, zero, side='left')[0]) - 1
+        hi = int(cp.searchsorted(es, zero, side='right')[0])
+        if lo < 0:
+            r0 = ratio[:, hi]
+        elif hi >= es.shape[0]:
+            r0 = ratio[:, lo]
+        else:
+            slope = (ratio[:, hi] - ratio[:, lo]) / (es[hi] - es[lo])
+            r0 = slope * (0.0 - es[lo]) + ratio[:, lo]
+        denom = cp.where(nz, ratio, r0[:, None])
+    out = cp.empty_like(denom)
     out[:, order] = denom
     return out
 
 
 def divide(arr, iv):
     """
-    `arr` (n_pts, n_e, ...) divided along its energy axis by `iv` (n_pts, n_e): every partition,
-    atom and orbital of a point divided by the same total I/V of that point, so partitions stay
-    additive.  Where I/V is exactly 0 (no states anywhere between 0 V and V: 0/0) the result is
-    0, so the colour scales stay finite.  float64.
+    Physics: the normalized conductance (dI/dV)/(I/V): `arr` (n_pts, n_e, ...) divided along its
+    energy axis by `iv` (n_pts, n_e), every partition, atom and orbital of a point divided by the
+    same total I/V of that point, so partitions stay additive.  float32 CuPy.
+
+    Machinery: where I/V is exactly 0 (no states anywhere between 0 V and V: 0/0) the result is
+    0, so the colour scales stay finite; the divisor is replaced by 1 there (cp.where), so no
+    division by 0 is evaluated.
     """
-    a = np.asarray(arr, dtype=np.float64)
-    d = np.asarray(iv, dtype=np.float64)
+    a = cp.asarray(arr, dtype=cp.float32)
+    d = cp.asarray(iv, dtype=cp.float32)
     d = d.reshape(d.shape + (1,) * (a.ndim - d.ndim))
-    out = np.zeros(np.broadcast_shapes(a.shape, d.shape), dtype=np.float64)
-    np.divide(a, d, out=out, where=(d != 0.0))
-    return out
+    return cp.where(d != 0, a / cp.where(d != 0, d, 1), 0)

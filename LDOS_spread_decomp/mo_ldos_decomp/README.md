@@ -25,8 +25,6 @@ Qt layer `qtgui` (`stm_from_dft/qtgui/` in `../stm_from_dft_opt/`; PySide6 + pyq
 | module | role |
 |---|---|
 | `global_decomposition.py` | Module A: the global tri-partition figure (MO subspace, MO-orthogonalized metal, residual) with the `σ (eV)` box (0.01 to 1 eV, three decimals; the curves are recomputed on every change) and `Save data` (`global_decomposition.txt`) under the panel |
-| `procar_dos.py` | Module B: strict LORBIT=14 noncollinear single-Γ PROCAR reader with validation (used only here; the general reader lives in `PROCAR_tools`) |
-| `synthetic_doscar.py` | σ-smeared synthetic DOSCAR writer and σ-tagged working directories |
 | `sim_wrapper.py` | launcher around the simulator: the σ box (`controls.SigmaBox`) and the "Send to decomp" box (`topo`, `ldos`) in the simulator window's layout |
 | `decomp_window.py` | `DecompWindow`: the per-marker LDOS + MO decomposition window (one block of panels per marker, rebuilt on every toggle). Controls under the panels: the layout toggles `Vertical`, `Horizontal`, `Amplitude`; the `area ≥` box (the MO area threshold; Enter or leaving the box applies it, a non-number is put back); the `Metal curve` toggle; `Save data` (`decomp_window_data.txt` in the run directory). Hover labels on every panel (see below) |
 | `topo_decomp_window.py` | `TopoDecompWindow`: the offsets × components grid of single-colour alpha-ramp maps, one colour bar beside every drawn map, the `Amplitude` and `Norm` toggles and `Save data` (`topo_decomp_data.txt`) under the grid; the figure background is transparent in the exports |
@@ -57,9 +55,9 @@ Hover labels (the decomposition window): a left click on a panel arms its labels
 curve under the click (an MO curve's projection, the LDOS area, the metal composite's projection);
 moving over another curve moves the label; a right click clears the label and disarms the panel.
 
-Inputs: the MOPMatcher outputs (`matcher_results.h5`), PROCAR (LORBIT=14), DOSCAR, LOCPOT,
+Inputs: the MOPMatcher outputs (`matcher_results.h5`), DOSCAR, LOCPOT,
 POSCAR/CONTCAR of the full run, vaspkit real-space wavefunction files. Outputs: decomposition
-figures, synthetic DOSCARs in σ-tagged working directories, CHGCAR-format maps.
+figures, CHGCAR-format maps.
 
 Dependencies: those of `MOPmatcher_mem` and `stm_from_dft_opt`, PySide6 and pyqtgraph (the
 simulator's `qtgui` copy; matplotlib stays for the publication files).

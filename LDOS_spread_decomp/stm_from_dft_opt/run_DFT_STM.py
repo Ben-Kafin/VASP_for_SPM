@@ -30,8 +30,8 @@ sim.run_interactive(
     grid_res=50,                   # NxN topography grid
     topo_bias=0.2,                # V for constant-current topography
     topo_height=2.5,                # initial tip height above highest atom (Å)
-    ldos_bias_sign='neg',          # 'pos' or 'neg' — which slider sets the bias
-    use_decay=True,                # Chen barrier model for topography convergence and LDOS together
+    ldos_bias_sign='neg',          # 'pos' or 'neg' — which box (E Max or E Min) sets the bias; an end of 0.0 makes the other end the bias
+    use_decay=True,                # the exact tilted barrier for topography convergence and LDOS together
     show_decay_toggle=True,        # show the 'Decay' checkbox on the figure (False hides it; decay stays on)
     reuse_cache=True,              # load existing global_topo_*/ldos_topo_* .npy caches; False recomputes and rewrites them
 
