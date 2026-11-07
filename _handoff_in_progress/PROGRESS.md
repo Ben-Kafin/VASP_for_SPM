@@ -93,8 +93,8 @@ Branch: `claude/jolly-babbage-ppmbdj`. Base of part 1's work: b051547.
     `array_module` is `cupy.get_array_module(*arrays)` itself, as the addendum wrote it; the sys.modules check is gone
     (so the module needs CuPy installed wherever it is imported). The other four unlisted mechanisms stay.
 15. Relief at the cell edges (owner, 2026-11-07): "wrap at the cell edges" — the simulator passes `periodic=True` (as the
-    follow-up brief already has it). The owner asked which slope is better; recommended the true slope (height per
-    length, as implemented), awaiting his word.
+    follow-up brief already has it). The slope: the true slope (height per length, as implemented); the owner: "whatever
+    is best" (recommended: resolution-independent, as matplotlib's LightSource with dx, dy and GDAL's gdaldem do).
 
 ## Conventions given to the implementing agents (part 1)
 
