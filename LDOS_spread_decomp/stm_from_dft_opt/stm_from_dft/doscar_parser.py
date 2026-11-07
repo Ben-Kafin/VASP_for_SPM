@@ -41,11 +41,7 @@ class SpinAwareDosParser:
     spin_mode : SpinMode
         Detected spin configuration.
     energies : ndarray, shape (nedos,)
-        Energy grid relative to Fermi level (eV, float64), rebuilt from
-        DOSCAR line 6 as the even grid E min + i * step, i = 0 .. NEDOS - 1,
-        minus E_F.  The printed energy column is only checked against it.
-    step : float
-        Grid step (E max - E min) / (NEDOS - 1) (eV, float64).
+        Energy grid relative to Fermi level.
     ef : float
         Fermi energy (eV).
     spin_up_dos : ndarray
@@ -73,19 +69,6 @@ class SpinAwareDosParser:
 
     # ------------------------------------------------------------------
     def _parse(self):
-        """
-        Machinery: reads the DOSCAR.  Line 6 gives E max, E min, NEDOS and
-        E_F.  The energies are rebuilt from it as the even grid
-        E min + i * step, step = (E max - E min) / (NEDOS - 1), in float64:
-        VASP prints the energy column rounded (to 3 decimals), so the printed
-        values lie off the grid by up to half a unit of their last decimal.
-        NEDOS < 2 raises ValueError.  The printed energies of the first block
-        are read only to check the grid: each is compared, absolute as
-        printed, with E min + i * step; a difference larger than half a unit
-        of the last decimal that printed energy carries (read from its text)
-        plus 1e-6 eV raises ValueError naming the largest difference and its
-        file line.  The DOS columns are read as printed.
-        """
         with open(self.filepath, "r") as f:
             atomnum = int(f.readline().split()[0])
             for _ in range(4):

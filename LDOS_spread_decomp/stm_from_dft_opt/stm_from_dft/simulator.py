@@ -89,7 +89,7 @@ def gpu_chen_tunneling_factor(E, V, phi, d, topo):
     phi - E + V/2, is the height Chen's Eq. 2.40 linearizes about: to first order in (E - V/2)/phi and
     V/phi, S reduces to Chen's exponent (C. J. Chen, Introduction to Scanning Tunneling Microscopy, 3rd
     ed. (2021), Eqs. 2.34, 2.37-2.40).
-    Evaluated in the forms that keep full precision when V is small (A6, three branches):
+    Evaluated in the forms that keep full precision when V is small (three branches):
       a > 0 and b > 0:  S = (4kd/3)(a + sqrt(ab) + b)/(sqrt a + sqrt b),
                         dS/dV = (2kd/3)(sqrt a + 2 sqrt b)/(sqrt a + sqrt b)^2  (no division by V);
       a <= 0 and b <= 0:  S = dS/dV = 0;
@@ -131,14 +131,14 @@ def gpu_chen_tunneling_factor(E, V, phi, d, topo):
 # V, w(E, V) and dw(E, V)/dV are evaluated once at each sample it needs, the stencil E-2, E-1, E1, E2 (and the
 # sample at 0 V when there is one) and every sample from 0 V to V; the two integrands, rho_o(E) dw(E, V)/dV for
 # each orbital and (sum_o rho_o(E)) w(E, V), are integrated from 0 V to V by the rule of
-# quadrature.integral_from_zero (7.2), with the same value at 0 V and the same piece next to 0 V from that V's
+# quadrature.integral_from_zero, with the same value at 0 V and the same piece next to 0 V from that V's
 # stencil values: with no sample at 0 V, f(0) from the cubic through E-2, E-1, E1, E2, and for k (the intervals
 # from 0 V to V) odd the cubic's exact integral to E+-1 (Q+, Q-), for k even the unequal Simpson pair over
 # (0, E+-1, E+-2) (intervals e0 + step and step above 0 V, -e0 and step below); with a sample at 0 V, the cubic
 # through E-1, 0, E1, E2 (below: E-2, E-1, 0, E1) for k odd and the Simpson pair from the 0 V sample for k even;
 # then the equal-step Simpson pairs outward to V, summed as they are walked.  A requested V at a sample at 0 V
 # gives rho_o(0) w(0, 0) and current 0.  Nothing per sample is stored; the outputs hold only the requested samples.
-# Which lines are which (ruling 5): the lines marked 'Physics' in the source transcribe the physics: tilt_weight's
+# Which lines are which: the lines marked 'Physics' in the source transcribe the physics: tilt_weight's
 # S and dS/dV (and w, dw/dV), the two integrands, and the sums that make dI/dV and I.  Everything else is
 # machinery: one thread per (tip point, atom), looping over the atom's images and the requested samples; out
 # (n_p, n_t, n_atoms, N_ORB) += dI/dV; cur (n_p, n_t, n_atoms) += the current, each thread in its own atom's slot
@@ -349,7 +349,7 @@ _CHEN_SWEEP_KERNELS = {}
 
 
 def _chen_sweep_kernel(n_orb):
-    """The chen_sweep kernel compiled for n_orb DOS columns per atom (one build per column count)."""
+    """Machinery: the chen_sweep kernel compiled for n_orb DOS columns per atom (one build per column count)."""
     kern = _CHEN_SWEEP_KERNELS.get(n_orb)
     if kern is None:
         kern = cp.RawKernel(f"#define N_ORB {int(n_orb)}\n" + _CHEN_SWEEP_SRC, 'chen_sweep')
@@ -460,7 +460,7 @@ class Unified_STM_Simulator:
         return z_map_gpu
 
     def _get_barrier_potential(self):
-        """Return the single 3D potential grid used for the tunneling barrier."""
+        """Machinery: return the single 3D potential grid used for the tunneling barrier."""
         if self.spin_mode == SpinMode.COLLINEAR_POL:
             # V_total = V_up + V_dn (stored as [V_up, V_dn])
             return self.locpot_gpu[0] + self.locpot_gpu[1]
@@ -482,7 +482,7 @@ class Unified_STM_Simulator:
         return lv, coord, atomtypes, atomnums
 
     def _unwrap_z_vacuum(self, coord):
-        """Place every atom on the slab side of the vacuum gap in z.
+        """Machinery: place every atom on the slab side of the vacuum gap in z.
 
         z is the surface-normal direction and is NOT periodic for a slab: an atom
         whose fractional z has wrapped through the cell boundary appears at the top
@@ -646,7 +646,7 @@ class Unified_STM_Simulator:
         self.map_mat_gpu[self.atom_indices_periodic_gpu, cp.arange(len(self.atom_indices_periodic_gpu))] = 1.0
 
     def _apply_extra_broadening(self):
-        """Rebuild working DOS arrays from pristine originals with extra Gaussian broadening."""
+        """Machinery: rebuild working DOS arrays from pristine originals with extra Gaussian broadening."""
         self.dos_up_gpu = self._dos_up_gpu_orig.copy()
         if self._dos_dn_gpu_orig is not None:
             self.dos_dn_gpu = self._dos_dn_gpu_orig.copy()
@@ -676,7 +676,7 @@ class Unified_STM_Simulator:
             self.dos_total_collapsed = cp.ascontiguousarray(cp.sum(self.dos_total_gpu, axis=2))
 
     def _broadening_cache_suffix(self):
-        """Generate cache filename suffix encoding active broadening state."""
+        """Machinery: generate cache filename suffix encoding active broadening state."""
         active = sorted((t, s) for t, s in getattr(self, 'extra_broadening', {}).items() if s > 0)
         if not active:
             return ""
@@ -850,7 +850,7 @@ class Unified_STM_Simulator:
                 elif sweep:
                     phi_c = cp.ascontiguousarray(phi_local, dtype=cp.float32)
                     dos3 = cp.ascontiguousarray(dos_gpu, dtype=cp.float32)
-                    # The display sweep, chunked by the (requested V, sample) pairs per tip point (A7), out and cur
+                    # The display sweep, chunked by the (requested V, sample) pairs per tip point, out and cur
                     # sliced per launch; the current (want_cur = 1) from the same pass, per atom, then summed over
                     # atoms; without want_cur cur is None (want_cur = 0).
                     out = output_ldos if in_order else cp.zeros((num_pts, len(u_idx), self.num_total_atoms, dos_gpu.shape[2]), dtype=cp.float32)
@@ -909,14 +909,14 @@ class Unified_STM_Simulator:
     # _combine_ldos: central dispatch for how channels are combined at display time
     # ------------------------------------------------------------------
     def _combine_ldos_total(self, ld_1, ld_2):
-        """Combine channels into total LDOS (for topography / non-mag display)."""
+        """Machinery: combine channels into total LDOS (for topography / non-mag display)."""
         if self.spin_mode == SpinMode.COLLINEAR_POL:
             return ld_1 + ld_2
         # NCL and unpol: ld_1 is already the total
         return ld_1
 
     def _combine_ldos_display(self, ld_1, ld_2, show_mag):
-        """Combine channels for display, respecting show_mag toggle."""
+        """Machinery: combine channels for display, respecting show_mag toggle."""
         if not show_mag or ld_2 is None:
             return self._combine_ldos_total(ld_1, ld_2)
         if self.spin_mode == SpinMode.COLLINEAR_POL:
@@ -926,11 +926,11 @@ class Unified_STM_Simulator:
         return ld_1
 
     def _mag_is_signed(self):
-        """Whether the magnetization display data is signed (needs bwr) or not."""
+        """Machinery: whether the magnetization display data is signed (needs bwr) or not."""
         return self.spin_mode == SpinMode.COLLINEAR_POL
 
     def _has_mag_channel(self):
-        """Whether this spin mode supports the Mag checkbox."""
+        """Machinery: whether this spin mode supports the Mag checkbox."""
         return self.spin_mode in (SpinMode.COLLINEAR_POL, SpinMode.NCL_SOC)
 
 
@@ -1237,7 +1237,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         return feenstra.iv_ratio(self.cached_spec_current_E, self.cached_spec_current)
 
     def _build_path_xy(self):
-        """Build resampled path sample points from the current draggable nodes.
+        """Machinery: build resampled path sample points from the current draggable nodes.
 
         Reuses only the path logic: indices->XY (done at seed time), optional
         directional end-extension to the first local unit-cell wall, and
@@ -1431,7 +1431,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
 
     def add_control_box(self, widget):
         """
-        A control box of another window placed in this window's left column, under the
+        Machinery: a control box of another window placed in this window's left column, under the
         broadening box and above RUN (the decomposition wrapper's σ box and its 'Send to decomp'
         buttons); kept across view changes (the left column is not rebuilt).
         """
@@ -1441,11 +1441,11 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
             widget.setVisible(True)
 
     def _cell_offsets(self, n):
-        """The in-plane offsets of the periodic images drawn, -n .. n cells each way."""
+        """Machinery: the in-plane offsets of the periodic images drawn, -n .. n cells each way."""
         return [tuple(i * self.lv[0, :2] + j * self.lv[1, :2]) for i in range(-n, n + 1) for j in range(-n, n + 1)]
 
     def _panel(self, layout, stretch=1, inner_w=None):
-        """A panel in a row or column layout: a new cell added with `stretch`, its axes returned (automatic layout)."""
+        """Machinery: a panel in a row or column layout: a new cell added with `stretch`, its axes returned (automatic layout)."""
         cell = self.fig.cell(inner_w=inner_w)
         layout.addWidget(cell, 0 if inner_w is not None else stretch)
         self._panel_cells.append(cell)
@@ -1453,7 +1453,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
 
     def _pair(self, box, inner_w=None):
         """
-        A new panel with the control box `box` above it (controls.PanelWithBox: the box belongs to
+        Machinery: a new panel with the control box `box` above it (controls.PanelWithBox: the box belongs to
         the panel and is sized with it, never between panels; rule 11 of the guide): (axes, pair).
         A narrow cell (inner_w: the Path stripe) makes the pair a fixed-width item of its row.
         """
@@ -1465,14 +1465,14 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         return ax, pair
 
     def _panel_with_box(self, layout, box, stretch=1, inner_w=None):
-        """A panel with its control box above it (_pair) added to a row with `stretch`, its axes returned."""
+        """Machinery: a panel with its control box above it (_pair) added to a row with `stretch`, its axes returned."""
         ax, pair = self._pair(box, inner_w=inner_w)
         layout.addWidget(pair, 0 if inner_w is not None else stretch)
         return ax
 
     def _placement(self):
         """
-        The placement topo in its crop panel (controls.CropPanel): the Topo h box and the Crop /
+        Machinery: the placement topo in its crop panel (controls.CropPanel): the Topo h box and the Crop /
         Uncrop buttons above it, the x-cursor boxes riding in the band under them, the y-cursor
         boxes in the band at its right; (axes, panel).  The boxes follow the panel wherever it is
         placed (Axes.on_placed).
@@ -1493,14 +1493,14 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         return ax, panel
 
     def _cell_axes(self):
-        """A free panel on its own (the curve panels the arrangement gives the remaining room): (axes, cell)."""
+        """Machinery: a free panel on its own (the curve panels the arrangement gives the remaining room): (axes, cell)."""
         cell = self.fig.cell()
         self._panel_cells.append(cell)
         return self.fig.add_axes(cell=cell), cell
 
     @staticmethod
     def _detach(*widgets):
-        """The reused widgets (the tip-height boxes, the cluster's label) taken out of the pair or layout about to be deleted: hidden and parentless until the next build puts them back and shows them."""
+        """Machinery: the reused widgets (the tip-height boxes, the cluster's label) taken out of the pair or layout about to be deleted: hidden and parentless until the next build puts them back and shows them."""
         for w in widgets:
             if w is not None:
                 w.hide()
@@ -1508,7 +1508,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
 
     @staticmethod
     def _empty_layout(lay, keep=()):
-        """Every item of a layout taken out: the widgets in `keep` detached for reuse, the others deleted, sub-layouts emptied too."""
+        """Machinery: every item of a layout taken out: the widgets in `keep` detached for reuse, the others deleted, sub-layouts emptied too."""
         if lay is None:
             return
         while lay.count():
@@ -1527,7 +1527,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         return (self._box_topo_h, self._box_ldos_h, self._cluster_label.qt, self._box_crop) + tuple(b.qt for b in self._cursor_boxes.values())
 
     def _clear_cluster(self):
-        """The Line / Path cluster's axes removed and its row emptied (it is built again only when its panel count changes: _build_heat_row); the LDOS h box detached from its pair first."""
+        """Machinery: the Line / Path cluster's axes removed and its row emptied (it is built again only when its panel count changes: _build_heat_row); the LDOS h box detached from its pair first."""
         for ax in list(self.line_decomp_axes):
             if ax in self.fig.axes:
                 ax.remove()
@@ -1549,7 +1549,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         self._line_markers, self._line_markers_n = [], None
 
     def _clear_map_rows(self):
-        """The Map rows' axes removed and their cells deleted out of the block (they are rebuilt when the counts change)."""
+        """Machinery: the Map rows' axes removed and their cells deleted out of the block (they are rebuilt when the counts change)."""
         for ax in list(self.map_axes) + list(getattr(self, 'cax_list', None) or []):
             if ax in self.fig.axes:
                 ax.remove()
@@ -1568,7 +1568,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         self._map_marks_xy, self._contour_z = None, None
 
     def _clear_panels(self):
-        """Every panel of the view removed: its axes, its cells, the panes of the panel area; the reused boxes and label detached first."""
+        """Machinery: every panel of the view removed: its axes, its cells, the panes of the panel area; the reused boxes and label detached first."""
         self._clear_cluster()
         self._clear_map_rows()
         for ax in list(self.fig.axes):
@@ -1593,7 +1593,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
 
     def _build_ui(self):
         """
-        The panels of the current view arranged by the one rule (controls.Arrangement; rule 11 of
+        Machinery: the panels of the current view arranged by the one rule (controls.Arrangement; rule 11 of
         the guide as the owner stated it: the plots fill the window, spatial panels keep their
         ratio, the heat-map data comes first, a curve panel never grows at its expense yet stays
         readable, blank space and the controls' footprint are what is minimized).  The shaped groups of a
@@ -1710,13 +1710,13 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
     CURVE_BOX_MIN_PX = (220, 140)      # a curve panel's readable plot box at text zoom 1 (its labels come on top), in pixels at the old fixed 100 DPI (converted by em_px where used, _curves_readable)
 
     def _curve_axes(self):
-        """The curve panels of the view: the spectrum, with the Tip Height profile before it in Line / Path."""
+        """Machinery: the curve panels of the view: the spectrum, with the Tip Height profile before it in Line / Path."""
         axs = [getattr(self, 'ax_prof', None)] if self.mode in ('Line', 'Path') else []
         return [a for a in axs + [getattr(self, 'ax_spec', None)] if a is not None]
 
     def _curves_readable(self):
         """
-        The curve panels' readable minimum (rule 11; the Arrangement's free_min): every curve
+        Machinery: the curve panels' readable minimum (rule 11; the Arrangement's free_min): every curve
         panel's cell is given, as its minimum size, the readable plot box (CURVE_BOX_MIN_PX at the
         window's text zoom) plus its own labels (Axes._decor_px), so that a split between two
         panels never squeezes one below it; returns the free widget's minimum (w, h): the panels
@@ -1737,14 +1737,14 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
     TOPO_MAX_FACTOR = 2.0              # a topography's plot box at most this many times a heatmap's (Map, Line, Path)
 
     def _topo_axes(self):
-        """The topography panels of the view: the placement topo (Global Topo in Map) and the Map Topo."""
+        """Machinery: the topography panels of the view: the placement topo (Global Topo in Map) and the Map Topo."""
         if self.mode == 'Map':
             return [a for a in (getattr(self, 'ax_map_global', None), getattr(self, 'ax_map', None)) if a is not None]
         return [a for a in (getattr(self, 'ax_map', None),) if a is not None]
 
     def _topo_cap(self, mode, groups):
         """
-        The Arrangement's group_cap of the view (None in Single Point: no heatmap): the topography
+        Machinery: the Arrangement's group_cap of the view (None in Single Point: no heatmap): the topography
         group's plot box at most TOPO_MAX_FACTOR times one heatmap's, in width and in height (Map:
         one energy map's box, MapBlock.map_box; Line / Path: one heatmap of the row).  A box's
         height in a region is the region's height less the room around the box; its width follows
@@ -1786,7 +1786,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
     # --- the contour slice (the level line on the topo colour bar, the Map Topo's iso-line on the energy maps) ---
 
     def _draw_topo_cbar(self, ax):
-        """The topo colour bar beside the Map Topo (the sm4_Browser's draw_topo_cbar): the topo colour map's ramp, low at the bottom, no ticks and no numbers, 'topo' above it; it spans 0 to 1, the fraction of the Map Topo's height range, and carries the contour slice's level line."""
+        """Machinery: the topo colour bar beside the Map Topo (the sm4_Browser's draw_topo_cbar): the topo colour map's ramp, low at the bottom, no ticks and no numbers, 'topo' above it; it spans 0 to 1, the fraction of the Map Topo's height range, and carries the contour slice's level line."""
         ax.set_navigate(False)
         ramp = np.linspace(0.0, 1.0, 256)[:, None]
         ax.imshow(ramp, aspect='auto', origin='lower', cmap=self.cmap_topo, extent=[0, 1, 0, 1])
@@ -1795,14 +1795,14 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         ax.set_title('topo', fontsize=7, pad=2)
 
     def _draw_level_line(self):
-        """The contour slice's level line on the topo colour bar: one pickable horizontal line at z_frac (CONTOUR_LEVEL_COLOR, label '_zlevel': _on_pick), drawn once per build; _set_level moves it."""
+        """Machinery: the contour slice's level line on the topo colour bar: one pickable horizontal line at z_frac (CONTOUR_LEVEL_COLOR, label '_zlevel': _on_pick), drawn once per build; _set_level moves it."""
         if self.cax_topo is None:
             return
         self._level_line = self.cax_topo.axhline(self.z_frac, color=CONTOUR_LEVEL_COLOR, lw=1.5, label='_zlevel',
                                                  picker=6, zorder=3.0)
 
     def _set_level(self, frac):
-        """The contour slice's level set to `frac` of the Map Topo's height range (clipped to 0 .. 1): the level line moved, the traces made anew on every energy map."""
+        """Machinery: the contour slice's level set to `frac` of the Map Topo's height range (clipped to 0 .. 1): the level line moved, the traces made anew on every energy map."""
         frac = float(np.clip(frac, 0.0, 1.0))
         if frac == self.z_frac:
             return
@@ -1813,7 +1813,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         self.fig.canvas.draw_idle()
 
     def _ramp_fraction(self, event, ax):
-        """The cursor's height on the topo colour bar `ax` as the fraction of its range, from the event's canvas pixel row and the bar's drawn box (Axes.get_window_extent, both from the bottom): the drag follows the cursor's height even when it leaves the narrow bar sideways.  None without a position."""
+        """Machinery: the cursor's height on the topo colour bar `ax` as the fraction of its range, from the event's canvas pixel row and the bar's drawn box (Axes.get_window_extent, both from the bottom): the drag follows the cursor's height even when it leaves the narrow bar sideways.  None without a position."""
         if event.y is None:
             return None
         x0, y0, w, h = ax.get_window_extent().bounds
@@ -1823,7 +1823,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
 
     def _contour_segments(self):
         """
-        The contour slice's traces in the plane, (n, 2, 2): contour.iso_segments
+        Machinery: the contour slice's traces in the plane, (n, 2, 2): contour.iso_segments
         on the Map Topo's heights (current_z_map, grid_res x grid_res over the
         unit cell's fractional grid, as the Map Topo is drawn) at the level
         z_frac of their range (the lowest to the highest height, the colour
@@ -1846,7 +1846,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
                                self._cell_offsets_2x2())
 
     def _draw_contour_artists(self):
-        """The contour slice drawn anew (the old traces removed) on every energy map, never on a topo panel: one LineCollection per map in CONTOUR_COLOR, 1 pt, above the map's colours and under the markers (WSxM's flooding, as outlines); nothing outside Map or before the maps exist."""
+        """Machinery: the contour slice drawn anew (the old traces removed) on every energy map, never on a topo panel: one LineCollection per map in CONTOUR_COLOR, 1 pt, above the map's colours and under the markers (WSxM's flooding, as outlines); nothing outside Map or before the maps exist."""
         for art in self._contour_artists:
             try:
                 art.remove()
@@ -1867,7 +1867,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
             self._contour_artists.append(lc)
 
     def _rearrange(self, orient=False):
-        """The arrangement chosen again for the panels as they now are, at the window's size (rule 11): called when their number changes (the view built; the heatmap row or the Map block built again) and when a crop changes a panel's shape (a resize arranges by itself); the window is never trimmed to them (no Figure.fit_window).  With `orient` the unit-cell panels' orientation is decided first (_choose_orientation)."""
+        """Machinery: the arrangement chosen again for the panels as they now are, at the window's size (rule 11): called when their number changes (the view built; the heatmap row or the Map block built again) and when a crop changes a panel's shape (a resize arranges by itself); the window is never trimmed to them (no Figure.fit_window).  With `orient` the unit-cell panels' orientation is decided first (_choose_orientation)."""
         if orient:
             self._choose_orientation()
         if self._arrangement is not None:
@@ -1878,7 +1878,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
     ORIENT_HYSTERESIS = 0.05           # the panels keep their orientation unless the other scores better by this
 
     def _unit_cell_axes(self):
-        """The panels drawn in the unit cell's frame, which turn together: the placement topo, and in Map the Map Topo and every energy map.  The Line / Path heatmap row never turns."""
+        """Machinery: the panels drawn in the unit cell's frame, which turn together: the placement topo, and in Map the Map Topo and every energy map.  The Line / Path heatmap row never turns."""
         axs = [getattr(self, '_crop_ax', None)]
         if self.mode == 'Map':
             axs.append(getattr(self, 'ax_map', None))
@@ -1887,7 +1887,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         return [a for a in axs if a is not None and a in figure_axes]
 
     def _set_cell_rotation(self, flag):
-        """Every unit-cell panel of the view turned 90 degrees (Axes.set_rotated) or back, together; each cursor box moves to the band its cursor's line now runs along."""
+        """Machinery: every unit-cell panel of the view turned 90 degrees (Axes.set_rotated) or back, together; each cursor box moves to the band its cursor's line now runs along."""
         flag = bool(flag)
         for ax in self._unit_cell_axes():
             ax.set_rotated(flag)
@@ -1906,7 +1906,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
 
     def _choose_orientation(self):
         """
-        The unit-cell panels' orientation: as drawn, or turned 90 degrees, whichever the
+        Machinery: the unit-cell panels' orientation: as drawn, or turned 90 degrees, whichever the
         arrangement scores better at the window's size now (controls.Arrangement.best_score: the
         groups' scale less the blank), the current one kept within ORIENT_HYSTERESIS.  Decided
         when a view is built and again on Crop / Uncrop (the shape changes), never on a resize;
@@ -1934,7 +1934,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         return best != cur
 
     def _on_arranged(self, name):
-        """After an arrangement: an orientation decision that waited for the arrangement's first size is made now (deferred past the arrangement's own pass; the arrangement then follows it)."""
+        """Machinery: after an arrangement: an orientation decision that waited for the arrangement's first size is made now (deferred past the arrangement's own pass; the arrangement then follows it)."""
         if self._orient_pending:
             QtCore.QTimer.singleShot(0, self._orient_now)
 
@@ -1949,7 +1949,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
     SHADE_ALPHA = 0.45
 
     def _full_extent(self):
-        """((x lo, x hi), (y lo, y hi)) of the drawn cells: the unit cell at every offset of the Cells count."""
+        """Machinery: ((x lo, x hi), (y lo, y hi)) of the drawn cells: the unit cell at every offset of the Cells count."""
         n = int(self.s_cell.val) if getattr(self, 's_cell', None) is not None else 0
         a, b = self.lv[0, :2], self.lv[1, :2]
         corners = np.array([[0.0, 0.0], a, b, a + b])
@@ -1957,7 +1957,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         return (float(pts[:, 0].min()), float(pts[:, 0].max())), (float(pts[:, 1].min()), float(pts[:, 1].max()))
 
     def _axis_extent(self, axis):
-        """The cursor axis's full range as cropped: the applied crop, else the drawn cells' extent."""
+        """Machinery: the cursor axis's full range as cropped: the applied crop, else the drawn cells' extent."""
         rng = self.crop_x if axis == 'x' else self.crop_y
         if rng is not None:
             return float(rng[0]), float(rng[1])
@@ -1965,11 +1965,11 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         return ex if axis == 'x' else ey
 
     def _reset_cursors(self):
-        """Every cursor at its axis's end (the full ranges as cropped)."""
+        """Machinery: every cursor at its axis's end (the full ranges as cropped)."""
         self._cursors = {'x': list(self._axis_extent('x')), 'y': list(self._axis_extent('y'))}
 
     def _cursor_value(self, axis, k, v):
-        """A value for cursor k (0 the lower, 1 the upper) made valid: inside the axis's extent, the pair keeping 2 % of the extent between them."""
+        """Machinery: a value for cursor k (0 the lower, 1 the upper) made valid: inside the axis's extent, the pair keeping 2 % of the extent between them."""
         lo_ext, hi_ext = self._axis_extent(axis)
         v = float(np.clip(float(v), lo_ext, hi_ext))
         other = float(self._cursors[axis][1 - k])
@@ -1978,7 +1978,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         return float(np.clip(v, lo_ext, hi_ext))
 
     def _set_cursor(self, axis, k, v):
-        """Cursor k of axis 'x' / 'y' moved to v (made valid); the lines, the shades and the boxes follow."""
+        """Machinery: cursor k of axis 'x' / 'y' moved to v (made valid); the lines, the shades and the boxes follow."""
         if self._cursors is None:
             self._reset_cursors()
         self._cursors[axis][k] = self._cursor_value(axis, k, v)
@@ -1989,7 +1989,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         return f"{v:.2f}"
 
     def _on_cursor_box(self, axis, k, text):
-        """A cursor's box: the typed value moves the cursor there (made valid); a text that is not a number is reported and the box put back."""
+        """Machinery: a cursor's box: the typed value moves the cursor there (made valid); a text that is not a number is reported and the box put back."""
         try:
             v = float(str(text).strip())
             if not np.isfinite(v):
@@ -2002,7 +2002,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
 
     def _draw_cursors(self):
         """
-        The crop cursors on the placement topo: two lines at the x cursors and two at the y
+        Machinery: the crop cursors on the placement topo: two lines at the x cursors and two at the y
         cursors across the panel (vertical and horizontal as drawn, the other way round when the
         panel is turned; draggable; a press on one is theirs before any marker's),
         the grey shade outside each pair, and the boxes riding with them (_place_cursor_boxes).
@@ -2038,7 +2038,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
 
     def _place_cursor_boxes(self):
         """
-        The cursor boxes filled and moved onto their cursors (controls.RideBand): each in the band
+        Machinery: the cursor boxes filled and moved onto their cursors (controls.RideBand): each in the band
         its cursor's line runs along (as drawn the x boxes in the band over the panel, the y boxes
         in the band at its right; the other way round when the panel is turned), at the line's
         canvas position (Axes.transData, which knows the turn).
@@ -2057,7 +2057,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
                 panel.band_y.set_pos((axis, k), H - py)
 
     def _crop_ranges(self):
-        """(x range, y range) the cursors mean for a crop: a pair left at its axis's ends keeps that axis's crop as it is."""
+        """Machinery: (x range, y range) the cursors mean for a crop: a pair left at its axis's ends keeps that axis's crop as it is."""
         out = []
         for axis in ('x', 'y'):
             lo_ext, hi_ext = self._axis_extent(axis)
@@ -2069,7 +2069,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         return out[0], out[1]
 
     def _apply_crop(self):
-        """The placement topo's limits at the applied crop (both axes; the full extent where there is none); in Map the Map Topo takes the same."""
+        """Machinery: the placement topo's limits at the applied crop (both axes; the full extent where there is none); in Map the Map Topo takes the same."""
         (ex, ey) = self._full_extent()
         x_rng = self.crop_x if self.crop_x is not None else ex
         y_rng = self.crop_y if self.crop_y is not None else ey
@@ -2082,7 +2082,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
                 ax.set_ylim(*y_rng)
 
     def _on_crop(self, event=None):
-        """'Crop': what lies between the cursors is kept, on both axes; the cursors then sit at the new edges; the unit-cell panels' orientation is decided again for the new shape, and the arrangement follows (the window keeps its size)."""
+        """Machinery: 'Crop': what lies between the cursors is kept, on both axes; the cursors then sit at the new edges; the unit-cell panels' orientation is decided again for the new shape, and the arrangement follows (the window keeps its size)."""
         if self._crop_ax is None:
             return
         if self._cursors is None:
@@ -2094,7 +2094,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         self._rearrange(orient=True)
 
     def _on_uncrop(self, event=None):
-        """'Uncrop': the full extent of the drawn cells again, the cursors back at the ends."""
+        """Machinery: 'Uncrop': the full extent of the drawn cells again, the cursors back at the ends."""
         if self.crop_x is None and self.crop_y is None:
             print("Uncrop: nothing is cropped.")
         self.crop_x = self.crop_y = None
@@ -2117,7 +2117,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         return cs
 
     def _map_cmap(self, use_diverging, has_mag):
-        """The energy maps' colour map: 'bwr' for a signed magnetization, 'hot' for |m|, else cmap_map."""
+        """Machinery: the energy maps' colour map: 'bwr' for a signed magnetization, 'hot' for |m|, else cmap_map."""
         return 'bwr' if use_diverging else ('hot' if (self.show_mag and has_mag) else self.cmap_map)
 
     def _map_vmax(self, slice_data, group_vmax):
@@ -2130,7 +2130,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         return float(cp.min(slice_data)) if self.cmap_norm else float(group_vmin)
 
     def _draw_map_cbar(self, cax, v_min, v_max, use_diverging, has_mag, labelsize=None):
-        """One colour bar of the energy maps into `cax`: their colour map over v_min..v_max, the ticks in units of 10^exp with the exponent as the bar's title; returns the Colorbar (_set_map_cbar updates it in place)."""
+        """Machinery: one colour bar of the energy maps into `cax`: their colour map over v_min..v_max, the ticks in units of 10^exp with the exponent as the bar's title; returns the Colorbar (_set_map_cbar updates it in place)."""
         cax.clear()
         norm_choice = plt.Normalize(vmin=v_min, vmax=v_max)
         sm = plt.cm.ScalarMappable(cmap=self._map_cmap(use_diverging, has_mag), norm=norm_choice)
@@ -2144,13 +2144,13 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         return cb
 
     def _on_cmap_norm(self, flag):
-        """'cmap norm' (Map): each energy map on its own colour scale with its own colour bar (on), or every map on one scale, the maximum over all of them, with one bar (off); the map block is rebuilt with the bars."""
+        """Machinery: 'cmap norm' (Map): each energy map on its own colour scale with its own colour bar (on), or every map on one scale, the maximum over all of them, with one bar (off); the map block is rebuilt with the bars."""
         self.cmap_norm = bool(flag)
         if self.mode == 'Map' and self.is_running:
             self._update_all(full_refresh=True)
 
     def _cell_offsets_2x2(self):
-        """The offsets of the 2 x 2 cells an energy map shows (the cell and its three neighbours along +a and +b)."""
+        """Machinery: the offsets of the 2 x 2 cells an energy map shows (the cell and its three neighbours along +a and +b)."""
         return [tuple(nx * self.lv[0, :2] + ny * self.lv[1, :2]) for nx in range(2) for ny in range(2)]
 
     def _on_mode_change(self, label):
@@ -2208,7 +2208,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         self.global_z_map = self.current_z_map.copy()
 
     def _on_topo_height_rerun(self, event=None):
-        """Apply the global-topo tip-height box (the 'Topo h' Value box) and recompute the global topo.
+        """Machinery: apply the global-topo tip-height box (the 'Topo h' Value box) and recompute the global topo.
         Static-label, single-action button. Does nothing unless the main RUN
         button is active. Height-encoded cache filenames are loaded when
         reuse_cache is True and recomputed and rewritten when reuse_cache is
@@ -2580,7 +2580,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
             # The drag cache: the displayed LDOS of every line / path point as drawn now (the display
             # path above: _combine_ldos_display and the active display options); a marker drag sets the
             # marker spectra from it and computes nothing while the button is down (_move_line_markers).
-            # NumPy (A8): copied to the host once here, so a drag does no GPU work.
+            # NumPy: copied to the host once here, so a drag does no GPU work.
             self._line_disp = cp.asnumpy(f_ldos_raw) if f_ldos_raw is not None else None
 
         self._draw_spectrum(f_ldos_raw, spec_disp, p_dist if self.mode in ('Line', 'Path') else None,
@@ -2639,7 +2639,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
             global_vmin = np.inf
             if self.normalize and f_ldos_raw is not None:
                 total_ldos_map = cp.sum(f_ldos_raw, axis=(2, 3))
-                # Each distinct snapped Map sample once, ascending (A4), at its GPU energy e0 + (i - k0) step.
+                # Each distinct snapped Map sample once, ascending, at its GPU energy e0 + (i - k0) step.
                 u_e, s_idx = np.unique(self.map_e_idx, return_index=True)
                 x_gpu = cp.asarray((u_e - self.k0).astype(np.float32)) * self.e_step32 + self.e032
                 norm_denom_map = quadrature.simpson(total_ldos_map[:, s_idx], x=x_gpu, axis=1)[:, None] + 1e-15
@@ -2725,7 +2725,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         drawn = iter(list(self._spec_lines))      # in place: the curves in the order they were drawn
 
         def _curve(y, **kw):
-            """One curve of the spectrum: plotted when the curves are drawn anew, else the next drawn curve given y."""
+            """Machinery: one curve of the spectrum: plotted when the curves are drawn anew, else the next drawn curve given y."""
             if build:
                 ln, = self.ax_spec.plot(self.cached_eg, cp.asnumpy(y), **kw)
                 self._spec_lines.append(ln)
@@ -2866,7 +2866,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
 
     def _build_heat_row(self, n_heat):
         """
-        The Line / Path heatmap row built anew, only when its panel count changes (n_heat, the
+        Machinery: the Line / Path heatmap row built anew, only when its panel count changes (n_heat, the
         partitions of the level, or the per-heatmap colour bars): the old panels removed
         (_clear_cluster), then the cluster's row, left to right (a PanelRow: its shaped panels
         share one height; rule 11): the 'Topo' panel with the LDOS h box above it (Line only),
@@ -3078,7 +3078,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
 
     def _make_line_markers(self, p_dist, p_len):
         """
-        The Line / Path markers' counterparts made anew for the marker count (the old ones
+        Machinery: the Line / Path markers' counterparts made anew for the marker count (the old ones
         removed): on the Line Topo a scatter at the marker's place along the line (pickable,
         label 'marker_<i>': a marker is dragged from the Line Topo), and, once there are
         heatmaps, a dashed line at the marker's distance on the Tip Height profile, on every
@@ -3106,7 +3106,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
 
     def _place_line_markers(self, counterparts=True):
         """
-        The Line / Path markers placed at marker_ratios on the line as last drawn (_line_geom):
+        Machinery: the Line / Path markers placed at marker_ratios on the line as last drawn (_line_geom):
         the placement topo's markers, and with `counterparts` the Line Topo's scatters, the
         dashed lines on the heatmaps and the stripe (set_ydata) and on the Tip Height profile
         (set_xdata), all together.  Nothing is computed.
@@ -3131,7 +3131,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
 
     def _move_line_markers(self):
         """
-        A Line / Path marker dragged: every counterpart moved with it (_place_line_markers, running
+        Machinery: a Line / Path marker dragged: every counterpart moved with it (_place_line_markers, running
         or not) and, while running, the marker spectra set from the display cache (_line_disp,
         built once per data change by _update_all; _draw_spectrum in place).  Nothing is computed
         again while the button is down.
@@ -3143,7 +3143,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
 
     def _build_map_block(self, num_p, nepts):
         """
-        The Map view's block of energy maps built anew, only when its panel count changes (num_p
+        Machinery: the Map view's block of energy maps built anew, only when its panel count changes (num_p
         partitions of the level, nepts maps each, the colour bars of 'cmap norm'): nepts maps per
         partition, wrapped into the rows that make them largest (controls.MapBlock; rule 11), a
         colour bar cell per partition (show_dcmp_norm), one per map ('cmap norm') or one for the
@@ -3183,7 +3183,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
 
     def _fill_map(self, k, p_idx, i, p_label, slice_data, v_min, v_max, target_e, use_diverging, has_mag, m_coords_np):
         """
-        Energy map k (partition p_idx, energy i) given its data in its own axes, with no
+        Machinery: energy map k (partition p_idx, energy i) given its data in its own axes, with no
         ax.clear(): its contour set drawn again only when its slice or its colour scale changed
         (_set_map_slice; an unchanged map is not touched), its own colour bar under 'cmap norm'
         (_set_map_cbar), the marker scatter made at its first drawing (pickable: a Map marker is
@@ -3231,7 +3231,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
 
     def _set_map_cbar(self, slot, v_min, v_max, use_diverging, has_mag, labelsize=None):
         """
-        The energy maps' colour bar cax_list[slot] at v_min..v_max: drawn the first time
+        Machinery: the energy maps' colour bar cax_list[slot] at v_min..v_max: drawn the first time
         (_draw_map_cbar), then updated in place when its scale changes: its norm and colour map
         (ScalarMappable.set_norm / set_cmap; the bar follows), its tick unit and exponent title
         when the exponent changes.
@@ -3257,7 +3257,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         st.update(sig=sig, cmap=cmap, exp=exp)
 
     def _place_map_markers(self):
-        """The Map markers (marker_coords) placed on every counterpart together: the Map Topo's scatter and each energy map's (a drag moves them; the spectrum follows on release)."""
+        """Machinery: the Map markers (marker_coords) placed on every counterpart together: the Map Topo's scatter and each energy map's (a drag moves them; the spectrum follows on release)."""
         xy = np.array(self.marker_coords)
         recolor = self._map_marks_xy is None or len(self._map_marks_xy) != len(xy)
         cols = self.m_colors[:len(xy)]
@@ -3289,7 +3289,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         global_vmin = np.inf
         if self.normalize and f_ldos_raw is not None:
             total_ldos_map = cp.sum(f_ldos_raw, axis=(2, 3))
-            # Each distinct snapped Map sample once, ascending (A4), at its GPU energy e0 + (i - k0) step.
+            # Each distinct snapped Map sample once, ascending, at its GPU energy e0 + (i - k0) step.
             u_e, s_idx = np.unique(self.map_e_idx, return_index=True)
             x_gpu = cp.asarray((u_e - self.k0).astype(np.float32)) * self.e_step32 + self.e032
             norm_denom_map = quadrature.simpson(total_ldos_map[:, s_idx], x=x_gpu, axis=1)[:, None] + 1e-15
@@ -3517,7 +3517,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
             # Its current, from the same call, into column idx, and its sample's GPU energy e0 + (i - k0) step.
             self.cached_current[:, idx] = t_cur[:, 0]
             self.cached_current_E[idx] = self.e032 + np.float32(e_idx - self.k0) * self.e_step32
-            # The maps back in increasing energy (X3): a stable sort of the snapped Map energies, applied together
+            # The maps back in increasing energy: a stable sort of the snapped Map energies, applied together
             # to the snapped energies and indices, the cached columns and their GPU copies, the current and its
             # energies, and the energy markers and their labels (marker i at map i's energy).  Every map panel whose
             # map changed position is redrawn in place with its new map (_redraw_map_slice: every partition row),

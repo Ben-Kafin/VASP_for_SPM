@@ -3,11 +3,10 @@
 sim_wrapper.py — launcher around the stm_from_dft simulator (Module B, §8.3).
 
 Instantiates the Interactive_STM_Simulator on the run directory's real
-DOSCAR. Same window,
-same controls, identical behavior — plus two control boxes the wrapper
-adds to the simulator window's left column (Interactive_STM_Simulator.
-add_control_box, under the broadening box; the window's automatic layout
-places them, nothing is placed by hand):
+DOSCAR. Same window, same controls, identical behavior — plus two control
+boxes the wrapper adds to the simulator window's left column
+(Interactive_STM_Simulator.add_control_box, under the broadening box; the
+window's automatic layout places them, nothing is placed by hand):
 
 1. The σ box (controls.SigmaBox, 0.01–1.0, default 0.2): a number box
    whose digits step with the arrow keys.  σ COMMIT = a value applied by
