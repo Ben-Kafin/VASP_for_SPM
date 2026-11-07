@@ -2875,11 +2875,14 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
             self.marks.set_facecolors(self.m_colors[:len(self.marker_coords)])
         self._markers_changed()                    # the markers' and the line's lines in the info panel
 
-        if not self.is_running:
+        # RUN off: nothing more is drawn, except for a decomp step (last_run), whose panels are drawn below from the
+        # last run's data when the view has them, with nothing computed (compute False).
+        if not self.is_running and not (last_run and self._has_last_run()):
             self.fig.canvas.draw_idle()
             return
+        compute = self.is_running
 
-        if getattr(self, '_broadening_topo_dirty', False):
+        if compute and getattr(self, '_broadening_topo_dirty', False):
             self._recompute_global_topo()
             self._broadening_topo_dirty = False
             self._update_all(full_refresh=True)
@@ -2889,20 +2892,37 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         i_b, v_b = self._bias_sample()
         nepts = int(self.s_nepts.val) if self.mode == 'Map' else None
         decay_model = self._effective_decay_model()
-        needs_topo = ((self.mode == 'Line' and (self.cached_p1 is None or not np.array_equal(self.p1, self.cached_p1) or not np.array_equal(self.p2, self.cached_p2) or self.cached_bias_energy_line != v_b or self.cached_d_topo_line != decay_model)) or
-                      (self.mode == 'Path' and (self.cached_path_nodes is None or not np.array_equal(np.array(self.path_nodes), self.cached_path_nodes) or self.cached_path_extend != self.path_extend or self.cached_bias_energy_line != v_b or self.cached_d_topo_line != decay_model)) or
-                      (self.mode == 'Map' and (self.cached_bias_energy_map != v_b or self.cached_d_topo_map != decay_model)))
+        needs_topo = compute and (
+            (self.mode == 'Line' and (self.cached_p1 is None or not np.array_equal(self.p1, self.cached_p1) or not np.array_equal(self.p2, self.cached_p2) or self.cached_bias_energy_line != v_b or self.cached_d_topo_line != decay_model)) or
+            (self.mode == 'Path' and (self.cached_path_nodes is None or not np.array_equal(np.array(self.path_nodes), self.cached_path_nodes) or self.cached_path_extend != self.path_extend or self.cached_bias_energy_line != v_b or self.cached_d_topo_line != decay_model)) or
+            (self.mode == 'Map' and (self.cached_bias_energy_map != v_b or self.cached_d_topo_map != decay_model)))
         # The window's ends compared as snapped (_snap: a sample index, or ZERO_V): a typed change that lands on the
-        # same samples recomputes nothing.  In Map, on a full refresh (the Map energies formed again from the typed
-        # ends), the snapped Map samples are also compared with those the cached maps were taken at (map_e_idx).
+        # same samples recomputes nothing.
         e_lo, e_hi = _snap(self.energies, self.s_emin.val, 'emin'), _snap(self.energies, self.s_emax.val, 'emax')
-        needs_ldos = (needs_topo or self.cached_emin != e_lo or self.cached_emax != e_hi or
-                      self.cached_d_ldos != decay_model or getattr(self, 'cached_mode', None) != self.mode or
-                      (self.mode == 'Map' and self.cached_nepts != nepts) or
-                      (self.mode == 'Map' and full_refresh and not np.array_equal(
-                          self._map_sample_indices(np.linspace(self.s_emin.val, self.s_emax.val, nepts)),
-                          getattr(self, 'map_e_idx', None))))
-        needs_spec = (needs_ldos or (self.mode in ['Single Point', 'Map'] and (self.cached_marker_coords is None or not np.array_equal(self.marker_coords, self.cached_marker_coords))))
+        if self.mode == 'Map':
+            # Map's own records (map_*), apart from Line / Path's: its energies are formed again from the typed ends
+            # only after an edit of E Min, E Max or E Pts (reform: the typed ends and count differ from map_typed,
+            # those they were last formed from; a dragged energy is kept otherwise); its maps are computed again
+            # when the LDOS they show changes: the tip heights (needs_topo: the bias, the decay model, LDOS h, a
+            # broadening), the window's snapped ends, the decay model, or the snapped Map samples once formed
+            # again (compared with those the kept maps were taken at, map_e_idx); never for a view change or a
+            # display-only toggle.  The marker spectra (shared with Single Point) are computed again with the
+            # maps, for other markers, or when they were last computed over another window (cached_spec_window).
+            typed = (float(self.s_emin.val), float(self.s_emax.val), nepts)
+            reform = compute and (self.map_e_idx is None or typed != self.map_typed)
+            needs_ldos = compute and (
+                needs_topo or self.map_ld_up_gpu is None or self.map_window != (e_lo, e_hi) or
+                self.map_d_ldos != decay_model or
+                (reform and not np.array_equal(
+                    self._map_sample_indices(np.linspace(self.s_emin.val, self.s_emax.val, nepts)), self.map_e_idx)))
+            needs_spec = compute and (
+                needs_ldos or self.cached_spec_window != (e_lo, e_hi) or self.cached_marker_coords is None or
+                not np.array_equal(self.marker_coords, self.cached_marker_coords))
+        else:
+            reform = False
+            needs_ldos = compute and (needs_topo or self.cached_emin != e_lo or self.cached_emax != e_hi or
+                                      self.cached_d_ldos != decay_model or getattr(self, 'cached_mode', None) != self.mode)
+            needs_spec = compute and (needs_ldos or (self.mode == 'Single Point' and (self.cached_marker_coords is None or not np.array_equal(self.marker_coords, self.cached_marker_coords))))
 
         if needs_topo:
             if self.s_emin.val == 0.0 and self.s_emax.val == 0.0:
@@ -2948,7 +2968,30 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
                 self.ax_map.add_collection(self.marks)
                 self._apply_crop()                 # the Map Topo takes the placement topo's crop
 
-        if needs_ldos:
+        if reform:
+            # An edit of E Min, E Max or E Pts: the Map energies formed again from the typed ends, np.linspace of
+            # them, each snapped to its sample (_map_sample_indices); map_e_targets holds the snapped samples'
+            # energies, map_typed the typed ends and count they were formed from.
+            self.map_e_idx = self._map_sample_indices(np.linspace(self.s_emin.val, self.s_emax.val, nepts))
+            self.map_e_targets = self.energies[self.map_e_idx]
+            self.map_typed, self.cached_nepts = typed, nepts
+
+        if needs_ldos and self.mode == 'Map':
+            # Every map energy (the kept ones, or those just formed) in one call: the LDOS at each grid point, at
+            # each map energy's sample, and the current at those samples only (one column per map), into Map's
+            # own caches, with the window's displayed energies (the spectrum's) and the records they were taken with.
+            grid_z = cp.hstack([self.grid_xy_gpu, cp.asarray(self.current_z_map, dtype=cp.float32)[:, None]])
+            ld_up, ld_dn, _, cur = self._calculate_ldos_at_points_gpu(
+                grid_z, None, None, use_energy_decay=self.use_decay, preserve_orbitals=True, with_current=True,
+                samples=self.map_e_idx)
+            self.map_ld_up = cp.asnumpy(ld_up)
+            self.map_ld_dn = cp.asnumpy(ld_dn) if ld_dn is not None else None
+            self.map_ld_up_gpu, self.map_ld_dn_gpu = ld_up, ld_dn
+            self.map_current = cur
+            self.map_current_E = cp.asarray((self.map_e_idx - self.k0).astype(np.float32)) * self.e_step32 + self.e032
+            self.map_eg = self.energies[self._display_indices(self.s_emin.val, self.s_emax.val)]
+            self.map_window, self.map_d_ldos = (e_lo, e_hi), decay_model
+        elif needs_ldos:
             if self.mode in ('Line', 'Path'):
                 l_idx = self._display_indices(self.s_emin.val, self.s_emax.val)
                 ld_up, ld_dn, eg, cur = self._calculate_ldos_at_points_gpu(
@@ -2959,20 +3002,6 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
                 # The current from the same pass, stored with its samples' GPU energies e0 + (i - k0) step.
                 self.cached_current = cur
                 self.cached_current_E = cp.asarray((l_idx - self.k0).astype(np.float32)) * self.e_step32 + self.e032
-            elif self.mode == 'Map':
-                # The Map energies: np.linspace of the typed ends, each snapped to its sample (_map_sample_indices);
-                # map_e_targets holds the snapped samples' energies.
-                self.map_e_idx = self._map_sample_indices(np.linspace(self.s_emin.val, self.s_emax.val, nepts))
-                self.map_e_targets = self.energies[self.map_e_idx]
-                eg = self.energies[self._display_indices(self.s_emin.val, self.s_emax.val)]
-                # Every map energy in one call: the LDOS at each grid point, at each map energy's sample, and the
-                # current at those samples only (one column per map).
-                grid_z = cp.hstack([self.grid_xy_gpu, cp.asarray(self.current_z_map, dtype=cp.float32)[:, None]])
-                ld_up, ld_dn, _, cur = self._calculate_ldos_at_points_gpu(
-                    grid_z, None, None, use_energy_decay=self.use_decay, preserve_orbitals=True, with_current=True,
-                    samples=self.map_e_idx)
-                self.cached_current = cur
-                self.cached_current_E = cp.asarray((self.map_e_idx - self.k0).astype(np.float32)) * self.e_step32 + self.e032
             else:
                 eg = self.energies[self._display_indices(self.s_emin.val, self.s_emax.val)]
                 ld_up, ld_dn = None, None
@@ -2983,7 +3012,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
                 self.cached_ld_up_gpu, self.cached_ld_dn_gpu = ld_up, ld_dn
             self.cached_eg = cp.asnumpy(eg)
             self.cached_emin, self.cached_emax = e_lo, e_hi
-            self.cached_d_ldos, self.cached_nepts = decay_model, nepts
+            self.cached_d_ldos = decay_model
             self.cached_mode = self.mode
 
         if needs_spec and self.mode in ['Single Point', 'Map']:
@@ -3010,22 +3039,33 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
             self.cached_spec_ldos_gpu = spec_ldos
             self.cached_spec_ldos = cp.asnumpy(spec_ldos)
             self.cached_marker_coords = np.array(self.marker_coords).copy()
+            self.cached_spec_window = (e_lo, e_hi)
             # The markers' current from the same pass, stored with its samples' GPU energies e0 + (i - k0) step.
             self.cached_spec_current = s_cur
             self.cached_spec_current_E = cp.asarray((spec_idx - self.k0).astype(np.float32)) * self.e_step32 + self.e032
 
-        if self.mode in ['Line', 'Path', 'Map'] and self.cached_ld_up is not None:
-            f_up = self.cached_ld_up_gpu.copy()
-            f_dn = self.cached_ld_dn_gpu.copy() if self.cached_ld_dn_gpu is not None else None
+        # The view's own LDOS as displayed: Line / Path the line's (cached_ld_*), Map its own (map_ld_*).
+        if self.mode in ('Line', 'Path'):
+            ld_up_kept, ld_dn_kept, iv_which = self.cached_ld_up_gpu, self.cached_ld_dn_gpu, 'grid'
+        elif self.mode == 'Map':
+            ld_up_kept, ld_dn_kept, iv_which = self.map_ld_up_gpu, self.map_ld_dn_gpu, 'map'
+        else:
+            ld_up_kept, ld_dn_kept, iv_which = None, None, None
+        if ld_up_kept is not None:
+            f_up = ld_up_kept.copy()
+            f_dn = ld_dn_kept.copy() if ld_dn_kept is not None else None
             f_ldos_raw = self._combine_ldos_display(f_up, f_dn, self.show_mag)
             if self.feenstra:
                 # 'Feenstra': every partition of a point divided by that point's total I/V at each energy
                 # (Map: at the sample each map's LDOS is taken at); 'Norm', when on, then acts on the ratio.
-                f_ldos_raw = feenstra.divide(f_ldos_raw, self._feenstra_iv('grid'))
+                f_ldos_raw = feenstra.divide(f_ldos_raw, self._feenstra_iv(iv_which))
             partitions = self.decomp.partitions(f_ldos_raw, self.atomtypes, self.atomnums, self.orbitals, self.dos_up_gpu)
         else:
             f_ldos_raw = None
             partitions = []
+        if self.mode == 'Map' and self.map_eg is not None:
+            # Map's spectrum over Map's own displayed energies (cached_eg: the energies of the spectrum shown).
+            self.cached_eg = self.map_eg
 
         # The marker spectra as shown (Single Point, Map): divided by their I/V under 'Feenstra', else as cached.
         spec_disp = self.cached_spec_ldos_gpu
@@ -3050,8 +3090,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
             self._line_norm = (cp.asnumpy(quadrature.simpson(cp.sum(f_ldos_raw, axis=(2, 3)), dx=self.e_step32, axis=1))
                                if f_ldos_raw is not None else None)
 
-        self._draw_spectrum(f_ldos_raw, spec_disp, p_dist if self.mode in ('Line', 'Path') else None,
-                            nepts=nepts, full_refresh=full_refresh)
+        self._draw_spectrum(f_ldos_raw, spec_disp, p_dist if self.mode in ('Line', 'Path') else None)
 
         if self.mode in ('Line', 'Path'):
             processed_partitions = []
@@ -3089,6 +3128,9 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
 
         elif self.mode == 'Map':
             num_p = max(1, len(partitions))
+            # The maps at Map's kept energies (map_e_idx, map_e_targets: never formed again here), as many as
+            # they are (the E Pts box may hold an edit not yet computed, with RUN off).
+            nepts = len(self.map_e_idx)
 
             # The block is built only when its panel count changes (the partitions of the level, E Pts,
             # the colour bars of 'cmap norm'); otherwise each map takes its new data in place (_fill_map).
@@ -3096,9 +3138,6 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
             if built:
                 self._build_map_block(num_p, nepts)
 
-            if not hasattr(self, 'map_e_targets') or len(self.map_e_targets) != nepts or full_refresh:
-                self.map_e_idx = self._map_sample_indices(np.linspace(self.s_emin.val, self.s_emax.val, nepts))
-                self.map_e_targets = self.energies[self.map_e_idx]
             m_coords_np = np.array(self.marker_coords)
 
             processed_partitions = []
@@ -3157,7 +3196,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
 
         self.fig.canvas.draw_idle()
 
-    def _draw_spectrum(self, f_ldos_raw, spec_disp, p_dist, nepts=None, full_refresh=False, line_norm=None):
+    def _draw_spectrum(self, f_ldos_raw, spec_disp, p_dist, line_norm=None):
         """
         Machinery: the spectrum panel (ax_spec) for the state.  Its curves are drawn anew (the panel cleared,
         the curves plotted, the legends and the hover labels made, as before) when the set of
@@ -3166,8 +3205,8 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         same curves take their new data in place (Line2D.set_data, the energy markers
         _RefLine.set_xdata), with the limits and the title.  f_ldos_raw: the displayed LDOS of
         the Line / Path points (in a drag the cache, _line_disp); spec_disp: the displayed marker
-        spectra (Single Point, Map); p_dist: the Line / Path distances; nepts and full_refresh:
-        the Map energy markers as _update_all gives them; line_norm: in a Line / Path drag or a
+        spectra (Single Point, Map); p_dist: the Line / Path distances; the Map energy markers at
+        Map's kept energies (map_e_targets, never formed again here); line_norm: in a Line / Path drag or a
         mark_dynamic pick, the Norm factors kept beside the drag cache (_line_norm), by which, under
         'Norm', each spectrum is divided here (its point's factor + 1e-15), so the drag does no GPU
         work; None otherwise (under 'Norm' the curves are then divided by their integrals,
@@ -3190,12 +3229,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
             active_ldos = spec_disp[active_idx]
             marker_spectra = [spec_disp[i] for i in range(len(self.marker_coords))]
 
-        if self.mode == 'Map':
-            if not hasattr(self, 'map_e_targets') or len(self.map_e_targets) != nepts or full_refresh:
-                self.map_e_idx = self._map_sample_indices(np.linspace(self.s_emin.val, self.s_emax.val, nepts))
-                self.map_e_targets = self.energies[self.map_e_idx]
-
-        n_marks = len(self.marker_ratios) if self.mode in ('Line', 'Path') else len(self.marker_coords)
+        n_marks =len(self.marker_ratios) if self.mode in ('Line', 'Path') else len(self.marker_coords)
         # The level's curves (ldos_decomp: data, style, label, pickable), the markers' colours in index order.
         marker_colors = (self.line_marker_colors if self.mode in ('Line', 'Path')
                          else [self.m_colors[i % len(self.m_colors)] for i in range(n_marks)])
@@ -3518,16 +3552,17 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
             if items['prof'] is not None:
                 items['prof'].set_xdata([y, y])
 
-    def _move_line_markers(self):
+    def _move_line_markers(self, last_run=False):
         """
         Machinery: a Line / Path marker dragged: every counterpart moved with it (_place_line_markers, running
         or not) and, while running, the marker spectra set from the display cache (_line_disp and its
         Norm factors _line_norm, built once per data change by _update_all; _draw_spectrum in place); the
         info panel's markers line follows (_markers_changed).  Nothing is computed again while the button
-        is down.
+        is down.  With `last_run` (a re-sort: _resort_line_markers) the marker spectra are set from the
+        display cache with RUN off too, the last run's data.
         """
         self._place_line_markers()
-        if self.is_running and self._line_disp is not None and self._spec_key is not None:
+        if (self.is_running or last_run) and self._line_disp is not None and self._spec_key is not None:
             self._draw_spectrum(self._line_disp, None, self._line_geom[1], line_norm=self._line_norm)
         self._markers_changed()
         self.fig.canvas.draw_idle()
