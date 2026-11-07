@@ -391,6 +391,251 @@ def _exact_sweep_kernel(n_orb):
     return kern
 
 
+# The linearized_sweep kernel (Decay on, 'linearized', the bias swept): dI/dV_o(V) and I(V) as THE DECAY MODEL
+# (physics) defines them, at chosen DOSCAR samples V, dI/dV per tip point, atom and orbital (out) and I per tip
+# point and atom (cur, want_cur = 1), each summed over the atom's images, with the linearized weight
+# w(E, V) = exp(-2 kappa0 d + kappa0 (E - V/2) d / phi) and dw/dV = c w, c = -kappa0 d / (2 phi)
+# (gpu_linearized_factor; C. J. Chen, Introduction to Scanning Tunneling Microscopy, 3rd ed. (2021), Eqs.
+# 2.37-2.40; the kernel's linearized_weight computes the same w with the same formula).  The V dependence of w is
+# one factor per image, w(E, V) = w(E, 0) w(0, V) / w(0, 0), with w(0, V) / w(0, 0) = exp(c V), so
+#   dI/dV_o(V) = sum over the atom's images of  rho_o(V) w(V, V)  +  w(0, V) / w(0, 0) integral_0^V rho_o(E) dw(E, 0)/dV dE
+#   I(V)       = sum over the atom's images of  w(0, V) / w(0, 0) integral_0^V (sum_o rho_o(E)) w(E, 0) dE
+# and one walk over the samples outward from 0 V on each side gives both integrals at every requested V at once.
+# The integrals follow the rule of quadrature.integral_from_zero as the exact_sweep kernel has it (the same Rule,
+# pair_coef and first_piece): the piece next to 0 V from the stencil E-2, E-1, E1, E2 (and the sample at 0 V when
+# there is one), for k (the intervals from 0 V to V) odd the piece to E+-1 (the cubic's integral), for k even the
+# pair to E+-2; then the equal-step Simpson pairs outward to V, in two chains summed as they are walked, the pairs
+# ending at the samples an odd count of intervals out (from E+-1) and those ending at an even count (from E+-2), as
+# quadrature._chain sums them.  A requested V at a sample at 0 V gives rho_o(0) w(0, 0) and current 0.
+# Which lines are which: the lines marked 'Physics' in the source transcribe the physics: linearized_weight's w,
+# kappa0, c (dw/dV = c w), the factor w(0, V) / w(0, 0), w(V, V), the two integrands, and the sums that make dI/dV
+# and I.  Everything else is machinery: one thread per (tip point, atom), looping over the atom's images, each
+# image walked from 0 V out to the farthest requested sample on each side, every orbital's two chains and its
+# integrand at the last two samples kept in registers; out (n_p, n_t, n_atoms, N_ORB) += dI/dV; cur (n_p, n_t,
+# n_atoms) += the current, each thread in its own atom's slot (summed over its images; the caller sums cur over
+# atoms; no atomics); want_cur = 0 skips the current and does not touch cur (NULL then); the stencil, f(0), the
+# pieces and the pairs (quadrature.integral_from_zero's rule); a sample's energy formed from its span index j as
+# e0 + (j - kz) step in float32 (step, e0 and kz, the span index of k0, passed in; no energy array); float for
+# every value, pointer and output, expf / sqrtf and the f suffix on every literal; the factor w(0, V) / w(0, 0)
+# formed as one exponential, exp(c V), not as the quotient of two weights (in float32 w(0, 0) = exp(-2 kappa0 d)
+# is 0 once 2 kappa0 d exceeds about 104, where the quotient is 0 / 0); the arguments are exact_sweep's, and the
+# caller chunks the launches by tip points as for exact_sweep.  Nothing per sample is stored; the outputs hold only
+# the requested samples.
+_LINEARIZED_SWEEP_SRC = r'''
+// Physics: the linearized weight (gpu_linearized_factor): w(E, V) = exp(-2 kappa0 d + kappa0 (E - V/2) d / phi),
+// kap = kappa0, d the image-tip distance, ph = phi.
+__device__ __forceinline__ float linearized_weight(const float E, const float V, const float ph, const float kap,
+                                                   const float d)
+{
+    return expf(-2.0f * kap * d + kap * (E - 0.5f * V) * d / ph);                   // Physics: w
+}
+
+// Machinery: the coefficients of quadrature.integral_from_zero's rule that depend only on e0 and step, with no
+// sample at 0 V (th = -e0/step: 0 V lies th steps above sample k0): the cubic's value at 0 V (cf; its third
+// term subtracted), its exact integrals from 0 V to E1 (qp) and from 0 V down to E-1 (qm; their second and
+// fourth terms subtracted), and the unequal Simpson pairs over (0, E1, E2) (pu, hu) and (0, E-1, E-2) (pd, hd).
+struct Rule {
+    float cf[4], qp[4], qm[4], pu[3], pd[3], hu, hd;
+};
+
+// Machinery: SciPy 1.18.1's Simpson pair for unequal intervals h0, h1 (quadrature._pair) as coefficients:
+// pair = h6 (y0 c[0] + y1 c[1] + y2 c[2]), h6 = (h0 + h1)/6, c = (2 - 1/(h0/h1), hsum (hsum/(h0 h1)), 2 - h0/h1),
+// every quotient 0 where its divisor is 0.
+__device__ __forceinline__ void pair_coef(const float h0, const float h1, float* c, float* h6)
+{
+    const float hsum = h0 + h1;
+    const float hprod = h0 * h1;
+    const float h0divh1 = (h1 != 0.0f) ? h0 / h1 : 0.0f;
+    c[0] = 2.0f - ((h0divh1 != 0.0f) ? 1.0f / h0divh1 : 0.0f);
+    c[1] = hsum * ((hprod != 0.0f) ? hsum / hprod : 0.0f);
+    c[2] = 2.0f - h0divh1;
+    *h6 = hsum / 6.0f;
+}
+
+// Machinery: the integral from 0 V over the first interval (k odd) or the first two (k even) on one side of
+// 0 V (up: above, else below, oriented), quadrature.integral_from_zero's rule.  F0 .. F4: the integrand at the
+// span indices kz - 2 .. kz + 2 (F0 only with a sample at 0 V, which is F2; with none, E-2, E-1, E1, E2 are
+// F1 .. F4).
+__device__ __forceinline__ float first_piece(const Rule& R, const bool exact0, const bool up, const bool odd,
+                                             const float step, const float F0, const float F1, const float F2,
+                                             const float F3, const float F4)
+{
+    if (exact0) {
+        if (up)
+            return odd ? (step / 24.0f) * (-F1 + 13.0f * F2 + 13.0f * F3 - F4)     // the cubic through E-1, 0, E1, E2, 0 V to E1
+                       : step / 3.0f * (F2 + 4.0f * F3 + F4);                       // the pair from the 0 V sample
+        const float dn = -step;
+        return odd ? (dn / 24.0f) * (-F3 + 13.0f * F2 + 13.0f * F1 - F0)           // the cubic through E-2, E-1, 0, E1, 0 V to E-1
+                   : dn / 3.0f * (F2 + 4.0f * F1 + F0);
+    }
+    if (odd)
+        return up ? (step / 24.0f) * (R.qp[0] * F1 - R.qp[1] * F2 + R.qp[2] * F3 - R.qp[3] * F4)   // Q+
+                  : (step / 24.0f) * (R.qm[0] * F1 - R.qm[1] * F2 + R.qm[2] * F3 - R.qm[3] * F4);  // Q- (oriented)
+    const float f0 = R.cf[0] * F1 + R.cf[1] * F2 - R.cf[2] * F3 + R.cf[3] * F4;                    // f(0): the cubic at 0 V
+    return up ? R.hu * (f0 * R.pu[0] + F3 * R.pu[1] + F4 * R.pu[2])                                 // the pair over (0, E1, E2)
+              : -(R.hd * (f0 * R.pd[0] + F2 * R.pd[1] + F1 * R.pd[2]));                            // over (0, E-1, E-2), oriented
+}
+
+extern "C" __global__ void linearized_sweep(
+    const float* __restrict__ dos,      // (n_atoms, n_e_all, N_ORB): the DOS of each atom
+    const float* __restrict__ dists,    // (n_shift * n_atoms, n_pts_all): image-tip distances (Angstrom), shift-major
+    const float* __restrict__ phi,      // (n_pts_all): the local barrier at each tip point (eV)
+    const int* __restrict__ js,         // (n_t): the requested samples as span indices, ascending, each once
+    float* __restrict__ out,            // (n_p, n_t, n_atoms, N_ORB), zeroed: dI/dV for points p0 .. p0 + n_p
+    float* __restrict__ cur,            // (n_p, n_t, n_atoms), zeroed: the current (want_cur = 1); NULL when want_cur = 0
+    const float kappa0_per_sqrt_ev, const float step, const float e0,
+    const int n_atoms, const int n_shift, const int n_pts_all, const int p0, const int n_p,
+    const int n_e_all, const int span_lo, const int kz,
+    const int n_t, const int t_split, const int want_cur)
+{
+    const int pl = blockIdx.x * blockDim.x + threadIdx.x;
+    const int a = blockIdx.y;
+    if (pl >= n_p) return;
+    const int p = p0 + pl;
+    const float ph = phi[p];
+    const float kap = kappa0_per_sqrt_ev * sqrtf(ph);                             // Physics: kappa0
+    const float* rho = dos + ((long long)a * n_e_all + span_lo) * N_ORB;          // rho[j * N_ORB + o]: span sample j
+    float* o_pa = out + ((long long)pl * n_t * n_atoms + a) * N_ORB;             // + t * t_stride: requested sample t
+    const long long t_stride = (long long)n_atoms * N_ORB;
+    float* c_pa = want_cur ? cur + ((long long)pl * n_t * n_atoms + a) : 0;      // + t * n_atoms: this atom's slot
+    const bool exact0 = (e0 == 0.0f);                                             // a sample (span index kz) lies exactly at 0 V
+    const int m_lo = exact0 ? 0 : 1;                                              // the stencil: span indices kz - 2 + m, m_lo <= m <= 4
+
+    Rule R;
+    {
+        const float th = -e0 / step;
+        const float thm1 = th - 1.0f, thp1 = th + 1.0f, thm2 = th - 2.0f;
+        R.cf[0] = -th * thm1 * thm2 / 6.0f;
+        R.cf[1] = thp1 * thm1 * thm2 / 2.0f;
+        R.cf[2] = th * thp1 * thm2 / 2.0f;
+        R.cf[3] = th * thp1 * thm1 / 6.0f;
+        R.qp[0] = thm1 * thm1 * (th * th - 2.0f * th - 1.0f);
+        R.qp[1] = thm1 * thm1 * (3.0f * th * th - 2.0f * th - 13.0f);
+        R.qp[2] = thm1 * (3.0f * th * th * th - th * th - 13.0f * th - 13.0f);
+        R.qp[3] = thm1 * thm1 * thp1 * thp1;
+        R.qm[0] = th * th * thm2 * thm2;
+        R.qm[1] = th * (3.0f * th * th * th - 8.0f * th * th - 6.0f * th + 24.0f);
+        R.qm[2] = th * th * (3.0f * th * th - 4.0f * th - 12.0f);
+        R.qm[3] = th * th * (th * th - 2.0f);
+        pair_coef(e0 + step, step, R.pu, &R.hu);
+        pair_coef(-e0, step, R.pd, &R.hd);
+    }
+
+    for (int s = 0; s < n_shift; ++s) {
+        const float d = dists[((long long)s * n_atoms + a) * n_pts_all + p];     // the image-tip distance
+        const float c = -0.5f * kap * d / ph;                                     // Physics: dw/dV = c w
+        // w(E, 0) and dw(E, 0)/dV at the stencil, once per sample.
+        float ws[5] = {0.0f, 0.0f, 0.0f, 0.0f, 0.0f}, dws[5] = {0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
+        for (int m = m_lo; m < 5; ++m) {
+            ws[m] = linearized_weight(e0 + (float)(m - 2) * step, 0.0f, ph, kap, d);  // Physics: w(E, 0)
+            dws[m] = c * ws[m];                                                       // Physics: dw(E, 0)/dV
+        }
+
+        // The requested samples above 0 V (up: t_split .. n_t - 1, walked upward), then those at and below it
+        // (t_split - 1 .. 0, walked downward): one walk outward from 0 V on each side.
+        for (int side = 0; side < 2; ++side) {
+            const bool up = (side == 0);
+            if (up ? (t_split >= n_t) : (t_split <= 0)) continue;                // no requested sample on this side
+            const int dir = up ? 1 : -1;
+            // The sample n intervals out from 0 V on this side (E+-n) is at span index z + dir n.
+            const int z = (up || exact0) ? kz : kz + 1;
+            int t = up ? t_split : t_split - 1;                                   // the next requested sample outward
+            if (!up && exact0 && js[t] == kz) {                                   // V at the sample at 0 V: both integrals 0
+                float* o_t = o_pa + (long long)t * t_stride;
+                for (int o = 0; o < N_ORB; ++o)
+                    o_t[o] += rho[(long long)kz * N_ORB + o] * ws[2];             // Physics: dI/dV = rho_o(0) w(0, 0)
+                if (--t < 0) continue;
+            }
+            const float dx = up ? step : -step;
+
+            // The pieces next to 0 V (first_piece) of each integrand, from the stencil: to E+-1 (p1, k odd) and to
+            // E+-2 (p2, k even).
+            float p1[N_ORB], p2[N_ORB];
+            float Fc[5] = {0.0f, 0.0f, 0.0f, 0.0f, 0.0f};                         // the current's integrand at the stencil
+            for (int o = 0; o < N_ORB; ++o) {
+                float F[5] = {0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
+                for (int m = m_lo; m < 5; ++m) {
+                    const float r = rho[(long long)(kz - 2 + m) * N_ORB + o];
+                    F[m] = r * dws[m];                                            // Physics: rho_o(E) dw(E, 0)/dV
+                    if (want_cur) Fc[m] += r;                                     // sum_o rho_o(E)
+                }
+                p1[o] = first_piece(R, exact0, up, true, step, F[0], F[1], F[2], F[3], F[4]);
+                p2[o] = first_piece(R, exact0, up, false, step, F[0], F[1], F[2], F[3], F[4]);
+            }
+            float p1_c = 0.0f, p2_c = 0.0f;
+            if (want_cur) {
+                for (int m = m_lo; m < 5; ++m) Fc[m] *= ws[m];                    // Physics: (sum_o rho_o(E)) w(E, 0)
+                p1_c = first_piece(R, exact0, up, true, step, Fc[0], Fc[1], Fc[2], Fc[3], Fc[4]);
+                p2_c = first_piece(R, exact0, up, false, step, Fc[0], Fc[1], Fc[2], Fc[3], Fc[4]);
+            }
+
+            // The walk, n = 1, 2, ... intervals out to the farthest requested sample: the integrand at sample n (its
+            // weight from the stencil for n <= 2, evaluated beyond); for n >= 3 the equal-step Simpson pair
+            // (y0 + 4 y1 + y2) over n - 2, n - 1, n added to the chain of n's parity (s1: n odd, the pairs from E+-1;
+            // s2: n even, from E+-2); at a requested sample (k = n), its dI/dV and current.
+            float s1[N_ORB], s2[N_ORB], fa[N_ORB], fb[N_ORB];                     // the chains; the integrand at n - 2, n - 1
+            for (int o = 0; o < N_ORB; ++o) { s1[o] = 0.0f; s2[o] = 0.0f; fa[o] = 0.0f; fb[o] = 0.0f; }
+            float s1_c = 0.0f, s2_c = 0.0f, fa_c = 0.0f, fb_c = 0.0f;
+            for (int n = 1; t >= 0 && t < n_t; ++n) {
+                const int j = z + dir * n;                                        // sample n's span index
+                float wE, dwE;
+                if (n <= 2) { wE = ws[j - kz + 2]; dwE = dws[j - kz + 2]; }
+                else {
+                    wE = linearized_weight(e0 + (float)(j - kz) * step, 0.0f, ph, kap, d);   // Physics: w(E, 0)
+                    dwE = c * wE;                                                            // Physics: dw(E, 0)/dV
+                }
+                const float* rj = rho + (long long)j * N_ORB;
+                const bool odd = (n & 1) != 0;
+                float rs = 0.0f;                                                  // sum_o rho_o(E)
+                for (int o = 0; o < N_ORB; ++o) {
+                    const float f = rj[o] * dwE;                                  // Physics: rho_o(E) dw(E, 0)/dV
+                    if (n >= 3) {
+                        const float pr = fa[o] + 4.0f * fb[o] + f;
+                        if (odd) s1[o] += pr; else s2[o] += pr;
+                    }
+                    fa[o] = fb[o];
+                    fb[o] = f;
+                    if (want_cur) rs += rj[o];
+                }
+                if (want_cur) {
+                    const float f = rs * wE;                                      // Physics: (sum_o rho_o(E)) w(E, 0)
+                    if (n >= 3) {
+                        const float pr = fa_c + 4.0f * fb_c + f;
+                        if (odd) s1_c += pr; else s2_c += pr;
+                    }
+                    fa_c = fb_c;
+                    fb_c = f;
+                }
+                if (js[t] == j) {                                                 // a requested sample: V = E+-n
+                    const float V = e0 + (float)(j - kz) * step;                  // the bias V (eV)
+                    const float g = expf(c * V);                                  // Physics: w(0, V) / w(0, 0) = exp(c V)
+                    const float wVV = linearized_weight(V, V, ph, kap, d);        // Physics: w(V, V)
+                    float* o_t = o_pa + (long long)t * t_stride;
+                    for (int o = 0; o < N_ORB; ++o)
+                        o_t[o] += rj[o] * wVV + g * (odd ? p1[o] + dx / 3.0f * s1[o]
+                                                         : p2[o] + dx / 3.0f * s2[o]);              // Physics: dI/dV_o(V)
+                    if (want_cur)
+                        c_pa[(long long)t * n_atoms] += g * (odd ? p1_c + dx / 3.0f * s1_c
+                                                                 : p2_c + dx / 3.0f * s2_c);         // Physics: I(V)
+                    t += dir;
+                }
+            }
+        }
+    }
+}
+'''
+_LINEARIZED_SWEEP_KERNELS = {}
+
+
+def _linearized_sweep_kernel(n_orb):
+    """Machinery: the linearized_sweep kernel compiled for n_orb DOS columns per atom (one build per column count)."""
+    kern = _LINEARIZED_SWEEP_KERNELS.get(n_orb)
+    if kern is None:
+        kern = cp.RawKernel(f"#define N_ORB {int(n_orb)}\n" + _LINEARIZED_SWEEP_SRC, 'linearized_sweep')
+        _LINEARIZED_SWEEP_KERNELS[n_orb] = kern
+    return kern
+
+
 # --- Energies to DOS samples (CPU, the parser's float64 grid) ---
 ZERO_V = '0 V'       # _snap's answer for a window end of exactly 0.0: 0 V itself, not a sample (never None, which means 'not cached')
 
@@ -787,7 +1032,10 @@ class Unified_STM_Simulator:
             pairs outward to V).  That integral always starts at 0 V, so the DOS from the stencil to the
             samples is used whether or not they reach 0 V.  Computed, for 'decay_exact', by the exact_sweep
             kernel (_EXACT_SWEEP_SRC), each requested V on its own, the launches chunked by the (requested V,
-            sample) pairs per tip point.
+            sample) pairs per tip point; for 'decay_linearized', by the linearized_sweep kernel
+            (_LINEARIZED_SWEEP_SRC), its weight one factor per image in V (w(E, V) = w(E, 0) w(0, V) / w(0, 0)),
+            so one walk outward from 0 V on each side gives the integral at every requested V, launched in the
+            same chunks.
         with_current=True (used only with v_bias None and topo_only False): a fourth element is returned, the
           total current I(V) at the requested samples, in the order requested, (num_pts, num_e) float32 CuPy:
           the integral from 0 V to V of the total DOS weighted at that V, oriented (negative below 0 V for a
@@ -861,20 +1109,18 @@ class Unified_STM_Simulator:
             dists_c = cp.ascontiguousarray(dists, dtype=cp.float32)
             n_shift = dists.shape[0] // self.num_total_atoms                    # images are shift-major: shift, then atom
             # The launch chunk, by the (requested V, sample) pairs per tip point: at each V the stencil and every
-            # sample from 0 V to V.
+            # sample from 0 V to V (exact_sweep's work; linearized_sweep is launched in the same chunks).
             n_pairs = int(np.sum(np.maximum(u_idx, self.k0 + 2) - np.minimum(u_idx, st_lo) + 1))
             pts_per_launch = max(1, int(2.5e7 // max(1, n_pairs * self.num_total_atoms)))   # tip points per launch
 
         def _sweep(phi_c, dos3, p0, n_p, out, cur):
             """Machinery: the decay model's sweep kernel over tip points p0 .. p0 + n_p: out (n_p, n_unique, atoms,
             columns) += dI/dV, and, unless cur is None (want_cur = 0), cur (n_p, n_unique, atoms) += the current;
-            'decay_exact': exact_sweep; 'decay_linearized': the linearized_sweep kernel, whose launch belongs here
-            (NotImplementedError until it is)."""
-            if linearized:
-                # 'decay_linearized': the launch of linearized_sweep (_linearized_sweep_kernel) goes here, into the
-                # same out and cur.
-                raise NotImplementedError("the swept LDOS of 'decay_linearized' has no sweep kernel here yet")
-            _exact_sweep_kernel(dos3.shape[2])(
+            'decay_exact': exact_sweep (_exact_sweep_kernel), each requested V on its own; 'decay_linearized':
+            linearized_sweep (_linearized_sweep_kernel), one walk outward from 0 V on each side for every
+            requested V.  The two kernels take the same arguments, launched the same way."""
+            kern = (_linearized_sweep_kernel if linearized else _exact_sweep_kernel)(dos3.shape[2])
+            kern(
                 ((n_p + 63) // 64, self.num_total_atoms), (64,),
                 (dos3, dists_c, phi_c, js_gpu, out, cur, np.float32(KAPPA0_PER_SQRT_EV), self.e_step32, self.e032,
                  np.int32(self.num_total_atoms), np.int32(n_shift), np.int32(num_pts), np.int32(p0), np.int32(n_p),
