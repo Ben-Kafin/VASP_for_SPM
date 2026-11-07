@@ -50,6 +50,17 @@ Branch: `claude/jolly-babbage-ppmbdj`. Base of part 1's work: b051547.
     matplotlib required (no fallback), and the two colour-map sets in the simulator (added to part 3). Where it differs
     from the part 3 plan or an earlier answer, it stands. Verified: pyqtgraph's `colors/maps/` has CET-L3, CET-L6,
     CET-R1, CET-D1A and CET-L19 (.csv), the names it uses; `qtplot._builtin_cmap` reads them with `pg.colormap.get`.
+11. Part 3 addendum (owner, 2026-11-07): `handoff_part3_addendum_map_shading_contour.md` (this folder): one portable
+    module holding the two colour-map sets, the Map energy maps' shading (Height / Relief, Kovesi's relief.m defaults,
+    the CIELAB L* stretch, isoluminant CET-I1 / CET-D11 / CET-I3) and the Contour / Shading box. It goes with part 3,
+    after part 3's workflow. Verified: pyqtgraph has CET-I1, CET-I3 and CET-D11; matplotlib's pcolormesh takes
+    (M, N, 3|4) RGB(A) C (stable docs). Found: qtplot's QuadItem takes RGBA per quad, but its pcolormesh (QuadMesh)
+    and mplexport's rebuild take only scalar C through norm and colour map (K10); the energy maps are turned with
+    the unit-cell panels (set_rotated), so "light from the upper right" needs a reading (K11).
+    Claude's readings: the module is `cmap_shading.py`; its box builder takes the figure and the qtgui controls
+    module as arguments and its maths uses CuPy only when given CuPy arrays (no CuPy import needed in sm4_Browser);
+    one colour per unique grid point (the grid's duplicate edge left out), each point's quad centred on it, tiled
+    by the cell offsets like the filled contours.
 
 ## Conventions given to the implementing agents (part 1)
 
