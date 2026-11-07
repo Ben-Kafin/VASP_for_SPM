@@ -30,6 +30,13 @@ Branch: `claude/jolly-babbage-ppmbdj`. Base of part 1's work: b051547.
    no scratch maths scripts).
 7. Every agent runs on Opus 5.5 or higher (workflow agents inherit the session model, claude-opus-5-5; any
    agent type with its own default model is given model: opus).
+8. Part 3 section 6, the info panel (owner, 2026-11-07): "the info panel here should be like the info panel in
+   the browser. it should say all the settings of the widgets or toggles and whatever the settings of the
+   window is along with any information in the titles that was dropped for the sake of space".
+   Part 3's plan is `handoff_part3_spectrum_decomp.md` (this folder). Its rule 2: report the design (ldos_decomp.py's
+   functions, simulator.py's calls, the legend panel per view, the sm4_browser functions brought into qtgui)
+   and wait for approval before any code. Source for section 6: Ben-Kafin/sm4_browser at eb9bb6279e70
+   (read-only clone at /home/user/ben-kafin/sm4_browser; HEAD is that commit).
 
 ## Conventions given to the implementing agents (part 1)
 
@@ -60,8 +67,13 @@ Branch: `claude/jolly-babbage-ppmbdj`. Base of part 1's work: b051547.
 - [x] Part 2: the 'width (V)' spec line removed from the root qtgui/widgets.py and both copies (d5e08a4)
 - [~] Part 2 sections 2-11 + X1-X3: workflow running (base d5e08a4; decisions in `PART2_DECISIONS.md`)
 - [ ] Part 2: review, py_compile, commit, per-file change list
-- [ ] Part 3 (owner's handoff to come): its decisions so far are in `PART3_simulator_views_layout_decisions.md`
-      (not part of parts 1 and 2; nothing done for it yet)
+- [x] Part 3 handoff received: `handoff_part3_spectrum_decomp.md` (the decomp, the legend panel, Line/Path marker
+      order and colours, sm4_browser's info panel and saves in every qtgui window); owner's ruling 8 on its info panel
+- [~] Part 3 pre-flight (rule 2, read-only): workflow wf_e2476f62-5f5; its report goes to `PART3_PREFLIGHT.md` for the
+      owner's approval. No part 3 code before that approval.
+- [ ] Part 3 implementation (after part 2 is finished and the pre-flight is approved)
+- [ ] The later views-layout handoff: its decisions so far are in `PART3_simulator_views_layout_decisions.md`
+      (not part of parts 1 to 3; nothing done for it yet)
 - [ ] Delete this folder in the final commit
 
 ## Open questions for the owner
