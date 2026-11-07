@@ -33,10 +33,11 @@ Branch: `claude/jolly-babbage-ppmbdj`. Base of part 1's work: b051547.
 - [ ] Owner's ruling 1 applied to `stm_from_dft/qtgui/__init__.py`
 - [ ] Copy `stm_from_dft/qtgui/` over `matcher/qtgui/`; check byte-identical
 - [ ] Part 1: py_compile every changed file; commit; per-file change list (rule 7)
-- [ ] Part 2: pre-flight (read-only mapping of every bullet onto the code) done; owner questions asked
+- [x] Part 2: pre-flight (read-only mapping of every bullet onto the code) done; questions in `PART2_QUESTIONS.md`
+- [ ] Owner's answers to `PART2_QUESTIONS.md`
 - [ ] Part 2 sections 2-11; py_compile; commit; per-file change list
 - [ ] Delete this folder in the final commit
 
 ## Open questions for the owner
 
-(none outstanding yet; filled in as the workflows report)
+- Part 2: every item of `PART2_QUESTIONS.md` (groups A and B).
