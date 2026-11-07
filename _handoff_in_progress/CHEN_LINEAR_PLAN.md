@@ -2,6 +2,10 @@
 
 Approved by the owner, 2026-11-07 ("approved. Begin."). This file governs the implementation.
 
+**Scope (owner, 2026-11-07): "it only needs to do anything to the stm_from_dft_opt directory, not the full VASP_for_SPM
+suite".** Only files under `LDOS_spread_decomp/stm_from_dft_opt/` change (and this temporary plan file). Not changed:
+`mo_ldos_decomp/` (run_stm_decomp.py, sim_wrapper.py), the root `qtgui/`, the matcher's `qtgui/` copy.
+
 ## Sources
 
 - The owner's file for the linearized decay: the repository's simulator.py at b051547 (the upload is byte-identical):
@@ -49,8 +53,9 @@ pass the model; sim_wrapper's Decay-off rule for the decomposition unchanged.
 
 ## 5. '0-clamp'
 
-The 'sim toggles' line and its comment in the three `qtgui/widgets.py` copies become the simulator's real rows,
-'exact' and 'linearized' indented under 'Decay' (the two package copies byte-identical). The `Claude outputs/` folder
+The 'sim toggles' line and its comment in the simulator package's `qtgui/widgets.py` become the simulator's real
+rows, 'exact' and 'linearized' indented under 'Decay'. Under the scope rule the root and matcher copies keep their old
+line, so the matcher's qtgui copy differs from the package copy by that one line. The `Claude outputs/` folder
 is already removed (774172a).
 
 ## 6. Documentation
@@ -58,7 +63,7 @@ is already removed (774172a).
 Every text describing the current simulator: the stm README's toggles / Decay / Feenstra / simulator.py rows; the
 physics block's text and the module docstring (physics apart from machinery, Chen the only citation);
 `_calculate_ldos_at_points_gpu`'s docstring; stm_from_dft/__init__.py and quadrature.py where they name the old
-functions; the run_DFT_STM.py and run_stm_decomp.py comments and their `decay_linearized` keyword.
+functions; run_DFT_STM.py's comment and its `decay_linearized` keyword.
 
 ## Not touched
 
@@ -70,5 +75,4 @@ One workflow on the branch: three implementation stages in sequence (names, mode
 texts, run scripts, widgets.py), three reviewers (fidelity to the owner's file and this plan, with the exact option's
 diff renames only; every formula derived, the walk against quadrature.py line by line; correctness: CUDA argument
 lists, every caller, no old name left outside wrong_decays/ and the history), a fixer (anything needing a choice comes
-back to the owner unchosen). py_compile every changed file; the matcher's qtgui copy from the package copy; commit and
-push the branch; the change list; this folder deleted in a last commit; main fast-forwarded only on the owner's OK.
+back to the owner unchosen). py_compile every changed file; commit and push the branch; the change list; this folder deleted in a last commit; main fast-forwarded only on the owner's OK.
