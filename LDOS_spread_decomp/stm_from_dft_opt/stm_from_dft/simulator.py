@@ -11,16 +11,18 @@ slider of the old figure a number box, the orbital hover labels widgets.HoverLab
 Tunneling model (Unified_STM_Simulator): the signal at a tip point is each atom's site- and
 orbital-projected DOS weighted by the squared tunneling matrix element |M|^2 of every periodic
 image of that atom, the tip DOS taken as constant (the s-wave tip of Tersoff and Hamann,
-Phys. Rev. B 31, 805 (1985)).  With Decay on, |M|^2 is the exact tilted barrier, exp(-S) with S
-the WKB exponent across a barrier rising linearly from phi - E at the sample to phi - E + V at
-the tip (gpu_exact_factor); to first order in (E - V/2)/phi and V/phi it is Chen's
-energy-dependent matrix element (C. J. Chen, Introduction to Scanning Tunneling Microscopy, 3rd
-ed., Oxford 2021, Sec. 2.2.3-2.2.4, Eqs. 2.34-2.41; Eq. 2.37: kappa ~ kappa0 (1 - eps / (2 phi)),
-eps the state's energy measured from the middle of the bias interval); with Decay off it is
+Phys. Rev. B 31, 805 (1985)).  With Decay on, |M|^2 is one of two models, the rows 'exact' and
+'linearized' under Decay (exactly one on): 'exact', the exact tilted barrier, exp(-S) with S the
+WKB exponent across a barrier rising linearly from phi - E at the sample to phi - E + V at the
+tip (gpu_exact_factor); 'linearized', its first order in (E - V/2)/phi and V/phi, Chen's
+energy-dependent matrix element exp(-2 kappa0 d + kappa0 (E - V/2) d / phi)
+(gpu_linearized_factor; C. J. Chen, Introduction to Scanning Tunneling Microscopy, 3rd ed.,
+Oxford 2021, Sec. 2.2.3-2.2.4, Eqs. 2.34-2.41; Eq. 2.37: kappa ~ kappa0 (1 - eps / (2 phi)),
+eps the state's energy measured from the middle of the bias interval).  With Decay off it is
 exp(-2 kappa0 d), the same weight without its energy and bias dependence.  kappa0 =
 sqrt(2 m phi) / hbar (Chen Eq. 2.38), phi the LOCPOT potential at the tip point minus E_F.  As in
 a measurement, the topography is converged on the current at one frozen bias (the current of
-Chen Eq. 2.40, with this weight), and the displayed LDOS is dI/dV with the bias swept (its
+Chen Eq. 2.40, with the model's weight), and the displayed LDOS is dI/dV with the bias swept (its
 derivative at each bias).  The model is the block THE DECAY MODEL (physics) at the top of this
 file; everything after it is NUMERICS AND GPU (no physics).
 
@@ -57,8 +59,12 @@ from . import ldos_decomp
 # weighted, for every periodic image of the atom at distance d (Angstrom) from the tip, at bias V, by the decay
 # weight w(E, V), with phi the LOCPOT potential at the tip point minus E_F (eV) and
 # kappa0 = KAPPA0_PER_SQRT_EV sqrt(phi):
-#   Decay on:  w(E, V) = exp(-S(E, V)), the exact tilted barrier, with its V derivative dw/dV
-#              (gpu_exact_factor, below);
+#   Decay on, one of two models (the rows 'exact' and 'linearized' under Decay, exactly one on):
+#     'exact':       w(E, V) = exp(-S(E, V)), the exact tilted barrier, with its V derivative dw/dV
+#                    (gpu_exact_factor, below);
+#     'linearized':  w(E, V) = exp(-2 kappa0 d + kappa0 (E - V/2) d / phi), dw/dV = -(kappa0 d / (2 phi)) w,
+#                    the exact weight to first order in (E - V/2)/phi and V/phi, Chen's energy-dependent matrix
+#                    element (gpu_linearized_factor, below; Eqs. 2.34, 2.37-2.40 of the book cited next);
 #   Decay off: w = exp(-2 kappa0 d), the same weight without its energy and bias dependence (dw/dV = 0)
 #              (gpu_decay_off_factor, below).
 # As in a measurement (C. J. Chen, Introduction to Scanning Tunneling Microscopy, 3rd ed., Oxford University Press

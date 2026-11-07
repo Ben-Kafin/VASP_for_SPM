@@ -30,7 +30,8 @@ sim.run_interactive(
     topo_bias=0.2,                # V for constant-current topography
     topo_height=2.5,                # initial tip height above highest atom (Å)
     ldos_bias_sign='neg',          # 'pos' or 'neg' — which box (E Max or E Min) sets the bias; an end of 0.0 makes the other end the bias
-    use_decay=True,                # the exact tilted barrier for topography convergence and LDOS together
+    use_decay=True,                # Decay on (its model: decay_linearized) for topography convergence and LDOS together
+    decay_linearized=False,        # the Decay-on model: False 'exact' (the exact tilted barrier), True 'linearized' (the exact weight to first order in (E - V/2)/phi)
     show_decay_toggle=True,        # show the 'Decay' checkbox on the figure (False hides it; decay stays on)
     reuse_cache=True,              # load existing global_topo_*/ldos_topo_* .npy caches; False recomputes and rewrites them
 
