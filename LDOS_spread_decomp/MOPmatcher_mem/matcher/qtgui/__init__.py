@@ -12,14 +12,8 @@ section 9) carried into this suite.
                 of a panel
   mplexport.py  a figure rebuilt in matplotlib for publication files (PDF, EPS, SVG, PNG, TIFF)
 
-Every window finds this package by walking up from its own file to the folder that holds it (the
-repository root), the suite's fixed-sibling-path convention:
+This folder is its package's own copy of the layer (the same files are the copy in each package
+that carries one), imported relatively from inside the package:
 
-    import os as _os, sys as _sys
-    _root = _os.path.dirname(_os.path.abspath(__file__))
-    while not _os.path.isdir(_os.path.join(_root, 'qtgui')) and _os.path.dirname(_root) != _root:
-        _root = _os.path.dirname(_root)
-    if _root not in _sys.path:
-        _sys.path.insert(0, _root)
-    from qtgui import qtplot as plt, controls, widgets
+    from .qtgui import qtplot as plt, controls, widgets
 """

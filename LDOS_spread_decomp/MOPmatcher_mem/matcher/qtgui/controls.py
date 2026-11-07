@@ -25,23 +25,20 @@ Value or a Count stops at its limits.  Each press applies the new value at once,
 (rule 8 of the guide: number boxes instead of sliders; the one slider kept scrubs a list).
 """
 
-if __package__ in (None, ''):
-    # Run as a file (Spyder F5): make the package importable from wherever its folder sits.
-    import os as _os, sys as _sys
-    _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
 import re
 import weakref
 from decimal import Decimal, InvalidOperation
 import numpy as np
-from qtgui import qtplot as plt
-from qtgui.qtplot import QtCore, QtGui, QtWidgets, qfont, qcolor
-from qtgui import widgets
-from qtgui.widgets import SPECS, LABELS, short_form
+from . import qtplot as plt
+from .qtplot import QtCore, QtGui, QtWidgets, qfont, qcolor
+from . import widgets
+from .widgets import SPECS, LABELS, short_form
 
 Qt = QtCore.Qt
 
-# The box frame of every group of controls in every window (the light frame of the figure windows).
-FRAME_CSS = "QFrame#box { background: #f0f0f0; border: 1px solid #c8c8c8; border-radius: 3px; }"
+# The box frame of every group of controls in every window (the light frame of the figure windows):
+# its border width and radius are filled in where it is set (1 and 3 px at the old fixed 100 DPI, by em_px).
+FRAME_CSS = "QFrame#box { background: #f0f0f0; border: %dpx solid #c8c8c8; border-radius: %dpx; }"
 COLOR_FRAME_CSS = "QFrame#count { border: 2px solid %s; border-radius: 3px; }"
 
 
@@ -85,10 +82,10 @@ def box(*items, title=None, orient='h', spacing=4, margins=(4, 2, 4, 2), stretch
     """
     frame = QtWidgets.QFrame()
     frame.setObjectName('box')
-    frame.setStyleSheet(FRAME_CSS)
+    frame.setStyleSheet(FRAME_CSS % (round(1 / (1000 / 72) * plt.em_px()), round(3 / (1000 / 72) * plt.em_px())))
     outer = QtWidgets.QVBoxLayout(frame)
-    outer.setContentsMargins(*margins)
-    outer.setSpacing(2)
+    outer.setContentsMargins(*(round(m / (1000 / 72) * plt.em_px()) for m in margins))
+    outer.setSpacing(round(2 / (1000 / 72) * plt.em_px()))
     if title:
         fig = next((f for f in (_fig_of(it) for it in items) if f is not None), None)
         if fig is not None:
@@ -102,7 +99,7 @@ def box(*items, title=None, orient='h', spacing=4, margins=(4, 2, 4, 2), stretch
         outer.addWidget(t)
     inner = QtWidgets.QHBoxLayout() if orient == 'h' else QtWidgets.QVBoxLayout()
     inner.setContentsMargins(0, 0, 0, 0)
-    inner.setSpacing(spacing)
+    inner.setSpacing(round(spacing / (1000 / 72) * plt.em_px()))
     for it in items:
         if isinstance(it, QtWidgets.QLayout):
             inner.addLayout(it)
@@ -118,7 +115,7 @@ def row(*items, spacing=4, stretch=False, align=None):
     """A plain row (no frame) of items: a QHBoxLayout (automatic layout)."""
     lay = QtWidgets.QHBoxLayout()
     lay.setContentsMargins(0, 0, 0, 0)
-    lay.setSpacing(spacing)
+    lay.setSpacing(round(spacing / (1000 / 72) * plt.em_px()))
     for it in items:
         if it == 'stretch':
             lay.addStretch(1)
@@ -138,7 +135,7 @@ def column(*items, spacing=4, stretch=False, align=None):
     """A plain column (no frame) of items: a QVBoxLayout (automatic layout)."""
     lay = QtWidgets.QVBoxLayout()
     lay.setContentsMargins(0, 0, 0, 0)
-    lay.setSpacing(spacing)
+    lay.setSpacing(round(spacing / (1000 / 72) * plt.em_px()))
     for it in items:
         if it == 'stretch':
             lay.addStretch(1)
@@ -166,8 +163,8 @@ class FlowLayout(QtWidgets.QLayout):
     def __init__(self, hspacing=6, vspacing=4, push_last=False):
         super().__init__()
         self._items = []
-        self._hs = int(hspacing)
-        self._vs = int(vspacing)
+        self._hs = int(round(hspacing / (1000 / 72) * plt.em_px()))
+        self._vs = int(round(vspacing / (1000 / 72) * plt.em_px()))
         self._push_last = bool(push_last)
         self.setContentsMargins(0, 0, 0, 0)
 
@@ -260,7 +257,7 @@ class UnderPanel(QtWidgets.QWidget):
         super().__init__()
         lay = QtWidgets.QHBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
-        lay.setSpacing(spacing)
+        lay.setSpacing(round(spacing / (1000 / 72) * plt.em_px()))
         lay.addStretch(1)
         for it in items:
             lay.addWidget(_qw(it))
@@ -315,13 +312,13 @@ class PanelWithBox(QtWidgets.QWidget):
         super().__init__()
         lay = QtWidgets.QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
-        lay.setSpacing(spacing)
+        lay.setSpacing(round(spacing / (1000 / 72) * plt.em_px()))
         narrow = getattr(cell, 'inner_w', None) is not None
         self.above = AbovePanel(ax, *items, follow=not narrow)
         lay.addWidget(self.above, 0)
         lay.addWidget(cell, 1)
         self.cell = cell
-        self._sp = int(spacing)
+        self._sp = int(round(spacing / (1000 / 72) * plt.em_px()))
         if narrow:
             # Over a narrow cell (a tip-height stripe): the pair is as wide as the wider of the box and
             # the cell, a fixed-width item of its row like the cell itself (PanelRow._fixed).
@@ -375,7 +372,7 @@ class OrientedPanes(QtWidgets.QWidget):
             w.setParent(self)
             w.show()
         main._pane_main = True                 # the render check's mark: this panel's room follows the pane rule, not a row's
-        self.main_share, self._sp, self._hys = float(main_share), int(spacing), float(hysteresis)
+        self.main_share, self._sp, self._hys = float(main_share), int(round(spacing / (1000 / 72) * plt.em_px())), float(hysteresis)
         self.orientation = None
         pol = QtWidgets.QSizePolicy.Policy
         self.setSizePolicy(pol.Expanding, pol.Expanding)
@@ -391,7 +388,8 @@ class OrientedPanes(QtWidgets.QWidget):
 
     def _arrange_later(self):
         self._pending = False
-        self._arrange()
+        if _panel_shapes(self.main) != getattr(self, '_last_shapes', None):
+            self._arrange()                    # the main panel's shape changed; a label's text changes nothing
 
     def on_arranged(self, callback):
         """callback(orientation) after every arrangement (a window that logs or adapts to it)."""
@@ -452,6 +450,7 @@ class OrientedPanes(QtWidgets.QWidget):
         W, H = float(self.width()), float(self.height())
         if W <= 0 or H <= 0:
             return
+        self._last_shapes = _panel_shapes(self.main)     # a layout request arranges again only when it changes
         area, orient, mw, mh = self._choose(W, H)
         self.orientation = orient
         if orient == 'h':
@@ -478,16 +477,16 @@ class OrientedPanes(QtWidgets.QWidget):
         self._arrange()
 
     def event(self, ev):
-        if ev.type() == QtCore.QEvent.Type.LayoutRequest:
+        if ev.type() == QtCore.QEvent.Type.LayoutRequest and _panel_shapes(self.main) != getattr(self, '_last_shapes', None):
             self._arrange()
         return super().event(ev)
 
     def minimumSizeHint(self):
         a, b = self.main.minimumSizeHint(), self.rest.minimumSizeHint()
-        return QtCore.QSize(max(a.width(), b.width(), 100), max(a.height(), b.height(), 100))
+        return QtCore.QSize(max(a.width(), b.width(), round(100 / (1000 / 72) * plt.em_px())), max(a.height(), b.height(), round(100 / (1000 / 72) * plt.em_px())))
 
     def sizeHint(self):
-        return QtCore.QSize(900, 600)
+        return QtCore.QSize(round(900 / (1000 / 72) * plt.em_px()), round(600 / (1000 / 72) * plt.em_px()))
 
 
 class RideBand(QtWidgets.QWidget):
@@ -804,10 +803,11 @@ class Checks(Control):
         self._title = title or ''
         frame = QtWidgets.QFrame()
         frame.setObjectName('box')
-        frame.setStyleSheet(FRAME_CSS)
+        frame.setStyleSheet(FRAME_CSS % (round(1 / (1000 / 72) * plt.em_px()), round(3 / (1000 / 72) * plt.em_px())))
         lay = QtWidgets.QVBoxLayout(frame)
-        lay.setContentsMargins(4, 2, 4, 2)
-        lay.setSpacing(1)
+        lay.setContentsMargins(round(4 / (1000 / 72) * plt.em_px()), round(2 / (1000 / 72) * plt.em_px()),
+                               round(4 / (1000 / 72) * plt.em_px()), round(2 / (1000 / 72) * plt.em_px()))
+        lay.setSpacing(round(1 / (1000 / 72) * plt.em_px()))
         self._title_w = None
         if self._title:
             self._title_w = QtWidgets.QLabel(self._title)
@@ -831,7 +831,7 @@ class Checks(Control):
                 lay.addLayout(r)
             elif ind:
                 r = QtWidgets.QHBoxLayout()
-                r.setContentsMargins(int(ind), 0, 0, 0)
+                r.setContentsMargins(int(round(ind / (1000 / 72) * plt.em_px())), 0, 0, 0)
                 r.addWidget(cb)
                 r.addStretch(1)
                 lay.addLayout(r)
@@ -898,10 +898,11 @@ class Radio(Control):
         self._title = title or ''
         frame = QtWidgets.QFrame()
         frame.setObjectName('box')
-        frame.setStyleSheet(FRAME_CSS)
+        frame.setStyleSheet(FRAME_CSS % (round(1 / (1000 / 72) * plt.em_px()), round(3 / (1000 / 72) * plt.em_px())))
         lay = QtWidgets.QVBoxLayout(frame)
-        lay.setContentsMargins(4, 2, 4, 2)
-        lay.setSpacing(1)
+        lay.setContentsMargins(round(4 / (1000 / 72) * plt.em_px()), round(2 / (1000 / 72) * plt.em_px()),
+                               round(4 / (1000 / 72) * plt.em_px()), round(2 / (1000 / 72) * plt.em_px()))
+        lay.setSpacing(round(1 / (1000 / 72) * plt.em_px()))
         self._title_w = None
         if self._title:
             self._title_w = QtWidgets.QLabel(self._title)
@@ -1098,14 +1099,14 @@ class Text(Control):
         w = QtWidgets.QWidget()
         lay = QtWidgets.QHBoxLayout(w)
         lay.setContentsMargins(0, 0, 0, 0)
-        lay.setSpacing(3)
+        lay.setSpacing(round(3 / (1000 / 72) * plt.em_px()))
         self._lab = QtWidgets.QLabel(self.label)
         lay.addWidget(self._lab)
         if not self.label.strip():
             self._lab.hide()
         e = _DigitEdit(str(value), self)
         e.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._base_w = int(width) if width is not None else int(round(self.spec.get('w', 0.6) * plt.DPI))
+        self._base_w = int(round(width / (1000 / 72) * plt.em_px())) if width is not None else int(round(self.spec.get('w', 0.6) * 72 * plt.px_per_pt()))
         if fig is None:
             e.setMaximumWidth(self._base_w)          # its window scales it
         else:
@@ -1243,7 +1244,8 @@ class Count(Text):
         """The box's frame in `color` (a marker group's colour)."""
         if color != self._color:
             self._color = color
-            self.widget.setStyleSheet(f"QLineEdit#count {{ border: 2px solid {qcolor(color).name()}; border-radius: 3px; }}")
+            self.widget.setStyleSheet(f"QLineEdit#count {{ border: {round(2 / (1000 / 72) * plt.em_px())}px solid {qcolor(color).name()}; "
+                                      f"border-radius: {round(3 / (1000 / 72) * plt.em_px())}px; }}")
 
 
 class Value(Text):
@@ -1340,7 +1342,7 @@ class Slider(Control):
         sl.setPageStep(max(1, (int(vmax) - int(vmin)) // 20))
         self.slider = sl
         self.readout = QtWidgets.QLabel(str(int(value)))
-        self.readout.setMinimumWidth(36)
+        self.readout.setMinimumWidth(round(36 / (1000 / 72) * plt.em_px()))
         lay.addWidget(sl, 1)
         lay.addWidget(self.readout)
         self._release = None
@@ -1435,8 +1437,8 @@ class TextPanel(Control):
         self.widget.setFont(f)
         if self._lines:
             # `lines` lines of text tall: exactly (fixed) or at least; more text scrolls.
-            fm = QtGui.QFontMetrics(f)
-            h = int(fm.lineSpacing() * self._lines + 2 * self.widget.document().documentMargin() + 4)
+            fm = QtGui.QFontMetricsF(f)
+            h = int(fm.lineSpacing() * self._lines + 2 * self.widget.document().documentMargin() + 4 / (1000 / 72) * plt.em_px())
             if self._fixed:
                 self.widget.setFixedHeight(h)
             else:
@@ -1531,7 +1533,7 @@ class StepButtons:
         if chevrons:
             for b in (self.left, self.right):
                 b.spec['fs'] = 13
-                b.widget.setStyleSheet("QPushButton { font-weight: bold; padding: 0px 10px; }")
+                b.widget.setStyleSheet(f"QPushButton {{ font-weight: bold; padding: 0px {round(10 / (1000 / 72) * plt.em_px())}px; }}")
         self._cb = None
         self.left.on_change(lambda: self._fire(-1))
         self.right.on_change(lambda: self._fire(+1))
@@ -1695,6 +1697,22 @@ def _shaped_size(widget, W, H):
         return None
 
 
+def _panel_shapes(widget):
+    """
+    The shapes of the panels in `widget` (the widget itself when it is a panel cell), in order: each
+    cell's height over width (PanelCell.shape_ratio, rounded as Axes._notify_shape rounds it; None
+    for a free panel).  A crop or a turn of a panel changes it, a panel added or removed too; the text
+    of a label or a tick value never does (a container's layout request re-places only on a change).
+    """
+    cells = [widget] if isinstance(widget, plt.PanelCell) else []
+    cells += [c for c in widget.findChildren(QtWidgets.QWidget) if isinstance(c, plt.PanelCell)]
+    out = []
+    for c in cells:
+        r = c.shape_ratio()
+        out.append(None if r is None else round(float(r), 4))
+    return tuple(out)
+
+
 class Titled(QtWidgets.QWidget):
     """
     A shaped group with a label over it (the 'LDOS' label over the heatmap row or the energy maps):
@@ -1706,12 +1724,12 @@ class Titled(QtWidgets.QWidget):
         super().__init__()
         lay = QtWidgets.QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
-        lay.setSpacing(spacing)
+        lay.setSpacing(round(spacing / (1000 / 72) * plt.em_px()))
         self.label = _qw(label)
         lay.addWidget(self.label, 0, QtCore.Qt.AlignmentFlag.AlignHCenter)
         lay.addWidget(body, 1)
         self.body = body
-        self._sp = int(spacing)
+        self._sp = int(round(spacing / (1000 / 72) * plt.em_px()))
 
     def _label_h(self):
         return 0.0 if self.label.isHidden() else float(self.label.sizeHint().height()) + self._sp
@@ -1750,7 +1768,7 @@ class FlipBox(QtWidgets.QWidget):
         super().__init__()
         self._lay = QtWidgets.QBoxLayout(QtWidgets.QBoxLayout.Direction.LeftToRight, self)
         self._lay.setContentsMargins(0, 0, 0, 0)
-        self._lay.setSpacing(spacing)
+        self._lay.setSpacing(round(spacing / (1000 / 72) * plt.em_px()))
         for it in items:
             w, st = (it if isinstance(it, tuple) else (it, 1))
             self._lay.addWidget(_qw(w), int(st))
@@ -1778,10 +1796,10 @@ class FlipBox(QtWidgets.QWidget):
         super().resizeEvent(ev)
 
     def minimumSizeHint(self):
-        return QtCore.QSize(120, 90)
+        return QtCore.QSize(round(120 / (1000 / 72) * plt.em_px()), round(90 / (1000 / 72) * plt.em_px()))
 
     def sizeHint(self):
-        return QtCore.QSize(400, 300)
+        return QtCore.QSize(round(400 / (1000 / 72) * plt.em_px()), round(300 / (1000 / 72) * plt.em_px()))
 
 
 class CropPanel(QtWidgets.QWidget):
@@ -1801,8 +1819,8 @@ class CropPanel(QtWidgets.QWidget):
         super().__init__()
         grid = QtWidgets.QGridLayout(self)
         grid.setContentsMargins(0, 0, 0, 0)
-        grid.setHorizontalSpacing(spacing)
-        grid.setVerticalSpacing(spacing)
+        grid.setHorizontalSpacing(round(spacing / (1000 / 72) * plt.em_px()))
+        grid.setVerticalSpacing(round(spacing / (1000 / 72) * plt.em_px()))
         self.above = AbovePanel(ax, *items)
         self.band_x = RideBand('h')
         self.band_y = RideBand('v')
@@ -1813,7 +1831,7 @@ class CropPanel(QtWidgets.QWidget):
         grid.setColumnStretch(0, 1)
         grid.setRowStretch(2, 1)
         self.cell = cell
-        self._sp = int(spacing)
+        self._sp = int(round(spacing / (1000 / 72) * plt.em_px()))
 
     def _box_h(self):
         # Measured once per layout pass (plt.pass_cached): the arrangement asks it hundreds of times in one.
@@ -1868,7 +1886,7 @@ class MapBlock(QtWidgets.QWidget):
     def __init__(self, fig, spacing=4):
         super().__init__()
         self.fig = fig
-        self._sp = int(spacing)
+        self._sp = spacing / (1000 / 72) * plt.em_px()
         self._groups = []             # [(cells, bar)]
         self._shared = None
         self._extra = None            # the extra cell (set_groups), one map's size at the first free slot
@@ -1880,7 +1898,7 @@ class MapBlock(QtWidgets.QWidget):
         self.setSizePolicy(pol.Expanding, pol.Expanding)
 
     def _invalidate(self):
-        """The cells' measured room forgotten: measured again at the next size question (a new layout pass: set_groups, a resize, a layout request, rearrange)."""
+        """The cells' measured room forgotten: measured again at the next size question (a new placement of the block: set_groups, a resize, rearrange, a layout request with a map's shape changed)."""
         self._metrics_cache = None
         self._best_cache = {}
 
@@ -2026,7 +2044,7 @@ class MapBlock(QtWidgets.QWidget):
         if total > H:
             box_h = max((H - (R - 1) * self._sp - tb_sum) / R, 1.0)
             box_w = box_h / r
-        cw = max(box_w + lr, m['title_w'] + 4.0)                 # a cell at least as wide as its title
+        cw = max(box_w + lr, m['title_w'] + 4.0 / (1000 / 72) * plt.em_px())                 # a cell at least as wide as its title
         w = n * (cw + cbw) + (n - 1) * self._sp + bar_w
         h = R * (box_w * r) + tb_sum + (R - 1) * self._sp
         return (w, h, box_w)
@@ -2087,13 +2105,13 @@ class MapBlock(QtWidgets.QWidget):
             return
         W, H = float(self.width()), float(self.height())
         self._invalidate()                                       # a placement: the cells measured anew
-        plt.new_measure_pass()
+        self._last_shapes = _panel_shapes(self)                  # a layout request places again only when it changes
         w, h, box_w, n = self._best(W, H)
         self.cols = n
         m = self._metrics()
         lr = m['lr']
         r = m['ratio']
-        cw = max(box_w + lr, m['title_w'] + 4.0)
+        cw = max(box_w + lr, m['title_w'] + 4.0 / (1000 / 72) * plt.em_px())
         cbw = m['cell_bar_w']
         bar_w = m['bar_w'] - self._sp if m['bar_w'] > 0 else 0.0
         y = 0.0
@@ -2146,15 +2164,17 @@ class MapBlock(QtWidgets.QWidget):
         self._arrange()
 
     def event(self, ev):
-        if ev.type() == QtCore.QEvent.Type.LayoutRequest:
+        if ev.type() == QtCore.QEvent.Type.LayoutRequest and _panel_shapes(self) != getattr(self, '_last_shapes', None):
+            # A cell's layout request places the block again only when a map's shape changed (a turn, a
+            # crop): a title, a colour bar's or a tick axis's text changes nothing (the cells stay).
             self._arrange()
         return super().event(ev)
 
     def minimumSizeHint(self):
-        return QtCore.QSize(120, 80)
+        return QtCore.QSize(round(120 / (1000 / 72) * plt.em_px()), round(80 / (1000 / 72) * plt.em_px()))
 
     def sizeHint(self):
-        return QtCore.QSize(600, 300)
+        return QtCore.QSize(round(600 / (1000 / 72) * plt.em_px()), round(300 / (1000 / 72) * plt.em_px()))
 
 
 class Arrangement(QtWidgets.QWidget):
@@ -2175,7 +2195,10 @@ class Arrangement(QtWidgets.QWidget):
     the one group and it are sized to one scale.  `group_cap` (A, B, k, box_a, box_b): group A's
     plot box never more than k times group B's in width or in height (box_a(rect), box_b(rect):
     their plot boxes (w, h) in a region; the simulator: the topographies at most twice a heatmap);
-    a candidate that breaks it is sized again with A limited (_candidates).  `best_score()` is
+    a candidate that breaks it is sized again with A limited (_candidates).  `fill_slot`: a shaped
+    group (the simulator's Line / Path heatmap row) sized and scored as every group, then placed in
+    its whole slot of the chosen candidate instead of its shaped size at the slot's top left
+    (_slot), its fill panels stretching to it (qtplot.PanelCell.fill_as).  `best_score()` is
     the best candidate's score at the widget's size, nothing placed (the simulator compares its
     unit-cell panels' two orientations with it).  The candidate arrangements for two groups A, B and the free widget F:
 
@@ -2199,15 +2222,16 @@ class Arrangement(QtWidgets.QWidget):
     """
 
     def __init__(self, shaped, free=None, spacing=8, hysteresis=0.05, free_min=None, free_cap=None,
-                 free_scored=False, group_cap=None):
+                 free_scored=False, group_cap=None, fill_slot=None):
         super().__init__()
         self.shaped = [w for w in shaped if w is not None]
         self.free = free
+        self._fill_slot = fill_slot       # the group placed in its whole slot once a candidate is chosen (_slot)
         for w in self.shaped + ([free] if free is not None else []):
             w.setParent(self)
             w.show()
             w.installEventFilter(self)
-        self._sp, self._hys = int(spacing), float(hysteresis)
+        self._sp, self._hys = spacing / (1000 / 72) * plt.em_px(), float(hysteresis)
         self._free_min_fn, self._free_cap_fn, self._free_scored = free_min, free_cap, bool(free_scored)
         self._group_cap = group_cap       # (A, B, k, box_a, box_b): group A's plot box at most k times group B's
         self._lim = {}                    # {group: (max w, max h)} while a candidate is sized under group_cap
@@ -2229,7 +2253,14 @@ class Arrangement(QtWidgets.QWidget):
 
     def _later(self):
         self._pending = False
-        self._arrange()
+        # A child's layout request arranges again only when a group's shape changed (a crop): a label's
+        # width, a tick value or a colour bar's label changes nothing (the panels stay where they are).
+        if self._shapes() != getattr(self, '_last_shapes', None):
+            self._arrange()
+
+    def _shapes(self):
+        """The groups' panel shapes (_panel_shapes of each shaped group)."""
+        return tuple(_panel_shapes(w) for w in self.shaped)
 
     def on_arranged(self, callback):
         """callback(layout_name) after every arrangement."""
@@ -2254,10 +2285,10 @@ class Arrangement(QtWidgets.QWidget):
         return super().event(ev)
 
     def minimumSizeHint(self):
-        return QtCore.QSize(200, 150)
+        return QtCore.QSize(round(200 / (1000 / 72) * plt.em_px()), round(150 / (1000 / 72) * plt.em_px()))
 
     def sizeHint(self):
-        return QtCore.QSize(1000, 700)
+        return QtCore.QSize(round(1000 / (1000 / 72) * plt.em_px()), round(700 / (1000 / 72) * plt.em_px()))
 
     # --- the candidates ---
 
@@ -2575,7 +2606,7 @@ class Arrangement(QtWidgets.QWidget):
             return
         plt.new_measure_pass()
         # The same size, the same group shapes and the same free minimum as the last arrangement give the
-        # same arrangement: it is applied again without the search (a layout request from a child placed).
+        # same arrangement: it is applied again without the search (rearrange() or a show at the same size).
         sig = (round(W, 1), round(H, 1), tuple(_shaped_size(w, W, H) for w in self.shaped), self._free_min(W, H),
                self._free_scored, self.layout_name)
         if self._placed and sig == getattr(self, '_last_sig', None):
@@ -2587,10 +2618,46 @@ class Arrangement(QtWidgets.QWidget):
             name, blank, rects, _ = best
             self.layout_name, self._blank, self._placed = name, blank, rects
             self._last_sig = (sig[0], sig[1], sig[2], sig[3], sig[4], name)
+        self._last_shapes = self._shapes()          # a child's layout request arranges again only when they change
         for w, (x, y, ww, hh) in rects.items():
+            if w is self._fill_slot:
+                # fill_slot: sized and scored at its shaped size, placed in its whole slot.
+                s = self._slot(self.layout_name, rects, W, H, w)
+                if s is not None:
+                    x, y, ww, hh = s
             w.setGeometry(int(round(x)), int(round(y)), max(int(round(ww)), 1), max(int(round(hh)), 1))
         if self._cb is not None:
             self._cb(self.layout_name)
+
+    def _slot(self, name, rects, W, H, w):
+        """
+        Group `w`'s whole slot (x, y, w, h) in candidate `name` (rects: its regions): the part of the
+        widget the candidate's geometry gives the group, whose top left its shaped size takes; it ends
+        at the other group's or the free widget's region (less the spacing), else at the widget's
+        edge, so it never takes room from the other group's slot or the free widget's.  None (the
+        group keeps its shaped rect) without two groups and a free widget, or while the group has no
+        shape (a row with no panel in it yet).
+        """
+        F = self.free
+        if len(self.shaped) != 2 or w not in self.shaped or F is None or F not in rects:
+            return None
+        hfw = getattr(w, 'height_for_width', None)
+        if hfw is None or hfw(float(rects[w][2])) is None:
+            return None
+        A, B = self.shaped
+        sp = self._sp
+        a, b, f = rects[A], rects[B], rects[F]
+        if w is A:
+            ends = {'row_top': (b[0] - sp, f[1] - sp), 'a_left': (b[0] - sp, H), 'a_top': (W, b[1] - sp),
+                    'ab_left': (f[0] - sp, b[1] - sp), 'abf_row': (b[0] - sp, H), 'abf_col': (W, b[1] - sp)}
+        else:
+            ends = {'row_top': (W, f[1] - sp), 'a_left': (W, f[1] - sp), 'a_top': (f[0] - sp, H),
+                    'ab_left': (f[0] - sp, H), 'abf_row': (f[0] - sp, H), 'abf_col': (W, f[1] - sp)}
+        if name not in ends:
+            return None
+        x, y, sw, sh = rects[w]
+        right, bottom = ends[name]
+        return (x, y, max(right - x, sw), max(bottom - y, sh))
 
     # --- what the window reads ---
 

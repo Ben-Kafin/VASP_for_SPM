@@ -48,10 +48,11 @@ Branch: `claude/jolly-babbage-ppmbdj`. Base of part 1's work: b051547.
 - [x] 1.1: `wrong_decays/tilted_barrier_decay_github.py` written; `sim_decay_full.py`, `tier3_decay.py` moved (b051547)
 - [x] 1.2: owner's files copied; `__init__.py` says four files; README `wrong_decays/` row names the GitHub file (b051547)
 - [x] 3.1: qtgui copies made (b051547)
-- [~] 3.2-3.6, 4, 5, 6, 7: in progress (workflow; uncommitted in the working tree)
-- [ ] Owner's ruling 1 applied to `stm_from_dft/qtgui/__init__.py`
-- [ ] Copy `stm_from_dft/qtgui/` over `matcher/qtgui/`; check byte-identical
-- [ ] Part 1: py_compile every changed file; commit; per-file change list (rule 7)
+- [x] 3.2-3.6, 4, 5, 6, 7: implemented, reviewed twice per file group, fixed (open items: `PART1_OPEN.md`)
+- [x] Owner's ruling 1 applied to `stm_from_dft/qtgui/__init__.py`
+- [x] Copy `stm_from_dft/qtgui/` over `matcher/qtgui/`; byte-identical
+- [x] Part 1: py_compile every changed file (30, all pass)
+- [ ] Owner's answers to `PART1_OPEN.md`; apply them; per-file change list (rule 7)
 - [x] Part 2: pre-flight (read-only mapping of every bullet onto the code) done; questions in `PART2_QUESTIONS.md`
 - [x] Owner's answers to `PART2_QUESTIONS.md`: `PART2_ANSWERS.md` (they override the plan; they also add three
       part-2 items: the synthetic DOSCAR removed, procar_dos.py moved to PROCAR_tools/, Map panels kept in

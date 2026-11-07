@@ -3,12 +3,14 @@
 Part 1 is implemented (sections 3 to 7) and went through two independent reviews per file group
 against the plan, then a fixer. These are the items the agents left undone because the plan does not
 decide them, plus two comment-only additions that need your approval. Each has a recommendation (**R:**).
-Answer per item, or "accept all R except ...". The cross-module review is still running; anything it
-finds will be added here.
+Answer per item, or "accept all R except ...". The cross-module review has finished; its one new item
+is P13.
 
-Still to do on my side (no decision needed): your `__init__.py` docstring ruling, and the byte copy of
-`stm_from_dft/qtgui/` over `matcher/qtgui/` (until then `import matcher` fails: the matcher copy still
-has the root's absolute `from qtgui import ...`).
+Done on my side: your `__init__.py` docstring ruling is applied, and `stm_from_dft/qtgui/` is copied
+byte for byte over `matcher/qtgui/` (checked with diff). The root `qtgui/` differs from main only by the
+`'width (V)'` line of plan 1.2; `matplotlib_to_real_gui.md` and the two remaining checks are unchanged.
+All 30 changed .py files pass `python -m py_compile`. No folder walk and no `fit_window()` /
+`_schedule_fit()` call remains in the three packages.
 
 ## Layout and drawing (behaviour)
 
@@ -102,6 +104,17 @@ page size, the hairline drawn while exporting, `rcParams['figure.dpi']`) and mpl
 `from .qtgui import ...` branch) it raises ModuleNotFoundError. Nothing in the repository imports it.
 **R:** put it in the two branches: `from .doscar_parser import ...` in the package branch,
 `from stm_from_dft.doscar_parser import ...` when run directly.
+
+## A dependency the plan's resolve_qt() adds
+
+**P13.** `run_wfn_plane_slice.py` used to import only `run_wfn_mo_sum` (numpy, h5py) and the root qtgui.
+Its new `from mo_ldos_projection._imports import resolve_qt` runs `_imports.py`, whose module level
+imports the matcher package (pymatgen, ase, joblib, matplotlib, ...) before `resolve_qt` is called, so
+every plane-slice run now needs the whole MOPmatcher_mem stack.
+Options: (a) accept; (b) `resolve_qt` (and `resolve_stm`, which imports nothing at module level) in a
+small module that does not import the matcher, imported from there by run_wfn_plane_slice.py;
+(c) make `_imports.py`'s matcher imports lazy.
+**R:** (b).
 
 ## Additions the agents made that the plan does not name (comments only)
 

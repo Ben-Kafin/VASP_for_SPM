@@ -12,10 +12,8 @@ section 9) carried into this suite.
                 of a panel
   mplexport.py  a figure rebuilt in matplotlib for publication files (PDF, EPS, SVG, PNG, TIFF)
 
-This folder is its package's own copy of the layer (the same files are the copy of each of the two
-packages that carry one): its package imports it relatively, with no walk up the folders,
+This folder is its package's own copy of the layer (the same files are the copy in each package
+that carries one), imported relatively from inside the package:
 
     from .qtgui import qtplot as plt, controls, widgets
-
-and its modules import one another relatively (from . import qtplot as plt).
 """

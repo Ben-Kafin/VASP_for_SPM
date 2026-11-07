@@ -14,10 +14,12 @@ collections (a colour per segment kept), texts, annotations, colour bars, legend
 Patch), and the figure's texts.  The controls (buttons, boxes) are not part of the figure, nor
 are the readout texts in the control strip below the panels, hidden axes, or hidden artists.
 
-The matplotlib figure has the window's design size (the window's DESIGN constant, at qtplot.DPI),
-whatever the window's size on screen, and every text its point size as set (the window's text
-zoom, qtplot.window_zoom, is not applied); the panels keep the figure fractions they have on
-screen.  The file is cropped to what is drawn (savefig with bbox_inches='tight').
+The matplotlib figure has the window's design size (the window's DESIGN constant, its pixels
+converted back to inches with qtplot.pt2px: 72 points to the inch, qtplot.px_per_pt pixels per
+point on screen), whatever the window's size on screen, and every text its point size as set
+(the window's text zoom, qtplot.window_zoom, is not applied); the panels keep the figure
+fractions they have on screen.  The file is cropped to what is drawn (savefig with
+bbox_inches='tight').
 
     export(fig, path, dpi=300)       the figure into `path` (format from the extension)
     to_matplotlib(fig)               the matplotlib Figure itself (to adjust before saving)
@@ -27,7 +29,7 @@ screen.  The file is cropped to what is drawn (savefig with bbox_inches='tight')
 
 import numpy as np
 
-from qtgui import qtplot as q
+from . import qtplot as q
 
 
 def available():
@@ -89,7 +91,7 @@ def _ls(ls):
 
 
 def _px_to_pt(px):
-    """Logical pixels (at qtplot.DPI) to points."""
+    """Logical pixels (the screen's, qtplot.pt2px: qtplot.px_per_pt pixels per point) to points."""
     return float(px) / q.pt2px(1.0)
 
 
@@ -120,7 +122,7 @@ def _to_matplotlib(fig):
     """to_matplotlib's rebuild, at the figure's current layout."""
     from matplotlib.figure import Figure
     W0, H0 = fig._design_px
-    mfig = Figure(figsize=(W0 / q.DPI, H0 / q.DPI), dpi=q.DPI)
+    mfig = Figure(figsize=(W0 / q.pt2px(72.0), H0 / q.pt2px(72.0)), dpi=q.DPI)
     mfig.patch.set_facecolor(fig.patch.get_facecolor() if hasattr(fig, 'patch') else 'white')
     axes = [ax for ax in fig._axes if ax._visible]
     cbar_axes = {id(ax) for ax in axes if getattr(ax, '_colorbar', None) is not None}

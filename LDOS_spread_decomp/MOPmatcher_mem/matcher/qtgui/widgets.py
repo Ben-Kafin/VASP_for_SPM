@@ -20,13 +20,9 @@ one Qt widget in its window's Qt layout (controls.py, qtplot.Figure.set_layout),
 holds a position.
 """
 
-if __package__ in (None, ''):
-    # Run as a file (Spyder F5): make the package importable from wherever its folder sits.
-    import os as _os, sys as _sys
-    _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
 import numpy as np
-from qtgui import qtplot as plt
-from qtgui.qtplot import QtWidgets, QtGui, qfont
+from . import qtplot as plt
+from .qtplot import QtWidgets, QtGui, qfont
 
 
 def figure_is_open(fig):
@@ -143,7 +139,7 @@ def _font(fs, zoom=1.0):
 
 def indicator_css(zoom):
     """Check-box and radio indicators as large as the text around them."""
-    n = max(13, int(round(13 * zoom)))
+    n = max(int(round(13 / (1000 / 72) * plt.em_px())), int(round(13 / (1000 / 72) * plt.em_px() * zoom)))
     return (f"QCheckBox::indicator, QRadioButton::indicator {{ width: {n}px; height: {n}px; }}"
             if zoom > 1.15 else "")
 
@@ -347,7 +343,8 @@ class HoverLabels:
             self.clear()
         if self._label is None or self._label not in self.ax._children:
             self._label = self.ax.text(fx, fy, text, transform=self.ax.transAxes, fontsize=8, ha=ha, va=va, color='k',
-                                       zorder=60, offset=(-10.0 if ha == 'right' else 10.0, -10.0 if va == 'top' else 10.0),
+                                       zorder=60, offset=((-10.0 if ha == 'right' else 10.0) / (1000 / 72) * plt.em_px(),
+                                                          (-10.0 if va == 'top' else 10.0) / (1000 / 72) * plt.em_px()),
                                        family='monospace' if self.mono else None,
                                        bbox=dict(facecolor='#ffffe0', edgecolor='#808080', alpha=0.95, lw=0.8))
         else:
@@ -378,7 +375,7 @@ if __name__ == '__main__':
     # Every control of the specification built once by name (controls.make), each in a box frame
     # titled with its name, in one wrapping row of the window's layout (automatic layout: the one
     # rule for every window), so that sizes and labels can be checked at a glance.
-    from qtgui import controls
+    from . import controls
     fig = plt.figure(figsize=(16, 9))
     flow = controls.FlowLayout()
     keep = []
