@@ -60,6 +60,8 @@ Branch: `claude/jolly-babbage-ppmbdj`. Base of part 1's work: b051547.
 - [x] Part 2: the 'width (V)' spec line removed from the root qtgui/widgets.py and both copies (d5e08a4)
 - [~] Part 2 sections 2-11 + X1-X3: workflow running (base d5e08a4; decisions in `PART2_DECISIONS.md`)
 - [ ] Part 2: review, py_compile, commit, per-file change list
+- [ ] Part 3 (owner's handoff to come): its decisions so far are in `PART3_simulator_views_layout_decisions.md`
+      (not part of parts 1 and 2; nothing done for it yet)
 - [ ] Delete this folder in the final commit
 
 ## Open questions for the owner
