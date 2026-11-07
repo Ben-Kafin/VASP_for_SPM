@@ -30,7 +30,7 @@ groups of a view, the placement topo (the Global Topo, where the markers, the li
 path nodes are dragged, with its boxes above), the heatmap row of Line and Path (its label over
 it), the Global Topo and Map Topo pair and the block of energy maps of Map (the maps wrap into the
 rows that make them largest), and the curve panels (Tip Height and Partitioned LDOS with its legend
-panel at its right, side by side or stacked by their room) are placed by the arrangement that
+panel at its right, side by side in Line, side by side or stacked by their room in Path) are placed by the arrangement that
 scores best, the smallest group's size against its size alone less the blank fraction, chosen
 again only when a view's panels are built or their number changes (the drill-down level, the
 per-heatmap colour bars), when a crop changes a

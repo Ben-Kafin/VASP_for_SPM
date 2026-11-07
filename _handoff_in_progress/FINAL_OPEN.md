@@ -135,3 +135,25 @@ record keeps its own"), O2's drag rule, or the decomposition's existing rule; th
   though unread; the fill-row cache keyed by width per layout pass; FlipBox's class docstring.
 - **K9's rule:** the stm README's "side by side or stacked by their room" (Line now always side by side); the wrapper
   README (`LDOS_spread_decomp/README.md`) lines 11-12 (`_resolve.py` finds `stm_from_dft_opt/`).
+
+## After the close-out (wf_4d7d5173-05b)
+
+Done: Map's records keep their decay model and broadening (the decomposition send is refused when they differ); the
+energy-marker release computes at Map's kept heights, model and broadening (the window's broadening restored after
+the one call) and is clipped and snapped to Map's kept window; the Map Topo is drawn from Map's kept heights with
+their bias and LDOS h; Line / Path data keep the view that computed them (a send from the other view is refused);
+sim_wrapper's docstring and the two README texts. Changes: `FINAL_CHANGES.md`.
+Settled (kept as now): before Map's first maps there is nothing kept, so the Map Topo is drawn as before; the RUN-off
+redraw keeps its own test (`cached_mode`), stricter than the send in one sequence (Line, Single Point, Line).
+
+**G1, for the owner (a bug found, older than this work): Line and Path share one tip-height record.** Line's LDOS is
+then computed at Path's tip heights after Line, Path, Line with RUN on and nothing else changed (and Path's at Line's
+after Path, Line, Path). Each view has its own key (Line's ends, Path's nodes), but neither view's tip-height pass
+resets the other's, so returning to Line finds its key unchanged and does not converge its own heights again. The
+Tip Height profile then shows Path's heights along Line, and the spectra and heatmaps are computed at them.
+- (a) When one view converges the shared tip heights, the other view's key is cleared, so returning to it converges
+  its own heights again.
+- (b) Each view keeps its own tip heights with its key, so a return recomputes nothing it already has.
+- (c) Leave it.
+
+R: (a).

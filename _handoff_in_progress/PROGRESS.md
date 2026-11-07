@@ -147,7 +147,8 @@ Branch: `claude/jolly-babbage-ppmbdj`. Base of part 1's work: b051547.
       owner's questions F1-F3 and the settled list `FINAL_OPEN.md`
 - [x] Last workflow: wf_2b54edf1-9c3 (base 2083aa3): N1-N4 and FINAL_OPEN.md's settled list; reviewed, fixed; py_compile
       10 files pass; matcher qtgui = package copy; changes `LAST_CHANGES.md`
-- [~] Final workflow: F2-F4 (ruling 16) and FINAL_OPEN.md's settled list after the last pass
+- [x] Final workflow (wf_3409e76f-c47) and the close-out of F4's consequences (wf_4d7d5173-05b); changes `FINAL_CHANGES.md`
+- [ ] G1 (FINAL_OPEN.md, Line / Path tip heights) once answered
 - [ ] Final checks, this folder deleted, main fast-forwarded (owner's OK)
 - [x] (was) Part 3 implementation, with the response document's sections 2-4 (every qtgui copy, the root included) and 6
       (the colour-map sets): simulator.py and mo_ldos_projection edits wait until part 2's workflow has finished

@@ -9,7 +9,8 @@ Three packages that work together on the same VASP calculations:
 | `mo_ldos_decomp/` | the MO to LDOS projection (`mo_ldos_projection/` package) | `mo_ldos_decomp/run_stm_decomp.py` and the other `run_*.py` there |
 
 The three folders must stay side by side with these names: `mo_ldos_projection/_imports.py`
-finds `MOPmatcher_mem/` and `stm_from_dft_opt/` two levels above itself (next to the
+finds `MOPmatcher_mem/` and `mo_ldos_projection/_resolve.py` (its resolvers re-exported by
+`_imports.py`) finds `stm_from_dft_opt/`, each two levels above itself (next to the
 `mo_ldos_decomp/` folder). `CHANGE_REPORT.md` and `CHANGES_DIFFS.patch` document the changes made
 to the matcher and the decomposition when the extended matcher record (grid amplitudes and cross
 overlaps) was introduced; they are history, not instructions.

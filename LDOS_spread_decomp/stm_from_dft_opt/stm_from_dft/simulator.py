@@ -1100,6 +1100,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         self.cached_d_topo_line, self.cached_d_topo_map, self.cached_d_ldos = None, None, None
         self.cached_bias_energy_line, self.cached_bias_energy_map, self.cached_nepts = None, None, None
         self.cached_ld_up, self.cached_ld_dn, self.cached_eg = None, None, None   # the Line / Path points' LDOS and its energies, kept together (sim_wrapper reads them)
+        self.cached_ld_mode = None                                      # the view that computed them, Line or Path, kept with them (sim_wrapper reads it)
         self.cached_ld_up_gpu, self.cached_ld_dn_gpu = None, None      # the GPU copies the display works from
         self.cached_marker_coords, self.cached_spec_ldos = None, None   # Single Point's marker spectra (Map keeps its own, map_spec_*)
         self.cached_spec_ldos_gpu = None                                # the GPU copy the display works from
@@ -1111,17 +1112,21 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         # change (_update_all): the snapped Map energies (map_e_idx, their energies map_e_targets) and the typed
         # ends and count they were last formed from (map_typed: E Min, E Max, E Pts); the grid's LDOS at them
         # (map_ld_*, with the GPU copies the display works from) and its current (map_current at map_current_E);
-        # the window's snapped ends (map_window), the decay model (map_d_ldos) and the LDOS-topo heights (map_z,
-        # which the contour slice and the shading are drawn from) they were computed with; Map's marker spectra
-        # (map_spec_ldos, with the GPU copy map_spec_ldos_gpu), their energies (map_eg), the markers they were
-        # computed for (map_marker_coords) and their current (map_spec_current at map_spec_current_E).
+        # the window's snapped ends (map_window), the decay model (map_d_ldos), the broadening (map_broadening, a
+        # copy of extra_broadening) and the LDOS-topo heights (map_z, which the Map Topo, the contour slice and the
+        # shading are drawn from, with the bias map_bias and the LDOS h map_ldos_h they were computed at, the Map
+        # Topo's title) they were computed with; Map's marker spectra (map_spec_ldos, with the GPU copy
+        # map_spec_ldos_gpu), their energies (map_eg), the markers they were computed for (map_marker_coords), their
+        # current (map_spec_current at map_spec_current_E) and the decay model and the broadening they were
+        # computed with (map_spec_d_ldos, map_spec_broadening).
         self.map_e_idx, self.map_e_targets, self.map_typed = None, None, None
         self.map_ld_up, self.map_ld_dn, self.map_ld_up_gpu, self.map_ld_dn_gpu = None, None, None, None
         self.map_current, self.map_current_E = None, None
-        self.map_eg, self.map_window, self.map_d_ldos = None, None, None
-        self.map_z = None
+        self.map_eg, self.map_window, self.map_d_ldos, self.map_broadening = None, None, None, None
+        self.map_z, self.map_bias, self.map_ldos_h = None, None, None
         self.map_spec_ldos, self.map_spec_ldos_gpu, self.map_marker_coords = None, None, None
         self.map_spec_current, self.map_spec_current_E = None, None
+        self.map_spec_d_ldos, self.map_spec_broadening = None, None
 
         # --- Path mode state ---
         self.path = None                  # initial seed: all atom-index lists [[154],...] OR all [x,y] coords; no mix
@@ -1267,7 +1272,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
     # ------------------------------------------------------------------
     # 'Feenstra': the display divided by I/V (feenstra.py)
     # ------------------------------------------------------------------
-    def _map_sample_indices(self, targets):
+    def _map_sample_indices(self, targets, ends=None):
         """
         Machinery: the DOSCAR sample each Map energy is snapped to, in the order given: the nearest of
         the displayed samples (_display_indices of E Min and E Max, so an end at exactly 0 V is excluded
@@ -1275,9 +1280,12 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         energy of exactly 0.0 therefore goes to the nearest sample on the window's side of 0, and no Map
         energy lands outside the displayed range.  Map energies on the same sample show the same map.
         Everything a Map energy feeds (its map's LDOS, the map's title, the Map Norm's x, the energy
-        marker) uses its sample's energy (map_e_targets = energies[map_e_idx]).
+        marker) uses its sample's energy (map_e_targets = energies[map_e_idx]).  `ends`: the typed E Min
+        and E Max of the window whose displayed samples are taken (an energy marker's release: Map's kept
+        window, map_typed[:2]); None, the boxes'.
         """
-        disp = self._display_indices(self.s_emin.val, self.s_emax.val)
+        e_min, e_max = (self.s_emin.val, self.s_emax.val) if ends is None else ends
+        disp = self._display_indices(e_min, e_max)
         e_disp = self.energies[disp]
         return np.array([int(disp[0]) + _snap(e_disp, t, 'zero_side')
                          for t in np.asarray(targets, dtype=np.float64).ravel()], dtype=np.int64)
@@ -2956,7 +2964,11 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
             offs = self._cell_offsets(n)
             t_ax.tricontourf(self.grid_xy[:, 0], self.grid_xy[:, 1], z_data, levels=60, cmap=self._cmap('topo'), zorder=1, offsets=offs)
             if self.mode == 'Map':
-                self.ax_map.tricontourf(self.grid_xy[:, 0], self.grid_xy[:, 1], self.current_z_map, levels=60, cmap=self._cmap('topo'), zorder=1, offsets=offs)
+                # The Map Topo from the LDOS-topo heights Map's maps were computed at (map_z, Map's own); before
+                # Map's first maps (none kept), from current_z_map, as before.
+                self.ax_map.tricontourf(self.grid_xy[:, 0], self.grid_xy[:, 1],
+                                        self.current_z_map if self.map_z is None else self.map_z,
+                                        levels=60, cmap=self._cmap('topo'), zorder=1, offsets=offs)
             if self.show_atoms:
                 # The atoms of one type over every image as one item (one colour, one scatter).
                 tr = np.repeat(self.atomtypes, self.atomnums)
@@ -2978,7 +2990,11 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
             t_ax.set_title(f"Global Topo: bias {self.global_topo_bias:.3f} V, height {self.topo_height} Å")
             if self.mode == 'Map':
                 self.ax_map.set_aspect('equal')
-                self.ax_map.set_title(f"Map Topo: bias {self._bias_sample()[1]:.3f} V, height {self.ldos_height} Å")
+                # Titled with the bias and LDOS h those heights were computed at (map_bias, map_ldos_h, kept beside
+                # map_z); before Map's first maps, the window's, as before.
+                m_bias, m_h = ((self._bias_sample()[1], self.ldos_height) if self.map_z is None
+                               else (self.map_bias, self.map_ldos_h))
+                self.ax_map.set_title(f"Map Topo: bias {m_bias:.3f} V, height {m_h} Å")
             if self.mode in ('Line', 'Path'):
                 self.ax_map.add_line(self.line_art)
                 if self.mode == 'Line':
@@ -3099,27 +3115,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
                     self.current_z_map = cp.asnumpy(z_map_gpu)
                     np.save(ldos_cache_name, self.current_z_map)
                 self.cached_bias_energy_map, self.cached_d_topo_map = v_b, decay_model
-                self.ax_map.clear()
-                n = int(self.s_cell.val)
-                offs = self._cell_offsets(n)
-                self.ax_map.tricontourf(self.grid_xy[:, 0], self.grid_xy[:, 1], self.current_z_map, levels=60, cmap=self._cmap('topo'), zorder=1, offsets=offs)
-                # What the full refresh drew on the Map Topo, drawn again on the cleared panel: the atoms of one
-                # type over every image as one scatter, the unit cell and the title.
-                if self.show_atoms:
-                    tr = np.repeat(self.atomtypes, self.atomnums)
-                    for t_idx, t_name in enumerate(self.atomtypes):
-                        m = (tr == t_name)
-                        xs = np.concatenate([self.coord[m, 0] + off[0] for off in offs])
-                        ys = np.concatenate([self.coord[m, 1] + off[1] for off in offs])
-                        self.ax_map.scatter(xs, ys, s=10, color=plt.cm.tab10(t_idx / 10), alpha=0.3, zorder=2)
-                if self.show_unit_cell:
-                    v0, v1, v2, v3 = np.array([0, 0]), self.lv[0, :2], self.lv[0, :2] + self.lv[1, :2], self.lv[1, :2]
-                    cell_pts = np.array([v0, v1, v2, v3, v0])
-                    self.ax_map.plot(cell_pts[:, 0], cell_pts[:, 1], color='cyan', lw=2.0, ls='-', zorder=4, label='Unit Cell')
-                self.ax_map.set_aspect('equal')
-                self.ax_map.set_title(f"Map Topo: bias {self._bias_sample()[1]:.3f} V, height {self.ldos_height} Å")
-                self.ax_map.add_collection(self.marks)
-                self._apply_crop()                 # the Map Topo takes the placement topo's crop
+                # The Map Topo is drawn again from it once Map's maps are computed at it (map_z, below).
 
         if reform:
             # An edit of E Min, E Max or E Pts: the Map energies formed again from the typed ends, np.linspace of
@@ -3132,8 +3128,10 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         if needs_ldos and self.mode == 'Map':
             # Every map energy (the kept ones, or those just formed) in one call: the LDOS at each grid point, at
             # each map energy's sample, and the current at those samples only (one column per map), into Map's
-            # own caches, with the LDOS-topo heights (map_z, a copy) and the records they were taken with (the
-            # spectrum's energies are kept with Map's marker spectra, below).
+            # own caches, with the LDOS-topo heights (map_z, a copy), the bias and LDOS h they were computed at
+            # (map_bias, map_ldos_h) and the records they were taken with (the window, the decay model and the
+            # broadening: map_window, map_d_ldos, map_broadening; the spectrum's energies are kept with Map's marker
+            # spectra, below).
             grid_z = cp.hstack([self.grid_xy_gpu, cp.asarray(self.current_z_map, dtype=cp.float32)[:, None]])
             ld_up, ld_dn, _, cur = self._calculate_ldos_at_points_gpu(
                 grid_z, None, None, use_energy_decay=self.use_decay, preserve_orbitals=True, with_current=True,
@@ -3144,7 +3142,33 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
             self.map_current = cur
             self.map_current_E = cp.asarray((self.map_e_idx - self.k0).astype(np.float32)) * self.e_step32 + self.e032
             self.map_z = np.array(self.current_z_map, copy=True)
+            self.map_bias, self.map_ldos_h = v_b, self.ldos_height
             self.map_window, self.map_d_ldos = (e_lo, e_hi), decay_model
+            self.map_broadening = dict(self.extra_broadening)
+            if needs_topo:
+                # The LDOS topo just computed (needs_topo, above): the Map Topo drawn again on the cleared panel
+                # from the heights Map's maps were computed at (map_z), with what the full refresh drew on it: the
+                # atoms of one type over every image as one scatter, the unit cell and the title (their bias and
+                # LDOS h, map_bias and map_ldos_h).
+                self.ax_map.clear()
+                n = int(self.s_cell.val)
+                offs = self._cell_offsets(n)
+                self.ax_map.tricontourf(self.grid_xy[:, 0], self.grid_xy[:, 1], self.map_z, levels=60, cmap=self._cmap('topo'), zorder=1, offsets=offs)
+                if self.show_atoms:
+                    tr = np.repeat(self.atomtypes, self.atomnums)
+                    for t_idx, t_name in enumerate(self.atomtypes):
+                        m = (tr == t_name)
+                        xs = np.concatenate([self.coord[m, 0] + off[0] for off in offs])
+                        ys = np.concatenate([self.coord[m, 1] + off[1] for off in offs])
+                        self.ax_map.scatter(xs, ys, s=10, color=plt.cm.tab10(t_idx / 10), alpha=0.3, zorder=2)
+                if self.show_unit_cell:
+                    v0, v1, v2, v3 = np.array([0, 0]), self.lv[0, :2], self.lv[0, :2] + self.lv[1, :2], self.lv[1, :2]
+                    cell_pts = np.array([v0, v1, v2, v3, v0])
+                    self.ax_map.plot(cell_pts[:, 0], cell_pts[:, 1], color='cyan', lw=2.0, ls='-', zorder=4, label='Unit Cell')
+                self.ax_map.set_aspect('equal')
+                self.ax_map.set_title(f"Map Topo: bias {self.map_bias:.3f} V, height {self.map_ldos_h} Å")
+                self.ax_map.add_collection(self.marks)
+                self._apply_crop()                 # the Map Topo takes the placement topo's crop
         elif needs_ldos:
             if self.mode in ('Line', 'Path'):
                 l_idx = self._display_indices(self.s_emin.val, self.s_emax.val)
@@ -3160,11 +3184,13 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
                 ld_up, ld_dn = None, None
 
             if ld_up is not None:
-                # The line's LDOS and its energies, kept together (Single Point's spectra keep theirs: cached_spec_eg).
+                # The line's LDOS and its energies, kept together (Single Point's spectra keep theirs: cached_spec_eg),
+                # and the view that computed them (cached_ld_mode: Line's data are never sent with Path's markers).
                 self.cached_ld_up = cp.asnumpy(ld_up)
                 self.cached_ld_dn = cp.asnumpy(ld_dn) if ld_dn is not None else None
                 self.cached_ld_up_gpu, self.cached_ld_dn_gpu = ld_up, ld_dn
                 self.cached_eg = cp.asnumpy(eg)
+                self.cached_ld_mode = self.mode
             self.cached_emin, self.cached_emax = e_lo, e_hi
             self.cached_d_ldos = decay_model
             self.cached_mode = self.mode
@@ -3200,6 +3226,9 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
                 # The markers' current from the same pass, stored with its samples' GPU energies e0 + (i - k0) step.
                 self.map_spec_current = s_cur
                 self.map_spec_current_E = cp.asarray((spec_idx - self.k0).astype(np.float32)) * self.e_step32 + self.e032
+                # The decay model and the broadening they were computed with: kept through a Decay or broadening
+                # change, they are not sent for the decomposition while these differ from the window's (sim_wrapper).
+                self.map_spec_d_ldos, self.map_spec_broadening = decay_model, dict(self.extra_broadening)
             else:
                 self.cached_spec_ldos_gpu = spec_ldos
                 self.cached_spec_ldos = cp.asnumpy(spec_ldos)
@@ -4296,7 +4325,9 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
             self._drag_moved = True
             return
         elif t_obj == 'emarker' and event.inaxes == self.ax_spec:
-            self.map_e_targets[idx] = np.clip(event.xdata, self.s_emin.val, self.s_emax.val)
+            # Clipped to Map's kept window (the typed ends its energies were last formed from, map_typed[:2]; the
+            # boxes may hold an edit not yet computed).
+            self.map_e_targets[idx] = np.clip(event.xdata, self.map_typed[0], self.map_typed[1])
             for line in self.ax_spec.get_lines():
                 if line.get_label() == f'emarker_{idx}':
                     line.set_xdata([self.map_e_targets[idx], self.map_e_targets[idx]])
@@ -4312,18 +4343,34 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         if self.active_obj is not None and self.active_obj[0] == 'emarker':
             idx = self.active_obj[1]
             target_e = self.map_e_targets[idx]
-            # The released energy snapped to its sample (_map_sample_indices); the marker moves to that sample's
-            # energy, so it marks the energy its map shows.
-            e_idx = int(self._map_sample_indices([target_e])[0])
+            # The released energy snapped to its sample among the displayed samples of Map's kept window
+            # (_map_sample_indices of the typed ends its energies were last formed from, map_typed[:2], whose
+            # snapped ends are map_window); the marker moves to that sample's energy, so it marks the energy its
+            # map shows.
+            e_idx = int(self._map_sample_indices([target_e], ends=self.map_typed[:2])[0])
             self.map_e_idx[idx] = e_idx
             self.map_e_targets[idx] = self.energies[e_idx]
             for line in self.ax_spec.get_lines():
                 if line.get_label() == f'emarker_{idx}':
                     line.set_xdata([self.map_e_targets[idx], self.map_e_targets[idx]])
-            grid_z = cp.hstack([self.grid_xy_gpu, cp.asarray(self.current_z_map, dtype=cp.float32)[:, None]])
-            t_up, t_dn, _, t_cur = self._calculate_ldos_at_points_gpu(
-                grid_z, None, None, use_energy_decay=self.use_decay, preserve_orbitals=True, with_current=True,
-                samples=[e_idx])
+            # The dragged map by the same call and at the same tip heights as the full Map computation: Map's kept
+            # LDOS-topo heights (map_z, not the shared current_z_map), under Map's kept model: its decay model
+            # (map_d_ldos; 'decay_tilt' is Decay on: _effective_decay_model) and its broadening (map_broadening).
+            # While the window's broadening differs from Map's (changed since, while stopped or in another view), the
+            # DOS is rebuilt at Map's for this one call (_apply_extra_broadening) and then at the window's again.
+            kept_broad = self.map_broadening is not None and self.map_broadening != self.extra_broadening
+            if kept_broad:
+                window_broad, self.extra_broadening = self.extra_broadening, dict(self.map_broadening)
+                self._apply_extra_broadening()
+            try:
+                grid_z = cp.hstack([self.grid_xy_gpu, cp.asarray(self.map_z, dtype=cp.float32)[:, None]])
+                t_up, t_dn, _, t_cur = self._calculate_ldos_at_points_gpu(
+                    grid_z, None, None, use_energy_decay=self.map_d_ldos == 'decay_tilt', preserve_orbitals=True,
+                    with_current=True, samples=[e_idx])
+            finally:
+                if kept_broad:
+                    self.extra_broadening = window_broad
+                    self._apply_extra_broadening()
             # Into Map's own caches (map_*): its LDOS columns, the NumPy and the GPU copies.
             self.map_ld_up[:, idx:idx + 1] = cp.asnumpy(t_up[:, 0:1])
             self.map_ld_up_gpu[:, idx:idx + 1] = t_up[:, 0:1]

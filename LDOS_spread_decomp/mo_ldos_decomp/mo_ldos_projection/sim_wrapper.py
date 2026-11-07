@@ -28,8 +28,11 @@ window's automatic layout places them, nothing is placed by hand):
    never recomputes. Otherwise it collects ALL current markers'
    single-point LDOS spectra exactly as the simulator computed them for
    its spectra panel (reusing its cached per-marker arrays; nothing
-   re-derived) over the current energy window, and opens/refreshes the
-   decomposition window. Snapshot semantics: the window reflects the
+   re-derived) with their own energies, and opens/refreshes the
+   decomposition window; while the view's last run does not hold them
+   (none for some marker, computed in another view, or under another
+   decay model or broadening than the window's), it prints why and
+   sends nothing. Snapshot semantics: the window reflects the
    moment of the press; it never live-tracks; pressing again regenerates
    it.
 
@@ -224,6 +227,18 @@ class StmDecompSession:
                 print("[WRAPPER] no per-marker spectra cached — press RUN "
                       "first (nothing was sent).")
                 return None
+            # Map's spectra are kept through a Decay or broadening change
+            # (Single Point's are dropped by one): they are sent only while
+            # the decay model and the broadening they were computed with,
+            # which the simulator keeps with them (map_spec_d_ldos,
+            # map_spec_broadening), are the window's.
+            if sim.mode == "Map" and (
+                    sim.map_spec_d_ldos != sim._effective_decay_model()
+                    or sim.map_spec_broadening != sim.extra_broadening):
+                print("[WRAPPER] Map's per-marker spectra were computed with "
+                      "another decay model or broadening than the window's — "
+                      "press RUN first (nothing was sent).")
+                return None
             # One spectrum for every marker, as the simulator's RUN-off
             # redraw asks (_has_last_run): a marker added since the view's
             # spectra were computed has none, so nothing is sent.
@@ -248,6 +263,14 @@ class StmDecompSession:
             if sim.cached_ld_up is None:
                 print("[WRAPPER] no line LDOS cached — press RUN first "
                       "(nothing was sent).")
+                return None
+            # The view that computed the line LDOS, which the simulator
+            # keeps with it (cached_ld_mode): Line's data are not sent with
+            # Path's markers, nor Path's with Line's, as the simulator's
+            # RUN-off redraw draws only the view's own (_has_last_run).
+            if sim.cached_ld_mode != sim.mode:
+                print("[WRAPPER] the line LDOS was computed in another view "
+                      "— press RUN first (nothing was sent).")
                 return None
             # The line LDOS's own energies, which the simulator keeps with
             # it (cached_eg, written only with cached_ld_*).
