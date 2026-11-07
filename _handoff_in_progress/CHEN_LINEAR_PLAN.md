@@ -46,14 +46,19 @@ numerics come with it, or its weight and one-walk design run under the package's
 - **Texts:** the physics block and module docstring, the README's toggles / Decay / Feenstra / simulator rows, the
   run scripts' comments (Chen only, ruling 3).
 
-## Names (owner, 2026-11-07): "both the exact and linearized are chen's decay, so neither should have the name chen for only that decay"
+## Names (owner, 2026-11-07)
 
-No name that tells the two Decay-on models apart contains "chen" (both are Chen's decay); texts may still say both are
-Chen's. The exact option's computation is unchanged; only its names change.
-- Model names (and cache suffixes): exact 'decay_tilt' (unchanged); linearized 'decay_linear'; off 'decay_k0'.
-- Physics functions: exact `gpu_chen_tunneling_factor` -> `gpu_tilt_factor`; linearized `gpu_linear_factor`; off
+"both the exact and linearized are chen's decay, so neither should have the name chen for only that decay", then
+"exact and linearized are good identifying names for the two. keep those throughout". So "exact" and "linearized" name
+the two Decay-on models everywhere; no name that tells them apart contains "chen"; texts may still say both are Chen's.
+The exact option's computation is unchanged; only its names change.
+- Model names (and cache suffixes): 'decay_exact' (was 'decay_tilt'), 'decay_linearized', off 'decay_k0' (unchanged).
+  The existing '_decay_tilt' topography caches are then not found and are computed once again under '_decay_exact'.
+- Physics functions: `gpu_chen_tunneling_factor` -> `gpu_exact_factor`; new `gpu_linearized_factor`; off
   `gpu_decay_off_factor` (unchanged).
-- Kernels: exact `_CHEN_SWEEP_SRC` / `chen_sweep` / `_chen_sweep_kernel` (and its build cache) -> `_TILT_SWEEP_SRC` /
-  `tilt_sweep` / `_tilt_sweep_kernel`; linearized `_LINEAR_SWEEP_SRC` / `linear_sweep` / `_linear_sweep_kernel`.
-- Every reference outside simulator.py (stm_from_dft/__init__.py, quadrature.py, the stm README) follows; nothing in
-  wrong_decays/ is written (ruling 4).
+- Kernels: `_CHEN_SWEEP_SRC` / `chen_sweep` / `_chen_sweep_kernel` (and its build cache) -> `_EXACT_SWEEP_SRC` /
+  `exact_sweep` / `_exact_sweep_kernel`, its CUDA device function `tilt_weight` -> `exact_weight`; new
+  `_LINEARIZED_SWEEP_SRC` / `linearized_sweep` / `_linearized_sweep_kernel`.
+- The control: the indented row 'linearized' under Decay (off = exact); run_interactive keyword `decay_linearized`.
+- Every reference outside simulator.py (stm_from_dft/__init__.py, quadrature.py, the stm README, sim_wrapper if any)
+  follows; nothing in wrong_decays/ is written (ruling 4).
