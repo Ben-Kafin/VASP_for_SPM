@@ -1115,6 +1115,9 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
     """
 
     def __init__(self, filepath, erange, ldos_height, cmap_set='default 1', unit_cell_num=1):
+        """Machinery: the window's state at start: the VASP outputs parsed (parse_vasp_outputs), the toggles'
+        attributes (Decay on, its model 'exact': decay_linearized False), the views' records and every cache
+        empty; the window itself is opened by run_interactive."""
         super().__init__(filepath, unit_cell_num=unit_cell_num)
         self.parse_vasp_outputs("LOCPOT")
         self.p1, self.p2 = None, None
