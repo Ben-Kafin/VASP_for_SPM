@@ -288,7 +288,8 @@ def _axes(mfig, ax):
                   ncol=kw.get('ncol', 1))
         if kw.get('title'):
             lk['title'] = kw['title']
-            lk['title_fontsize'] = lk['fontsize']      # the title in the legend's font size, as on screen
+            # the title in the legend's font size, bold, as on screen
+            lk['title_fontproperties'] = {'size': lk['fontsize'], 'weight': 'bold'}
         handles = kw.get('handles') if kw.get('handles') is not None else (args[0] if len(args) >= 2 else None)
         labels = kw.get('labels') if kw.get('labels') is not None else (args[1] if len(args) >= 2 else None)
         leg = None

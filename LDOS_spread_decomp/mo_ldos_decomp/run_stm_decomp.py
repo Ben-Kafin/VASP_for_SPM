@@ -110,10 +110,12 @@ sim_kwargs = dict(
     topo_bias=-2.0,                 # V for constant-current topography
     topo_height=5,               # initial tip height above highest atom (Å)
     ldos_bias_sign="neg",          # 'pos' or 'neg' — which slider sets the bias
-    use_decay=True,                # Chen barrier model (turn OFF before sending
-                                   # to decomposition — the button enforces it)
+    use_decay=True,                # the exact tilted barrier for topography
+                                   # convergence and LDOS together (turn OFF
+                                   # before sending to decomposition — the
+                                   # button enforces it)
     show_decay_toggle=True,
-    reuse_cache=True,              # per-σ-dir topo caches
+    reuse_cache=True,              # the run directory's topo caches
     #line_endpoints=None,
     #line_endpoints=([11.935324, -5.631926], [4.789904, 23.200468]),
     

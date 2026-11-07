@@ -37,8 +37,8 @@ new gamma at once; any finite gamma > 0, above 1 and above 2 included).
 The figure is a window of the shared Qt layer (the simulator's qtgui
 copy): the panels fill the figure's automatic grid with one colour bar
 beside the last (automatic layout, nothing placed by hand) and the
-gamma box sits under them; the PNG is written through the layer's
-publication export (matplotlib) before the box is attached.
+gamma box sits under them; the PNG is written as the layer's window
+image (the window at 720 dpi) before the box is attached.
 
 The volumetric files are streamed with run_wfn_mo_sum's chunked reader
 (one full grid in memory per input — needed for interpolation — but
@@ -583,7 +583,8 @@ def run(input_paths, indices: Sequence[int],
     if save_png:
         suffix = "_plane_slice.png" if single else "_plane_slice_compare.png"
         png = os.path.splitext(paths[0])[0] + suffix
-        fig.savefig(png, dpi=300)        # the publication export (qtgui.mplexport: matplotlib writes the file)
+        plt.show(block=False)            # the window shown (laid out) before its image is saved
+        fig.savefig(png, dpi=300)        # the window image (qtgui.qtplot: the window at 720 dpi; the dpi is ignored)
         print(f"[WFNSLICE] wrote {png}")
     # After the PNG save, so saved images stay control-free.
     attach_gamma_widgets(fig, pcms, gamma)

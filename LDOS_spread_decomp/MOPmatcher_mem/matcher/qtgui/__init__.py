@@ -10,7 +10,8 @@ section 9) carried into this suite.
                 (SigmaBox, GammaBox, StepButtons, RunControls) and the layout helpers
   widgets.py    the control table (SPECS, LABELS, SHORT_LABELS) and HoverLabels, the hover label
                 of a panel
-  mplexport.py  a figure rebuilt in matplotlib for publication files (PDF, EPS, SVG, PNG, TIFF)
+  mplexport.py  a figure rebuilt in matplotlib for publication files (PDF, EPS, editable SVG;
+                the PNG and TIFF are the window image)
 
 This folder is its package's own copy of the layer (the same files are the copy in each package
 that carries one), imported relatively from inside the package:

@@ -54,7 +54,7 @@ Colour maps: wherever the package takes a colour map (the if-main inputs
 cmap / cmap_map, line_window_kwargs['cmap'], ...), a matplotlib name
 ('jet', 'viridis', 'RdBu_r', ...), a matplotlib Colormap object, or a
 pyqtgraph ColorMap may be given; to_cmap converts it once (cached) into the
-lookup tables pyqtgraph draws with.  matplotlib, when installed, is used
+lookup tables pyqtgraph draws with.  matplotlib is used
 only to read the colour values of a map given by name or object and, in
 mplexport, to write the publication files; it never draws on screen.
 
@@ -1991,8 +1991,16 @@ class _Axis(pg.AxisItem):
         return _tick_strings(vals, spacing)
 
 
+# Set while a view box handles a drag or the wheel (_ViewBox): a view whose range changes meanwhile was
+# changed with the toolbar's Pan or Zoom (Axes._nav_follow), the views linked to it included.
+_NAVIGATING = [0]
+
+
 class _ViewBox(pg.ViewBox):
-    """A ViewBox without its context menu; navigation only while the toolbar's pan or zoom mode is on."""
+    """
+    A ViewBox without its context menu; navigation only while the toolbar's pan or zoom mode is on;
+    the views its drags and its wheel change are marked as changed with the toolbar (_NAVIGATING).
+    """
 
     def __init__(self, axes):
         super().__init__(enableMenu=False, defaultPadding=0.05)
@@ -2001,6 +2009,22 @@ class _ViewBox(pg.ViewBox):
 
     def resizeEvent(self, ev):
         super().resizeEvent(ev)
+
+    def mouseDragEvent(self, ev, axis=None):
+        """pyqtgraph's drag (Pan: pan with the left button, zoom with the right; Zoom: the rectangle), under _NAVIGATING."""
+        _NAVIGATING[0] += 1
+        try:
+            super().mouseDragEvent(ev, axis)
+        finally:
+            _NAVIGATING[0] -= 1
+
+    def wheelEvent(self, ev, axis=None):
+        """pyqtgraph's wheel zoom (Pan), under _NAVIGATING."""
+        _NAVIGATING[0] += 1
+        try:
+            super().wheelEvent(ev, axis)
+        finally:
+            _NAVIGATING[0] -= 1
 
 
 # ---------------------------------------------------------------------- #
@@ -4197,6 +4221,12 @@ class Axes:
         self._colorbar = None
         self._is_colorbar = False
         self._home = None
+        # The view changed with the toolbar's Pan or Zoom since its last Home or since the window last set
+        # its limits (_nav_follow, _nav_clear): its view line in the info panel, under this key, meanwhile.
+        self._nav_moved = False
+        self._nav_pending = False
+        self._nav_key = f"view {id(self)}"
+        self.vb.sigRangeChanged.connect(self._nav_follow)
         self._aspect = 'auto'
         self._rotated = False          # set_rotated: the axes turned 90 degrees on screen (the data stays as given)
         self._rotor_item = None        # the turned group every item sits in while rotated (_rotor)
@@ -4720,6 +4750,46 @@ class Axes:
     def get_navigate(self):
         return True
 
+    # --- the view changed with the toolbar's Pan or Zoom: a line in the window's info panel ---
+
+    def _nav_follow(self, *args):
+        """
+        The view box's range changed (pyqtgraph's sigRangeChanged).  During a drag or the wheel on a view box
+        (_NAVIGATING) the change was made with the toolbar's Pan or Zoom: the panel's view is marked so
+        (_nav_moved), unless the panel is out of Pan and Zoom (a colour bar, or get_navigate() False).  While it
+        is marked, its view line follows every change of its limits (_nav_line, once per event-loop turn).
+        """
+        if _NAVIGATING[0] and self.get_navigate() and not self._is_colorbar:
+            self._nav_moved = True
+        if self._nav_moved and not self._nav_pending:
+            self._nav_pending = True
+            QtCore.QTimer.singleShot(0, self._nav_line)
+
+    def _nav_line(self):
+        """
+        The panel's view line in the window's info panel (Figure.set_info_line) while its view is the one the
+        toolbar's Pan or Zoom made (_nav_moved): the panel by its title, else by its place among the figure's
+        panels ('panel k', as export_csv names it), then its x and y limits (get_xlim, get_ylim); none otherwise.
+        """
+        self._nav_pending = False
+        fig = self.figure
+        if getattr(fig, '_closed', False):
+            return
+        text = ''
+        if self._nav_moved:
+            name = " ".join(str(self._title_full).split())
+            if not name:
+                name = f"panel {fig._axes.index(self) + 1}" if self in fig._axes else "panel"
+            (xa, xb), (ya, yb) = self.get_xlim(), self.get_ylim()
+            text = f"view of {name}: x {xa:.5g} to {xb:.5g}, y {ya:.5g} to {yb:.5g}"
+        fig.set_info_line(self._nav_key, text)
+
+    def _nav_clear(self):
+        """The panel's view is no longer the toolbar's (Home, or the window set its limits again): its view line removed."""
+        if self._nav_moved:
+            self._nav_moved = False
+            self.figure.set_info_line(self._nav_key, '')
+
     def set_axes_locator(self, locator):
         """matplotlib's axes locator: not needed, a panel's place is its layout cell (automatic layout)."""
         pass
@@ -4785,6 +4855,7 @@ class Axes:
             self._cell.unbind(self)
             fig._auto_dispose(self._cell)
         fig._set_info(self, '')
+        self._nav_clear()                          # its view line, when it had one
         fig.__dict__.get('_hover_labels', {}).pop(self, None)     # the hover label registered on this axes (widgets.HoverLabels)
 
     # --- clearing ---
@@ -4867,6 +4938,7 @@ class Axes:
                 self.vb.enableAutoRange(axis, False)
                 self.vb.linkedViewChanged(src.vb, axis)
         self._home = None
+        self._nav_clear()                      # the limits are the window's again: no view line
         self._target_x = self._target_y = None
         self._legend_clear = False
         self._place()
@@ -4890,6 +4962,8 @@ class Axes:
             self._title = None
         full = '' if label is None else str(label)
         self._title_full = full
+        if self._nav_moved:
+            self._nav_follow()                 # the view line names the panel by its new title
         label = short_title(full, self.figure.portrait)
         self.figure._set_info(self, full if full.strip() != label else '')
         size = font_pt(fontsize, self._title_size)
@@ -5154,6 +5228,7 @@ class Axes:
     def _store_home(self):
         (xa, xb), (ya, yb) = self.vb.viewRange()
         self._home = (xa, xb, ya, yb)
+        self._nav_clear()                      # the window set the limits: no view line
 
     def get_xlim(self):
         return self._get_lim('x')
@@ -5204,6 +5279,7 @@ class Axes:
     def autoscale(self, enable=True, axis='both', tight=None):
         if enable:
             self.vb.enableAutoRange(x=axis in ('both', 'x'), y=axis in ('both', 'y'))
+            self._nav_clear()                  # the window set the limits (to the data's): no view line
 
     def autoscale_view(self, *a, **k):
         pass
@@ -5327,6 +5403,7 @@ class Axes:
     def _home_view(self):
         if self._is_colorbar:
             return
+        self._nav_clear()                      # Home: the view as the window set it, no view line
         cb = getattr(self, 'home_callback', None)
         if cb is not None:
             # An axes whose view a controller owns (home_callback set by the window):
@@ -6289,8 +6366,7 @@ class NavigationToolbar(QtWidgets.QToolBar):
         self.a_zoom.toggled.connect(lambda on: self._mode('zoom rect' if on else ''))
         self.addSeparator()
         a = self.addAction(st.standardIcon(sp.SP_DialogSaveButton), 'Save')
-        a.setToolTip('Save exactly what the window shows: PDF / EPS / SVG (vector, editable) with the full info panel, '
-                     'an SVG of the whole window as Qt draws it, PNG / TIFF of the window at 720 dpi, or the curves as CSV')
+        a.setToolTip('Save the figure: PDF / EPS / SVG for publication (matplotlib), PNG / TIFF / SVG as on screen, or the curves as CSV')
         a.triggered.connect(self._save)
         spacer = QtWidgets.QWidget()
         spacer.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Preferred)
@@ -6389,10 +6465,9 @@ class NavigationToolbar(QtWidgets.QToolBar):
 class FigureManager:
     """
     The figure's window (matplotlib's Qt window): the navigation toolbar on top, the canvas, and
-    the info panel docked at the bottom (set_info: Figure.info_text, the details cut from the
-    titles, the window's own lines and the settings section of its controls; wrapped at its width;
-    hidden only until its first text, which comes when the window is shown, and once closed by hand
-    it stays closed).  The window opens at the canvas's size plus
+    the info panel docked at the bottom (set_info: Figure.info_text, the details cut from the titles,
+    the window's own lines and the settings of its controls; hidden while
+    empty, and once closed by hand it stays closed).  The window opens at the canvas's size plus
     the toolbar, limited to the screen's available area (98 % of its width, 95 % of its height).
     """
 
@@ -6524,8 +6599,7 @@ class Figure:
     the Qt controls of controls.py in the same layout, and (in its own window) a navigation toolbar
     and an info panel.  Its text zoom (font_zoom) and shape
     (portrait) follow the canvas (_relayout, on every resize); the design size it was opened with
-    (_design_px) is the reference of both.  A saved file is the window at its size on screen
-    (savefig).
+    (_design_px) is the reference of both.
     """
 
     def __init__(self, figsize=(6.4, 4.8), num=None, embed=False, fill_screen=False):

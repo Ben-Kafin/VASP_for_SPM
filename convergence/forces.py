@@ -175,12 +175,21 @@ def forces(outcar,poscar,**args):
     def arrow_length(f):
         return arrow_length_for(state['scaling'],f)
 
+    def view_line():
+        #the 3D view (its rotation and zoom) as a window line of the information panel: the
+        #elevation and azimuth (degrees) and the axis limits as the panel shows them; called
+        #whenever they may have changed (the line is rewritten only when its text changes)
+        (x0,x1),(y0,y1),(z0,z1)=ax.get_xlim3d(),ax.get_ylim3d(),ax.get_zlim3d()
+        fig.set_info_line('3d view','view of the 3D panel: elevation {:.5g}°, azimuth {:.5g}°, x {:.5g} to {:.5g}, '
+                          'y {:.5g} to {:.5g}, z {:.5g} to {:.5g}'.format(ax.elev,ax.azim,x0,x1,y0,y1,z0,z1))
+
     def apply_limits():
         #zoomed limits persist in state so redraws (stepping, window changes) keep the current zoom
         ax.set_xlim(state['lims'][0][0],state['lims'][0][1])
         ax.set_ylim(state['lims'][1][0],state['lims'][1][1])
         ax.set_zlim(state['lims'][2][0],state['lims'][2][1])
         ax.set_box_aspect(tuple(state['lims'][i][1]-state['lims'][i][0] for i in range(3)))
+        view_line()
 
     def draw_step(step):
         ax.cla()
@@ -275,6 +284,13 @@ def forces(outcar,poscar,**args):
         #matplotlib's built-in 3D pan (right-button drag) shifts the axis limits internally:
         #capture them so redraws keep the panned view
         state['lims']=[list(ax.get_xlim3d()),list(ax.get_ylim3d()),list(ax.get_zlim3d())]
+        view_line()
+
+    def on_motion3d(event):
+        #matplotlib's built-in 3D rotation (left drag) and pan (right drag) change the view while
+        #the mouse moves (its own motion callback, connected before this one, runs first): the
+        #3D view's window line follows
+        view_line()
 
     def on_key(event):
         #arrow keys step through frames one at a time, so consecutive steps that share
@@ -310,6 +326,7 @@ def forces(outcar,poscar,**args):
     fig.canvas.mpl_connect('key_press_event',on_key)
     canvas3d.mpl_connect('key_press_event',on_key)
     canvas3d.mpl_connect('button_release_event',on_release3d)
+    canvas3d.mpl_connect('motion_notify_event',on_motion3d)
     canvas3d.mpl_connect('scroll_event',on_scroll)
 
     def update_ylim():

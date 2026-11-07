@@ -135,7 +135,10 @@ Branch: `claude/jolly-babbage-ppmbdj`. Base of part 1's work: b051547.
 - [x] Part 3 implemented, reviewed (fidelity, scope/correctness per group), fixed, integration-reviewed: wf_237d8a97-ab0
       (base adf1e25); py_compile 27 files pass; the matcher qtgui copy = the package copy; changes `PART3_CHANGES.md`;
       points for the owner `PART3_OPEN2.md` (N1-N4)
-- [ ] Follow-up: ruling 12's answers, the addendum's integration, N1-N4 once answered
+- [x] Follow-up (ruling 12's answers, the addendum's integration): wf_a3502bdb-787 (base cfe6242), reviewed, fixed,
+      integration-reviewed; py_compile 21 files pass; matcher qtgui = package copy; changes `FOLLOWUP_CHANGES.md`;
+      owner's questions F1-F3 and the settled list `FINAL_OPEN.md`
+- [ ] Last workflow: N1-N4 (ruling 13), FINAL_OPEN.md's settled list, F1-F3 once answered
 - [x] (was) Part 3 implementation, with the response document's sections 2-4 (every qtgui copy, the root included) and 6
       (the colour-map sets): simulator.py and mo_ldos_projection edits wait until part 2's workflow has finished
       (one workflow edits a file at a time)

@@ -29,10 +29,11 @@ ratio, nothing plotted is shrunk to make room, and blank space is what is minimi
 groups of a view, the placement topo (the Global Topo, where the markers, the line ends and the
 path nodes are dragged, with its boxes above), the heatmap row of Line and Path (its label over
 it), the Global Topo and Map Topo pair and the block of energy maps of Map (the maps wrap into the
-rows that make them largest), and the curve panels (Tip Height and Partitioned LDOS, side by side
-or stacked by their room) are placed by the arrangement that scores best, the smallest group's size
-against its size alone less the blank fraction, chosen again only when a view's panels are built or
-their number changes (the drill-down level, the per-heatmap colour bars), when a crop changes a
+rows that make them largest), and the curve panels (Tip Height and Partitioned LDOS with its legend
+panel at its right, side by side or stacked by their room) are placed by the arrangement that
+scores best, the smallest group's size against its size alone less the blank fraction, chosen
+again only when a view's panels are built or their number changes (the drill-down level, the
+per-heatmap colour bars), when a crop changes a
 panel's shape and when the window is resized (maximizing included); the window is never trimmed to
 its panels, so a maximized window stays full screen. The line ends, the path nodes and the Single
 Point and Map markers recompute on release: the tip heights, the LDOS and the spectra a drag
@@ -45,8 +46,8 @@ and right of (y) the panel shows its value and takes a typed one, Crop applies t
 the cursors as the panel's limits (in Map the Map Topo takes the same) and Uncrop restores the
 extent; a crop changes the panel's shape and the arrangement follows (a tall crop, a tall layout).
 The window opens on the screen's available area. The toolbar has Home, Pan, Zoom and Save; Save writes PDF,
-EPS, SVG, PNG or TIFF through matplotlib (publication files), a PNG or SVG as on screen, a
-screenshot, or the curves as CSV.
+EPS or SVG through matplotlib (publication files), a PNG or TIFF (the window at 720 dpi) or an SVG
+as on screen, or the curves as CSV.
 
 | control | where | what it does |
 |---|---|---|
@@ -56,24 +57,26 @@ screenshot, or the curves as CSV.
 | toggles | beside RUN | `Atoms`, `Decay`, `Norm`, `Feenstra`, `Mag`, `Cell`, `Extend` |
 | `Decay` | toggles | **Physics:** the tunneling matrix element that weights the DOS of every atom image at a tip point, with the tip DOS constant (the s-wave tip of J. Tersoff and D. R. Hamann, Phys. Rev. B 31, 805 (1985)). As in a measurement (C. J. Chen, *Introduction to Scanning Tunneling Microscopy*, 3rd ed., Oxford 2021, Sec. 2.2.3-2.2.4), the topography is converged on the current at one frozen bias (the current of Eq. 2.40 with the weight below: the window [0, V_b], every state weighted at that frozen bias, w(E, V_b)), and the displayed LDOS is dI/dV with the bias swept (that current's derivative at each V: the state entering at the window edge plus the change of every state already in [0, V]; that integral starts at 0 V whether or not the window reaches it). A state at E (eV from E_F) of an atom image at distance d from the tip at bias V carries the weight w(E, V), φ the LOCPOT potential at the tip point minus E_F (Chen's φ̄, one average work function for the junction, taken here at each tip point). On (the default): the exact tilted barrier, w = exp(-S), S = (4 k d / (3 V)) [a₊^(3/2) - b₊^(3/2)], a = φ - E + V, b = φ - E, x₊ = max(x, 0): the WKB exponent 2∫κ dz across a barrier rising linearly from φ - E at the sample to φ - E + V at the tip, κ = 0 wherever the state lies above the barrier (a state above one end sees only the part of the barrier above it; above both ends, w = 1). To first order in (E - V/2)/φ and V/φ it is the energy-dependent element of Chen's Eq. 2.40, exp(-2 κ0 d + κ0 (E - V/2) d / φ) (Eqs. 2.34, 2.37-2.39: κ to first order in the state's energy E - V/2 from the middle of the bias window). Off: exp(-2 κ0 d), the same weight without its energy and bias dependence. κ0 = k √φ = √(2 m φ)/ħ, k = 0.512317 Å⁻¹ eV^-1/2 from m_e, h and e, in every use (the tip-height convergence step included). **Machinery:** V_b is the bias end's snapped DOS sample (the bottom strip row): the topography's window is [0, V_b] from exactly 0 V, with the weight at V_b. All integrals use the rule of `quadrature.py` (its row below). The topography caches carry `_decay_tilt` (on) or `_decay_k0` (off), followed by `_fold` and `_f32` |
 | `Feenstra` | toggles | **Physics:** Feenstra's normalized conductance (dI/dV)/(I/V) on top of the calculated LDOS (`feenstra.py`): at the same tip positions as the display, I(V) from 0 V with the σ broadening in force (I(0) = 0 exactly; a window that does not reach 0 V is extended to it for the integral): with Decay on, the current of the exact tilted barrier at each V, the integral from 0 to V of ρ(E) w(E, V), as the topography's current at its bias; with Decay off, the total LDOS integrated. I/V is the plain I(V)/V, and the spectra, heatmaps and maps are divided by it along their energy axis; every partition, atom and orbital of a point is divided by the same total I/V (with `Mag` on, the magnetization over the total I/V). **Machinery:** I(V) is integrated by the rule of `quadrature.py` (its row below); with Decay on it comes from the same pass as the displayed dI/dV. The current, I/V and the division are computed on the GPU. Display only: no LDOS recompute; `Norm`, when on, acts on the ratio. A point with no states between 0 V and V (0/0) shows 0. The spectrum's y axis and the label over the heatmaps and maps read (dI/dV)/(I/V) |
-| `cmap norm` | bottom strip, Map only | off: every energy map on one colour scale, the largest value over all of them, with one colour bar; on: each map its own scale with its own bar beside it (as the sm4_Browser Map window's `cmap norm`). The maps' colour map is the constructor's `cmap_map`: `MAP_CMAP` by default, the sm4_Browser's (`custom_map`, midnight blue to light sky blue); any matplotlib colour-map name or Colormap |
+| `cmap norm` | bottom strip, Map only | off: every energy map on one colour scale, the largest value over all of them, with one colour bar; on: each map its own scale with its own bar beside it (as the sm4_Browser Map window's `cmap norm`). The maps' colour map is the Map map of the window's colour-map set (the constructor's `cmap_set`; the `cmap set` choice in the left column): `MAP_CMAP` in `default 1`, the sm4_Browser's (`custom_map`, midnight blue to light sky blue), `CET-L6` in `default 2` |
 | contour slice | the topo colour bar beside the Map Topo | the sm4_Browser Map window's: a cyan level line on the bar (half the range at open) is dragged by a press on it, following the cursor's height while the button is down even off the narrow bar sideways; the Map Topo's contour at that height, the perimeters of everything above it (WSxM's flooding, as outlines), is drawn on every energy map as white 1 pt traces, at the 2 × 2 images the maps show, never on the topography panels; the traces go to the publication files with the maps (`contour.py`: marching squares on the height map, placed on the unit cell's lattice) |
 | `Topo h`, `LDOS h` | columns beside the topography panels | the tip heights (Å, 0 to the cell top above the highest atom) with a `Rerun` button each: the height applies when Rerun is pressed while running |
 | bottom strip | under the panels | `Cells` (0 to 4 periodic images each way), `Path Pts` (Path view, 2 to 12 nodes), `Markers` (1 to 10), `E Pts` (Map view, 1 to 20 energy maps), `E Min`, `E Max` (eV, -5 to 5), `LDOS γ` (the heatmaps' power-law colour scale, re-colours only). E Min and E Max snap to the nearest DOS sample (a tie: E Min to the higher sample, E Max to the lower); an end of exactly 0 is exactly 0 V, not a sample: it makes the other end the bias; each Map energy snaps to the nearest displayed sample, a tie going to the sample closer to 0 |
 
 Every count and value is a number box: type a value and press Enter, or select a digit and press
 Up or Down to step it (a Value stops at its limits; a step applies at once). Markers, line ends,
-path nodes and the energy markers of the Map view are dragged with the mouse; a click on a curve
-of the Partitioned LDOS panel descends a level (partition, atom types, atoms, orbitals) and a click
-beside the curves ascends. At the orbital level the curves carry hover labels. The MO to LDOS
-decomposition wrapper (`mo_ldos_decomp`) adds its σ box and its `Send to decomp` buttons to the
-left column through `Interactive_STM_Simulator.add_control_box`.
+path nodes and the energy markers of the Map view are dragged with the mouse; a left click on a
+curve of the Partitioned LDOS panel, or on its entry in the legend panel at its right, descends a
+level (partition, atom types, orbitals) and a right click in the panel or in its legend panel, or
+the legend panel's Back button, ascends. At the orbital level the curves carry hover labels. The
+MO to LDOS decomposition wrapper (`mo_ldos_decomp`) adds its σ box and its `Send to decomp`
+buttons to the left column through `Interactive_STM_Simulator.add_control_box`.
 
 ## Package `stm_from_dft/`
 
 | module | role |
 |---|---|
-| `simulator.py` | `Unified_STM_Simulator` (GPU LDOS, the integration rule of `quadrature.py`, the tunneling matrix element of the exact tilted barrier `gpu_chen_tunneling_factor`, constant-current convergence, caches; the GPU computes in float32 from the float64 DOS grid: one step, each sample's energy formed from its index, so the samples are exactly equally spaced) and `Interactive_STM_Simulator` (the window: its controls made once, its panels per view, on the package's own `qtgui` copy, `stm_from_dft/qtgui/`). The decay model is described in the `Decay` row above |
+| `simulator.py` | **Physics** (the block THE DECAY MODEL at the top of the file): the tunneling matrix element of the exact tilted barrier `gpu_chen_tunneling_factor` and the Decay-off weight `gpu_decay_off_factor`. The decay model is described in the `Decay` row above. **Machinery** (NUMERICS AND GPU, the rest of the file): `Unified_STM_Simulator` (GPU LDOS, the integration rule of `quadrature.py`, constant-current convergence, caches; the GPU computes in float32 from the float64 DOS grid: one step, each sample's energy formed from its index, so the samples are exactly equally spaced) and `Interactive_STM_Simulator` (the window: its controls made once, its panels per view, on the package's own `qtgui` copy, `stm_from_dft/qtgui/`) |
+| `ldos_decomp.py` | the decomposition of the Partitioned LDOS panel, everything in it that depends on its level (display machinery, no physics): its state (the level, the active marker, the active element), the partitions the maps and heatmaps show at each level, the spectrum's curves and the legend panel's title and entries, the click rules, the hover labels of the orbital curves and its line in the information panel |
 | `feenstra.py` | the `Feenstra` toggle's arithmetic (CuPy): `current_from_ldos` (I(V), the LDOS integrated from 0 V), `iv_ratio` (the plain I/V; a sample exactly at 0 V given its neighbours' I/V), `divide` |
 | `quadrature.py` | the integration rule (CuPy, float32): `simpson` (SciPy 1.18.1's composite Simpson, written out for the GPU) and `integral_from_zero` (from 0 V: the cubic through the two samples on each side of 0 V, E₋₂, E₋₁, E₁, E₂ (through E₋₁, 0, E₁, E₂ above and E₋₂, E₋₁, 0, E₁ below when a sample is at 0 V), its value at 0 V used by the unequal pair next to 0 V when the interval count is even, its exact integral over the interval next to 0 V when the count is odd, Simpson pairs over the rest) |
 | `doscar_parser.py` | `SpinAwareDosParser`, `SpinMode`: DOSCAR reader for all three spin modes; the energies are rebuilt from line 6 as an even grid, E min + i (E max - E min)/(NEDOS - 1), minus E_F, the printed column only checked against it, within half a unit of its last printed decimal plus 1e-6 eV. `read_doscar_header` reads only the header and gives the decomposition package its E_F |
@@ -94,10 +97,11 @@ them: the topographies and the heatmaps are sized first and fill the window (a t
 more than twice a heatmap; the Line view's Topo panel is 2:3, width to height, L/3 either side of
 the line by its length L; the Line and Path heatmaps are sized as squares, then fill their row's
 whole slot, stretched in x or y, never taking room from another panel); the curve panels (the Tip
-Height profile and the Partitioned LDOS) take the room those leave, never less
-than a readable size; in Map the spectrum is one cell of the map block, a map's size, in the free
-slot of the last row; and in Single Point the spectrum stands beside the placement topo as its
-equal. The panels drawn in the unit cell's frame (the Global Topo, the Map
+Height profile and the Partitioned LDOS, its legend panel of one fixed width at its right) take the
+room those leave, never less than a readable size; in Map the spectrum is one cell of the map block,
+a map's size, in the free slot of the last row, its legend panel at its right in that row, counted
+in the block's width; and in Single Point the spectrum, its legend panel at its right, stands beside
+the placement topo as its equal. The panels drawn in the unit cell's frame (the Global Topo, the Map
 Topo and the energy maps; the placement topo of the other views) are shown as drawn or turned 90
 degrees anticlockwise (x up, y to the left: a rotation, never a mirror), whichever fits the window
 better; that is decided when a view is built and again on Crop / Uncrop, never on a resize, and the

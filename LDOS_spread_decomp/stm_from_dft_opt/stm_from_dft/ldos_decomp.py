@@ -71,8 +71,20 @@ def _orbit_base(orb):
     return orb
 
 
+def _column_orbitals(orbitals):
+    """
+    Machinery: the orbital names of the displayed LDOS columns, in column order, each once: every name of
+    `orbitals` without its spin suffix (_orbit_base).  In a spin-polarised run `orbitals` has a name for each
+    column of both spin channels ('s_up', 's_down', 'py_up', ...), while each channel's DOS (dos_up) has one
+    column per orbital and the displayed LDOS combines the two channels column by column (the spin sum, or
+    their difference under 'Mag': the simulator's _combine_ldos_display), so a column is named by its base
+    orbital (s, py, pz, ...); without spin channels the names are the columns' own.
+    """
+    return list(dict.fromkeys(_orbit_base(o) for o in orbitals))
+
+
 def _lighten_color(color, amount=0.3):
-    """Machinery: a colour lightened in HLS by `amount` of the way to white (the '_up' orbital curves)."""
+    """Machinery: a colour lightened in HLS by `amount` of the way to white (the old '_up' orbital curves; no curve uses it now)."""
     c = plt.to_rgb(color)
     h, l, s = colorsys.rgb_to_hls(*c)
     return colorsys.hls_to_rgb(h, min(1, l + amount * (1 - l)), s)
@@ -94,10 +106,12 @@ def all_labels(atomtypes, orbitals):
     """
     Machinery: every label any level can show for the loaded data, in order, each once (the legend panel's
     fixed width is the widest of them): level 1's parts, level 2's atom types and level 3's
-    '<element> <orbital>' for every atom type and every orbital, whether or not its column is shown.
-    Level 0's entries have no label.
+    '<element> <orbital>' for every atom type and every displayed column's orbital (_column_orbitals: its
+    base orbital, no '_up' / '_down' names), whether or not its column is shown.  Level 0's entries have
+    no label.
     """
-    labels = list(PARTS) + list(atomtypes) + [_orbital_label(t, orb) for t in atomtypes for orb in orbitals]
+    labels = list(PARTS) + list(atomtypes) + [_orbital_label(t, orb) for t in atomtypes
+                                              for orb in _column_orbitals(orbitals)]
     return list(dict.fromkeys(labels))
 
 
@@ -149,8 +163,9 @@ class Decomp:
     def orbital_columns(self, atomtypes, atomnums, orbitals, dos_up):
         """
         Machinery: the active element's orbital columns that are shown, [(column index, orbital name)]: every
-        column of `orbitals` except one where the element's DOS summed over its atoms (dos_up), and its first
-        and second cp.gradient, all stay below 1e-5.  No columns without an element or without its atoms.
+        displayed column, named by its base orbital (_column_orbitals: one per column, the spin channels
+        combined), except one where the element's DOS summed over its atoms (dos_up), and its first and second
+        cp.gradient, all stay below 1e-5.  No columns without an element or without its atoms.
         The result is kept for the element and the dos_up array object (compared with `is`; the extra
         broadening makes a new array), so a drag computes nothing here.
         """
@@ -161,7 +176,7 @@ class Decomp:
         if self.element is not None:
             atom_types_exp = np.repeat(atomtypes, atomnums)
             e_idx = [i for i, x in enumerate(atom_types_exp) if x == self.element]
-            for col_idx, orb in enumerate(orbitals):
+            for col_idx, orb in enumerate(_column_orbitals(orbitals)):
                 if e_idx:
                     D = cp.sum(dos_up[e_idx, :, col_idx], axis=0)
                     dD = cp.gradient(D)
@@ -218,16 +233,18 @@ class Decomp:
         0); `marker_colors`: the markers' colours in index order; `type_colors`: {atom type: colour} (grey
         for any other); `energies`: the displayed energies (an empty atom set gives zeros of their length);
         `integral`: the integral over the energies when 'Norm' is on (each curve of level 0 divided by its own
-        integral, levels 1 to 3 divided by the active spectrum's total integral, + 1e-15), else None.
+        integral, levels 1 to 3 divided by the active spectrum's total integral, + 1e-15), else None (also
+        under 'Norm' when the spectra given are already divided: in a Line / Path drag the simulator divides
+        them by its kept Norm factors).
           level 0: per marker, its total in its colour, lw 2.5, 'marker_<i>', pickable (5), an entry with no
                    label, clickable with the marker's index;
           level 1: the total faded (black, lw 1.5, alpha 0.1, zorder 1), then Au (orange) and Molecule (black),
                    lw 2, zorder 2, pickable (5), entries, clickable;
           level 2: per atom type, in its colour, lw 2, pickable (3), an entry, clickable with the type;
           level 3: the element's total faded (its colour, lw 2, alpha 0.15, zorder 1), then per shown orbital
-                   column (orbital_columns) the element's orbital: its colour (lightened for '_up'), the
-                   orbital's line style ('_up' and '_down' alike), lw 1.2, zorder 10, not pickable, an entry,
-                   not clickable, with the hover labels.
+                   column (orbital_columns: named by its base orbital, the spin channels combined in `active`)
+                   the element's orbital: its colour, the orbital's line style, lw 1.2, zorder 10, not
+                   pickable, an entry, not clickable, with the hover labels.
         """
         out = []
         if self.level == 0:
@@ -271,10 +288,9 @@ class Decomp:
             for col_idx, orb in self.orbital_columns(atomtypes, atomnums, orbitals, dos_up):
                 y_orb = cp.sum(a[:, e_idx, col_idx], axis=1)
                 ls = linestyle_map[_orbit_base(orb)]
-                p_color = _lighten_color(color, 0.3) if orb.endswith('_up') else color
                 label = _orbital_label(self.element, orb)
-                entry = Entry(label, p_color, ls, 1.2, False, label)
-                out.append(Curve(y_orb, p_color, ls, 1.2, None, 10, label, None, None, False, label, entry, True))
+                entry = Entry(label, color, ls, 1.2, False, label)
+                out.append(Curve(y_orb, color, ls, 1.2, None, 10, label, None, None, False, label, entry, True))
         return out
 
     def legend(self, curves):

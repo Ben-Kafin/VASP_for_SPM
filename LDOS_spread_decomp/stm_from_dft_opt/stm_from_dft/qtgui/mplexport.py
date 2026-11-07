@@ -292,7 +292,8 @@ def _axes(mfig, ax):
                   ncol=kw.get('ncol', 1))
         if kw.get('title'):
             lk['title'] = kw['title']
-            lk['title_fontsize'] = lk['fontsize']      # the title in the legend's font size, as on screen
+            # the title in the legend's font size, bold, as on screen
+            lk['title_fontproperties'] = {'size': lk['fontsize'], 'weight': 'bold'}
         handles = kw.get('handles') if kw.get('handles') is not None else (args[0] if len(args) >= 2 else None)
         labels = kw.get('labels') if kw.get('labels') is not None else (args[1] if len(args) >= 2 else None)
         leg = None
@@ -345,7 +346,8 @@ def _artist(m, a, swap=None):
     legend's handle) or None when nothing is drawn: Line2D -> plot; _RefLine -> axhline / axvline;
     _Span -> axvspan / axhspan; AxesImage -> imshow with its extent, origin, colour map and norm,
     interpolation 'none' (the raw pixels), and its Affine2D (a rotated and translated topography)
-    composed with the data transform; QuadMesh -> pcolormesh (NaN cells masked); ContourSet ->
+    composed with the data transform; QuadMesh -> pcolormesh (NaN cells masked; an RGB(A) mesh
+    with its colours as painted, _rgba, no colour map or norm); ContourSet ->
     contourf from the arguments it was made with; LineCollection and PolyCollection -> the
     matching collections; Annotation -> annotate; Text -> text (empty texts skipped).  Anything
     else is not exported.
@@ -376,6 +378,8 @@ def _artist(m, a, swap=None):
             im.set_transform((tr + swap if turned else tr) + m.transData)
         return im
     if isinstance(a, q.QuadMesh):
+        if a._rgba is not None:           # an RGB(A) mesh: its colours as painted (RGBA 0..1), no colour map or norm
+            return _turned(m.pcolormesh(a._X, a._Y, a._rgba, shading='flat', zorder=a.zorder), swap, m)
         return _turned(m.pcolormesh(a._X, a._Y, np.ma.masked_invalid(a._C), cmap=_mpl_cmap(a.cmap), norm=_mpl_norm(a.norm),
                                     shading='flat', zorder=a.zorder), swap, m)
     if isinstance(a, q.ContourSet):

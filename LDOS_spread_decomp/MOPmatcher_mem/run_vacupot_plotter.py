@@ -27,7 +27,8 @@ from matcher import PlotConfig, RectAEPAWColorPlotter, matcher_vacupot
 MATCH_FILE = r'dir/run_complex/band_matches_rectangular.txt'
 
 # Optional: also save the figure to disk (set to None to skip saving): a publication file
-# through matplotlib (PDF, EPS, SVG, or PNG / TIFF at SAVE_DPI), as the window's Save button.
+# through matplotlib (PDF, EPS, SVG), or the window at 720 dpi (PNG / TIFF), as the window's
+# Save button; SAVE_DPI is ignored.
 SAVE_PATH = None   # e.g. r'dir/output/vacupot_plot.png'
 SAVE_DPI = 300
 
@@ -98,6 +99,7 @@ def main():
     fig, axes = plotter.plot(MATCH_FILE, bonding=BONDING)
 
     if SAVE_PATH:
+        plt.show(block=False)          # the window shown (laid out) before it is saved
         fig.savefig(SAVE_PATH, dpi=SAVE_DPI)
         print(f"[OK] Saved figure to {SAVE_PATH}")
 

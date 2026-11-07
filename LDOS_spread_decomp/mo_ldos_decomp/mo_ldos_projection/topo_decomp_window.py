@@ -138,9 +138,9 @@ class TopoDecompWindow:
         self.DESIGN = (max(6.0, 4.2 * C), max(4.2, 3.4 * R))
         self.fig = plt.figure(figsize=self.DESIGN)
         # Transparent figure patch: the publication export (the toolbar's
-        # Save, qtgui.mplexport) then carries NO opaque background
-        # rectangle beneath the color layers, so the low-intensity regions
-        # are genuinely transparent in the export.
+        # Save as PDF, EPS or editable SVG, qtgui.mplexport) then carries NO
+        # opaque background rectangle beneath the color layers, so the
+        # low-intensity regions are genuinely transparent in the export.
         self.fig.patch.set_facecolor("none")
         self._make_controls()
         self._build_ui()

@@ -17,7 +17,7 @@ v_dir='dir/run'#'dir/run'#'dir/run'
 
 sim = Interactive_STM_Simulator(
     filepath=v_dir,
-    erange=[-3, 0.5],          # initial energy slider range
+    erange=[-3, 0.5],          # initial energy box range
     ldos_height=1.25,              # Å above highest atom for LDOS sampling
     cmap_set='default 1',
     unit_cell_num=2,
@@ -47,7 +47,7 @@ sim.run_interactive(
     extra_broadening={'N': 0.0, 'C': 0.0, 'H': 0.0},
 
     # Optional: Path mode seed — list of 1-based atom indices (exact order).
-    # In Path mode each of these becomes a draggable node; the "Path Pts" slider
+    # In Path mode each of these becomes a draggable node; the "Path Pts" box
     # adds/removes nodes. After dragging, nodes are free XY points (no longer
     # tied to atoms). Leave as None to start Path mode with a default 3-node path.
     path=[[12.228758, 15.837908], [12.220715, 3.355913], [9.396806, 3.287211], [9.676762, 15.757682], [6.178678, 15.516096], [5.988031, 2.974321], [3.189683, 2.910722], [3.189683, 15.694083]],

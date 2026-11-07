@@ -33,7 +33,7 @@ Python 3 with numpy, scipy and matplotlib everywhere. Every interactive window n
 pyqtgraph (the `qtgui` layer; `pip install "PySide6<6.12" pyqtgraph`, or Python 3.12 or later with
 any PySide6: PySide6 6.12.0 has a reference-counting bug on older Pythons that `qtplot` warns
 about at import). matplotlib is not used to draw on screen: it writes the publication files the
-Save button offers (PDF, EPS, SVG, PNG, TIFF) and draws the 3D panel of `convergence/forces.py`,
+Save button offers (PDF, EPS, SVG) and draws the 3D panel of `convergence/forces.py`,
 the one panel the layer has no counterpart for. In addition: pymatgen (`dIdV_tip_sample`,
 `LOCPOT_tools`, `WAVECAR_tools`, `MOPmatcher_mem`, `stm_from_dft_opt`), cupy with a CUDA GPU
 (`stm_from_dft_opt`, `mo_ldos_decomp`, `PROCAR_tools/procar_spin.py`), h5py (`MOPmatcher_mem`,
@@ -94,10 +94,11 @@ windows:
   `MOPmatcher_mem` and `mo_ldos_decomp` no text is ever below 10 pt (the controls' text shrinks
   toward 10 pt, never below). A window taller than it is wide shows the short labels
   (`SHORT_LABELS`).
-- **Saving.** The toolbar's Save button writes PDF, EPS, SVG, PNG or TIFF through matplotlib
-  (`qtgui/mplexport.py`: the figure at its design size, every line and text an editable object,
-  the controls left out), PNG / SVG as drawn on screen, a screenshot of the window, or the curves
-  as CSV; `fig.savefig(path, dpi=300)` from code does the same.
+- **Saving.** The toolbar's Save button writes PDF, EPS or SVG through matplotlib
+  (`qtgui/mplexport.py`: the plots as on screen and the full information panel, every line and
+  text an editable object, the controls left out), PNG / TIFF (the window at 720 dpi) / SVG as
+  drawn on screen, or the curves as CSV; `fig.savefig(path)` from code does the same (a `dpi`
+  argument is ignored).
 - **The mathematics is unchanged.** The windows call the same functions as before; only the
   drawing, the events and the controls are Qt.
 

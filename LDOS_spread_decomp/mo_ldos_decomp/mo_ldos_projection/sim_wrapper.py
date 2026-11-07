@@ -73,8 +73,8 @@ SIGMA_DEFAULT = 0.2
 
 class StmDecompSession:
     """
-    One interactive session: real-DOSCAR header read once, then simulator
-    instances come and go per σ commit.
+    One interactive session: real-DOSCAR header read once, then one
+    simulator instance; a σ commit only sets the MO spread smearing.
     """
 
     def __init__(
@@ -129,7 +129,7 @@ class StmDecompSession:
 
     # ------------------------------------------------------------------
     def launch(self):
-        """Prepare the working directory and start the simulator
+        """Start the simulator on the run directory
         (non-blocking: interactive mode, qtplot.ion; the run script holds
         the process with plt.ioff() and plt.show())."""
         plt.ion()
@@ -165,8 +165,8 @@ class StmDecompSession:
         def _on_sigma(v):
             # A value the box applied (Enter, leaving after an edit, a digit
             # step): committed when it differs from the current σ.  The
-            # commit tears the window down, so it runs after the box's own
-            # signal has returned (the next turn of the event loop).
+            # commit only sets σ for the next Send press; it runs after the
+            # box's own signal has returned (the next turn of the event loop).
             v = float(min(max(v, SIGMA_MIN), SIGMA_MAX))
             self._sigma_pending = v
             if abs(v - self.sigma) > 1e-12:
@@ -183,8 +183,7 @@ class StmDecompSession:
         fig.canvas.draw_idle()
 
     # ------------------------------------------------------------------
-    # σ commit: re-smear → new σ-tagged dir → capture → tear down →
-    # re-instantiate → restore.
+    # σ commit: sets the MO spread smearing for the next Send press.
     # ------------------------------------------------------------------
     def commit_sigma(self, sigma: float):
         sigma = float(min(max(sigma, SIGMA_MIN), SIGMA_MAX))
@@ -253,7 +252,7 @@ class StmDecompSession:
                                     float(offsets[i][1])))
                 else:
                     markers.append((float("nan"), float("nan")))
-                colors.append(sim.m_colors[i % len(sim.m_colors)])
+                colors.append(sim.line_marker_colors[i])   # the marker's kept colour
 
         snapshot = dict(sigma=self.sigma, eg=eg, markers=markers,
                         ldos=curves, marker_colors=colors)

@@ -38,8 +38,8 @@ grid of cells and the controls in one strip
 under them, nothing is placed by hand, and a window never scrolls. A row of panels is as tall as
 its spatial panels ask (no empty band above or below them), and a window is never trimmed to its
 panels (a maximized window stays full screen). Its toolbar has Home, Pan, Zoom
-and Save; Save writes PDF, EPS, SVG, PNG or TIFF through matplotlib (every curve and text an
-editable object, the controls left out), a PNG or SVG as drawn on screen, a screenshot, or the
+and Save; Save writes PDF, EPS or SVG through matplotlib (every curve and text an editable object,
+the controls left out), a PNG or TIFF (the window at 720 dpi) or an SVG as drawn on screen, or the
 curves as CSV. A panel title shows its short name; the details after the first `": "` go to the
 information panel docked at the bottom (the topo window's σ, window, bias and height; a marker's
 position). Every text scales with the window's size relative to its design size and is never below 10 pt, and in a window

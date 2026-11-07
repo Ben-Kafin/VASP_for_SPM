@@ -13,7 +13,7 @@ under SOC, Kramers pairs are combined everywhere a weight is shown.
 |---|---|---|
 | `run_MOPMatcher.py` | the full pipeline: `run_match` (builder + matcher) for the configured molecule, metal and full directories, then the rectangular color plot through `RectAEPAWColorPlotter` | `run_kwargs`, `molecule_dirs`, `metal_dir`, `full_dir`, the `PlotConfig` fields |
 | `run_combined_MOPMatcher.py` | plots two finished runs (a "complex" run and a "full" run sharing the same molecules) on one vacuum-aligned energy axis | the two run directories and the `PlotConfig` |
-| `run_vacupot_plotter.py` | re-plots an existing `band_matches_rectangular.txt` without re-running the matcher; `SAVE_PATH` writes a publication file (PDF, EPS, SVG, or PNG / TIFF at `SAVE_DPI`) | `MATCH_FILE`, `SAVE_PATH`, `PlotConfig` |
+| `run_vacupot_plotter.py` | re-plots an existing `band_matches_rectangular.txt` without re-running the matcher; `SAVE_PATH` writes a publication file (PDF, EPS, SVG) or the window at 720 dpi (PNG / TIFF; `SAVE_DPI` is ignored) | `MATCH_FILE`, `SAVE_PATH`, `PlotConfig` |
 | `stamp_w_uid.py` | one-time provenance stamper: writes the whitener id into an existing, consistent set of `whitener.h5` + `true_blochstates.h5` files | the directories in its `__main__` |
 | `mark_bands_done.py` | one-time patch: adds the `bands_done` completion marker to `true_blochstates.h5` files written before resumable builds existed | the directory in its `__main__` |
 | `profile_proj.py` | profiles where the build spends time and captures reference betas for the batched projection kernel | the directories in its `__main__` |
@@ -29,8 +29,8 @@ window never scrolls, a row of panels is as tall as its spatial panels ask and a
 trimmed to its panels); every text scales with the window's size and is never below 10 pt; a panel's title shows its short
 name and the details after the first `: ` or `, ` (the entity's energy, the component names) go to
 the information panel docked at the bottom of the window. The toolbar has Home, Pan, Zoom and
-Save; Save writes PDF, EPS, SVG, PNG or TIFF through matplotlib (publication files), a PNG or SVG
-as on screen, a screenshot, or the curves as CSV.
+Save; Save writes PDF, EPS or SVG through matplotlib (publication files), a PNG or TIFF (the window
+at 720 dpi) or an SVG as on screen, or the curves as CSV.
 
 **Hover labels.** Every panel's hover labels (the band, energy, overlap and classification texts
 of a stick, a segment or a curve) start off: a left click on the panel arms them and labels the

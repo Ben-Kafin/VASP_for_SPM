@@ -2830,7 +2830,7 @@ class QuadMesh(Artist):
         # centres and puts the edges halfway between neighbours, extrapolated at the borders
         # (matplotlib's _interp_grid); 'gouraud' is drawn as 'nearest' (flat cells, no shading).
         centres = (shading in ('nearest', 'gouraud')
-                   or (shading == 'auto' and (X.shape[-1] == nc if X.ndim == 1 else X.shape == C.shape)))
+                   or (shading == 'auto' and (X.shape[-1] == nc if X.ndim == 1 else X.shape == C.shape[:2])))
         if centres:
             X = self._edges(X, nc, axis=-1)
             Y = self._edges(Y, nr, axis=0 if Y.ndim == 2 else -1)

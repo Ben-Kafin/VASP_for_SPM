@@ -25,11 +25,14 @@ k-point (the phase-augmented layout) and returns `ProcarData`: the raw eigenvalu
 `occupancies`, the real projections of the total, mx, my and mz blocks (`total`, `mx`, `my`, `mz`,
 each bands × ions × orbital columns) and the file's own `tot` rows (`tot_rows`). Every structural
 assumption is asserted against the file: the header counts against the block structure and the
-file length, a single k-point, per band the ion sum of the total block against its `tot` row and
-each ion row's `tot` column against its orbital sum (print-precision tolerances), and the phase
-block's own identities (the per-ion Σ|c|² column, the `charge` row); the |c|² to total-block scale
-is reported, not asserted. The Fermi energy comes only from the DOSCAR header (`read_doscar_header`
-in `LDOS_spread_decomp/stm_from_dft_opt/stm_from_dft/doscar_parser.py`).
+file length, a single k-point; on every band the ion sum of the total block against its `tot` row
+(print-precision tolerance); on the spot-checked bands only (every
+`max(1, nbands // max(spot_check_bands, 1))`-th band, from band 1) each ion row's `tot` column
+against its orbital sum (print-precision tolerance) and the phase block's rows (their layout, the
+ion order) with the block's own identities (the per-ion Σ|c|² column, the `charge` row); the |c|²
+to total-block scale is reported over the spot-checked bands, not asserted. The Fermi energy comes
+only from the DOSCAR header (`read_doscar_header` in
+`LDOS_spread_decomp/stm_from_dft_opt/stm_from_dft/doscar_parser.py`).
 
 ## Tools
 
