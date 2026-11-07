@@ -387,7 +387,8 @@ class OrientedPanes(QtWidgets.QWidget):
 
     def _arrange_later(self):
         self._pending = False
-        self._arrange()
+        if _panel_shapes(self.main) != getattr(self, '_last_shapes', None):
+            self._arrange()                    # the main panel's shape changed; a label's text changes nothing
 
     def on_arranged(self, callback):
         """callback(orientation) after every arrangement (a window that logs or adapts to it)."""
@@ -448,6 +449,7 @@ class OrientedPanes(QtWidgets.QWidget):
         W, H = float(self.width()), float(self.height())
         if W <= 0 or H <= 0:
             return
+        self._last_shapes = _panel_shapes(self.main)     # a layout request arranges again only when it changes
         area, orient, mw, mh = self._choose(W, H)
         self.orientation = orient
         if orient == 'h':
@@ -474,7 +476,7 @@ class OrientedPanes(QtWidgets.QWidget):
         self._arrange()
 
     def event(self, ev):
-        if ev.type() == QtCore.QEvent.Type.LayoutRequest:
+        if ev.type() == QtCore.QEvent.Type.LayoutRequest and _panel_shapes(self.main) != getattr(self, '_last_shapes', None):
             self._arrange()
         return super().event(ev)
 
@@ -1895,7 +1897,7 @@ class MapBlock(QtWidgets.QWidget):
         self.setSizePolicy(pol.Expanding, pol.Expanding)
 
     def _invalidate(self):
-        """The cells' measured room forgotten: measured again at the next size question (a new layout pass: set_groups, a resize, a layout request, rearrange)."""
+        """The cells' measured room forgotten: measured again at the next size question (a new placement of the block: set_groups, a resize, rearrange, a layout request with a map's shape changed)."""
         self._metrics_cache = None
         self._best_cache = {}
 
@@ -2102,7 +2104,7 @@ class MapBlock(QtWidgets.QWidget):
             return
         W, H = float(self.width()), float(self.height())
         self._invalidate()                                       # a placement: the cells measured anew
-        plt.new_measure_pass()
+        self._last_shapes = _panel_shapes(self)                  # a layout request places again only when it changes
         w, h, box_w, n = self._best(W, H)
         self.cols = n
         m = self._metrics()
@@ -2161,7 +2163,9 @@ class MapBlock(QtWidgets.QWidget):
         self._arrange()
 
     def event(self, ev):
-        if ev.type() == QtCore.QEvent.Type.LayoutRequest:
+        if ev.type() == QtCore.QEvent.Type.LayoutRequest and _panel_shapes(self) != getattr(self, '_last_shapes', None):
+            # A cell's layout request places the block again only when a map's shape changed (a turn, a
+            # crop): a title, a colour bar's or a tick axis's text changes nothing (the cells stay).
             self._arrange()
         return super().event(ev)
 
@@ -2190,7 +2194,10 @@ class Arrangement(QtWidgets.QWidget):
     the one group and it are sized to one scale.  `group_cap` (A, B, k, box_a, box_b): group A's
     plot box never more than k times group B's in width or in height (box_a(rect), box_b(rect):
     their plot boxes (w, h) in a region; the simulator: the topographies at most twice a heatmap);
-    a candidate that breaks it is sized again with A limited (_candidates).  `best_score()` is
+    a candidate that breaks it is sized again with A limited (_candidates).  `fill_slot`: a shaped
+    group (the simulator's Line / Path heatmap row) sized and scored as every group, then placed in
+    its whole slot of the chosen candidate instead of its shaped size at the slot's top left
+    (_slot), its fill panels stretching to it (qtplot.PanelCell.fill_as).  `best_score()` is
     the best candidate's score at the widget's size, nothing placed (the simulator compares its
     unit-cell panels' two orientations with it).  The candidate arrangements for two groups A, B and the free widget F:
 
@@ -2214,10 +2221,11 @@ class Arrangement(QtWidgets.QWidget):
     """
 
     def __init__(self, shaped, free=None, spacing=8, hysteresis=0.05, free_min=None, free_cap=None,
-                 free_scored=False, group_cap=None):
+                 free_scored=False, group_cap=None, fill_slot=None):
         super().__init__()
         self.shaped = [w for w in shaped if w is not None]
         self.free = free
+        self._fill_slot = fill_slot       # the group placed in its whole slot once a candidate is chosen (_slot)
         for w in self.shaped + ([free] if free is not None else []):
             w.setParent(self)
             w.show()
@@ -2244,7 +2252,14 @@ class Arrangement(QtWidgets.QWidget):
 
     def _later(self):
         self._pending = False
-        self._arrange()
+        # A child's layout request arranges again only when a group's shape changed (a crop): a label's
+        # width, a tick value or a colour bar's label changes nothing (the panels stay where they are).
+        if self._shapes() != getattr(self, '_last_shapes', None):
+            self._arrange()
+
+    def _shapes(self):
+        """The groups' panel shapes (_panel_shapes of each shaped group)."""
+        return tuple(_panel_shapes(w) for w in self.shaped)
 
     def on_arranged(self, callback):
         """callback(layout_name) after every arrangement."""
@@ -2590,7 +2605,7 @@ class Arrangement(QtWidgets.QWidget):
             return
         plt.new_measure_pass()
         # The same size, the same group shapes and the same free minimum as the last arrangement give the
-        # same arrangement: it is applied again without the search (a layout request from a child placed).
+        # same arrangement: it is applied again without the search (rearrange() or a show at the same size).
         sig = (round(W, 1), round(H, 1), tuple(_shaped_size(w, W, H) for w in self.shaped), self._free_min(W, H),
                self._free_scored, self.layout_name)
         if self._placed and sig == getattr(self, '_last_sig', None):
@@ -2602,10 +2617,46 @@ class Arrangement(QtWidgets.QWidget):
             name, blank, rects, _ = best
             self.layout_name, self._blank, self._placed = name, blank, rects
             self._last_sig = (sig[0], sig[1], sig[2], sig[3], sig[4], name)
+        self._last_shapes = self._shapes()          # a child's layout request arranges again only when they change
         for w, (x, y, ww, hh) in rects.items():
+            if w is self._fill_slot:
+                # fill_slot: sized and scored at its shaped size, placed in its whole slot.
+                s = self._slot(self.layout_name, rects, W, H, w)
+                if s is not None:
+                    x, y, ww, hh = s
             w.setGeometry(int(round(x)), int(round(y)), max(int(round(ww)), 1), max(int(round(hh)), 1))
         if self._cb is not None:
             self._cb(self.layout_name)
+
+    def _slot(self, name, rects, W, H, w):
+        """
+        Group `w`'s whole slot (x, y, w, h) in candidate `name` (rects: its regions): the part of the
+        widget the candidate's geometry gives the group, whose top left its shaped size takes; it ends
+        at the other group's or the free widget's region (less the spacing), else at the widget's
+        edge, so it never takes room from the other group's slot or the free widget's.  None (the
+        group keeps its shaped rect) without two groups and a free widget, or while the group has no
+        shape (a row with no panel in it yet).
+        """
+        F = self.free
+        if len(self.shaped) != 2 or w not in self.shaped or F is None or F not in rects:
+            return None
+        hfw = getattr(w, 'height_for_width', None)
+        if hfw is None or hfw(float(rects[w][2])) is None:
+            return None
+        A, B = self.shaped
+        sp = self._sp
+        a, b, f = rects[A], rects[B], rects[F]
+        if w is A:
+            ends = {'row_top': (b[0] - sp, f[1] - sp), 'a_left': (b[0] - sp, H), 'a_top': (W, b[1] - sp),
+                    'ab_left': (f[0] - sp, b[1] - sp), 'abf_row': (b[0] - sp, H), 'abf_col': (W, b[1] - sp)}
+        else:
+            ends = {'row_top': (W, f[1] - sp), 'a_left': (W, f[1] - sp), 'a_top': (f[0] - sp, H),
+                    'ab_left': (f[0] - sp, H), 'abf_row': (f[0] - sp, H), 'abf_col': (W, f[1] - sp)}
+        if name not in ends:
+            return None
+        x, y, sw, sh = rects[w]
+        right, bottom = ends[name]
+        return (x, y, max(right - x, sw), max(bottom - y, sh))
 
     # --- what the window reads ---
 
