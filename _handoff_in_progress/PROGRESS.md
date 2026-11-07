@@ -84,8 +84,8 @@ Branch: `claude/jolly-babbage-ppmbdj`. Base of part 1's work: b051547.
 - [ ] Part 2 open items O1-O18 (`PART2_OPEN.md`): owner's rulings, then apply (simulator ones with part 3)
 - [x] Part 3 handoff received: `handoff_part3_spectrum_decomp.md` (the decomp, the legend panel, Line/Path marker
       order and colours, sm4_browser's info panel and saves in every qtgui window); owner's ruling 8 on its info panel
-- [~] Part 3 pre-flight (read-only mapping): workflow wf_e2476f62-5f5; its mapping goes to `PART3_PREFLIGHT.md` as the
-      implementation brief, its rule-1 questions to the owner (ruling 9: no approval of the design is waited on)
+- [x] Part 3 pre-flight (read-only mapping, wf_e2476f62-5f5): `PART3_PREFLIGHT.md`; its points settled in `PART3_BRIEF.md`
+      (governs the implementation) or put to the owner in `PART3_OPEN.md` (K1-K9; the code they touch stays as today)
 - [x] Part 3 questions (`PART3_QUESTIONS.md`, Q1-Q8) answered: `RESPONSE_PART1_PART3.md` section 5
 - [ ] Part 3 implementation, with the response document's sections 2-4 (every qtgui copy, the root included) and 6
       (the colour-map sets): simulator.py and mo_ldos_projection edits wait until part 2's workflow has finished
@@ -96,4 +96,7 @@ Branch: `claude/jolly-babbage-ppmbdj`. Base of part 1's work: b051547.
 
 ## Open questions for the owner
 
-(none outstanding)
+- `PART2_OPEN.md` O1-O18 (part 2's open items)
+- `PART3_OPEN.md` K1-K9 (part 3's)
+- Relief shading (owner, 2026-11-07): asked whether the topo could relief-shade the topo panels and Map energy maps
+  (Kovesi's colour x hillshade); then said not to pursue it for now. Research stopped; nothing implemented.
