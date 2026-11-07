@@ -866,9 +866,13 @@ class Unified_STM_Simulator:
             pts_per_launch = max(1, int(2.5e7 // max(1, n_pairs * self.num_total_atoms)))   # tip points per launch
 
         def _sweep(phi_c, dos3, p0, n_p, out, cur):
-            """Machinery: chen_sweep over tip points p0 .. p0 + n_p: out (n_p, n_unique, atoms, columns) += dI/dV,
-            and, unless cur is None (want_cur = 0), cur (n_p, n_unique, atoms) += the current."""
-            _chen_sweep_kernel(dos3.shape[2])(
+            """Machinery: the decay model's sweep kernel over tip points p0 .. p0 + n_p: out (n_p, n_unique, atoms,
+            columns) += dI/dV, and, unless cur is None (want_cur = 0), cur (n_p, n_unique, atoms) += the current;
+            'decay_exact': exact_sweep; 'decay_linearized': its own kernel, launched here."""
+            if linearized:
+                # 'decay_linearized': the launch of its sweep kernel goes here, into the same out and cur.
+                raise NotImplementedError("the swept LDOS of 'decay_linearized' has no sweep kernel here yet")
+            _exact_sweep_kernel(dos3.shape[2])(
                 ((n_p + 63) // 64, self.num_total_atoms), (64,),
                 (dos3, dists_c, phi_c, js_gpu, out, cur, np.float32(KAPPA0_PER_SQRT_EV), self.e_step32, self.e032,
                  np.int32(self.num_total_atoms), np.int32(n_shift), np.int32(num_pts), np.int32(p0), np.int32(n_p),
@@ -888,6 +892,10 @@ class Unified_STM_Simulator:
             return i_span[:, cp.asarray(idx_np - c_lo)]
 
         def _compute_channel(pot, dos_gpu, dos_collapsed, want_cur=False, label=''):
+            """Machinery: one channel's LDOS (and, with want_cur, its current) at the tip points under the decay
+            model: Decay on with v_bias, the frozen-bias weight (frozen_factor: gpu_exact_factor, or
+            gpu_linearized_factor for 'decay_linearized'); Decay on without, the model's sweep (_sweep); Decay
+            off, gpu_decay_off_factor.  label leads the channel's console line (_progress)."""
             phi_local = cp_ndimage.map_coordinates(pot, grid_indices, order=1, mode='wrap') - self.ef
             phi_row = phi_local[None, :]
             cur = None                              # the channel's current (want_cur), (num_pts, num_e)
@@ -898,7 +906,7 @@ class Unified_STM_Simulator:
                 if use_energy_decay and not sweep:
                     for e_idx in range(num_e):
                         e_gpu = self.e032 + np.float32(idx_np[e_idx] - self.k0) * self.e_step32   # the sample's GPU energy
-                        sf = gpu_chen_tunneling_factor(e_gpu, v_bias, phi_row, dists, topo=True)
+                        sf = frozen_factor(e_gpu, v_bias, phi_row, dists, topo=True)
                         output_ldos[:, e_idx] = cp.dot(sf.T, dos_active[:, e_idx])
                 elif sweep:
                     phi_c = cp.ascontiguousarray(phi_local, dtype=cp.float32)
@@ -931,7 +939,7 @@ class Unified_STM_Simulator:
                 if use_energy_decay and not sweep:
                     for e_idx in range(num_e):
                         e_gpu = self.e032 + np.float32(idx_np[e_idx] - self.k0) * self.e_step32   # the sample's GPU energy
-                        sf = gpu_chen_tunneling_factor(e_gpu, v_bias, phi_row, dists, topo=True)
+                        sf = frozen_factor(e_gpu, v_bias, phi_row, dists, topo=True)
                         w_atom = cp.dot(self.map_mat_gpu, sf)
                         output_ldos[:, e_idx, :, :] = w_atom.T[:, :, None] * dos_gpu[:, energy_indices[e_idx], :][None, :, :]
                 elif sweep:
@@ -1128,6 +1136,9 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         self.feenstra = False
         self.show_atoms, self.show_unit_cell = True, False
         self.use_decay = True
+        # The Decay-on model: 'exact' (False, at start) or 'linearized' (True), the two rows indented under 'Decay'
+        # (exactly one on: _on_toggle); with Decay off neither is used (_effective_decay_model).
+        self.decay_linearized = False
         self.reuse_cache = True
         self.show_decay_toggle = True
         self.display_cells = 1
@@ -1248,14 +1259,18 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         self._decomp_changed()
 
     def run_interactive(self, grid_res=64, topo_bias=0.2, topo_height=2.5,
-                        ldos_bias_sign='neg', use_decay=True,
+                        ldos_bias_sign='neg', use_decay=True, decay_linearized=False,
                         show_decay_toggle=True, reuse_cache=True,
                         line_endpoints=None, marker_positions=None, extra_broadening=None,
                         path=None, path_extend=False):
+        """Machinery: the window opened: the run's settings taken (decay_linearized: the Decay-on model,
+        'linearized' when True, 'exact' when False), the global topography loaded or converged, the
+        controls made and the view built."""
         if topo_bias is None or topo_bias == 0:
             raise ValueError(f"topo_bias must be a nonzero bias voltage in volts; received {topo_bias!r}.")
         self.ldos_bias_sign = ldos_bias_sign
         self.use_decay = use_decay
+        self.decay_linearized = bool(decay_linearized)
         self.reuse_cache = reuse_cache
         self.show_decay_toggle = bool(show_decay_toggle)
         if line_endpoints is not None:
@@ -1323,11 +1338,11 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         else:
             print(f"[*] Cache not found. Calculating Global Topography: {cache_name}")
             init_cur, t_samples = self._topo_current(cp.hstack([grid_xy_gpu, z_fixed[:, None]]),
-                                                     self.global_topo_bias, self.use_decay)
+                                                     self.global_topo_bias, self._effective_decay_model())
             target_setp = cp.max(init_cur)
             print(f"[*] Global Setpoint LDOS: {float(target_setp):.6e}")
             z_map_gpu = self._converge_tip_height(z_fixed, grid_xy_gpu, t_samples, self.global_topo_bias, target_setp,
-                                                  use_decay=self.use_decay)
+                                                  decay_model=self._effective_decay_model())
             self.current_z_map = cp.asnumpy(z_map_gpu)
             np.save(cache_name, self.current_z_map)
         self.grid_xy = grid_xy
@@ -1475,18 +1490,24 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         self.btn_run.setting_label = 'RUN button'
         self.btn_run.set_text('STOP' if self.is_running else 'RUN')
         self.btn_run.on_change(self._toggle_run)
-        # One list defines every toggle: label and the attribute it drives.
+        # One list defines every toggle: label and the attribute it drives.  'exact' and 'linearized' sit indented
+        # under 'Decay': the Decay-on model, exactly one of them on ('linearized' drives decay_linearized, 'exact'
+        # shows its opposite and drives nothing itself: None); a click on one turns it on and the other off
+        # (_on_toggle).  show_decay_toggle=False hides the three.
         toggle_defs = [('Atoms', 'show_atoms'), ('Decay', 'use_decay'),
+                       ('exact', None), ('linearized', 'decay_linearized'),
                        ('Norm', 'normalize'), ('Feenstra', 'feenstra'),
                        ('Mag', 'show_mag'),
                        ('Cell', 'show_unit_cell'), ('Extend', 'path_extend')]
         if not getattr(self, 'show_decay_toggle', True):
-            toggle_defs = [d for d in toggle_defs if d[0] != 'Decay']
+            toggle_defs = [d for d in toggle_defs if d[0] not in ('Decay', 'exact', 'linearized')]
         self._toggle_defs = toggle_defs
         labels = [label for label, _ in toggle_defs]
         self.chk = controls.make(fig, 'sim toggles', labels=labels,
-                                 values=[getattr(self, attr) for _, attr in toggle_defs])
-        self.chk.on_change(self._on_ui_change)
+                                 values=[(not self.decay_linearized) if label == 'exact' else getattr(self, attr)
+                                         for label, attr in toggle_defs],
+                                 indents=['    ' if label in ('exact', 'linearized') else 0 for label in labels])
+        self.chk.on_change(self._on_toggle)
         # The bottom strip's boxes (the counts and values that were sliders).
         self.s_cell = controls.make(fig, 'Cells', value=self.display_cells)
         self.s_path_pts = controls.make(fig, 'Path Pts', value=len(self.path_nodes))
@@ -2852,11 +2873,11 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
             print(f"[*] Calculating Global Topography with broadening: {cache_name}")
             z_fixed = cp.full(self.grid_xy_gpu.shape[0], self.z_highest_atom + self.topo_height, dtype=cp.float32)
             init_cur, t_samples = self._topo_current(cp.hstack([self.grid_xy_gpu, z_fixed[:, None]]),
-                                                     self.global_topo_bias, self.use_decay)
+                                                     self.global_topo_bias, self._effective_decay_model())
             target_setp = cp.max(init_cur)
             print(f"[*] Global Setpoint LDOS: {float(target_setp):.6e}")
             z_map_gpu = self._converge_tip_height(z_fixed, self.grid_xy_gpu, t_samples, self.global_topo_bias, target_setp,
-                                                  use_decay=self.use_decay)
+                                                  decay_model=self._effective_decay_model())
             self.current_z_map = cp.asnumpy(z_map_gpu)
             np.save(cache_name, self.current_z_map)
         self.global_z_map = self.current_z_map.copy()
@@ -2926,18 +2947,33 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
             self._broadening_topo_dirty = False
             self._update_all(full_refresh=True)
 
+    def _on_toggle(self, label, states):
+        """
+        Machinery: a row of the toggles clicked (controls.Checks: the clicked row already flipped).  'exact' and
+        'linearized' (the Decay-on model): the clicked one on and the other off, so a click on the one already on
+        leaves it on and exactly one is always on (the rows set by Checks.set, which never fires).  Then the state
+        is read from the controls as for every control (_on_ui_change).
+        """
+        if label in ('exact', 'linearized'):
+            labels = [lab for lab, _ in self._toggle_defs]
+            self.chk.set(labels.index('exact'), label == 'exact')
+            self.chk.set(labels.index('linearized'), label == 'linearized')
+        self._on_ui_change(label, states)
+
     def _on_ui_change(self, *args):
-        """Machinery: a toggle, a count or a value box changed: the state is read from the controls, the caches invalidated as the change asks, and the window redrawn."""
-        prev_decay = self.use_decay
+        """Machinery: a toggle, a count or a value box changed: the state is read from the controls, the caches invalidated as the change asks (a decay-model change: _effective_decay_model before and after), and the window redrawn."""
+        prev_model = self._effective_decay_model()
         prev_path_extend = self.path_extend
         states = self.chk.get_status()
         for (label, attr), state in zip(self._toggle_defs, states):
-            setattr(self, attr, state)
+            if attr is not None:               # 'exact' drives nothing itself ('linearized' drives decay_linearized)
+                setattr(self, attr, state)
         self.display_cells = int(self.s_cell.val)
         self.ldos_gamma = float(self.s_ldos_gamma.value)
 
-        # Decay toggle or path-extend toggle: invalidate caches and recompute.
-        decay_model_changed = (self.use_decay != prev_decay)
+        # A decay-model change (Decay, or 'exact' / 'linearized' while Decay is on: with Decay off they change no
+        # model) or the path-extend toggle: invalidate caches and recompute.
+        decay_model_changed = (self._effective_decay_model() != prev_model)
         if decay_model_changed or (self.path_extend != prev_path_extend):
             # Path's tip heights are dropped by either (the Extend is in Path's key), Line's by a decay-model
             # change only (the Extend leaves Line's points as they are).
