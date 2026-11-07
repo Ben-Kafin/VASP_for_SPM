@@ -87,7 +87,8 @@ Branch: `claude/jolly-babbage-ppmbdj`. Base of part 1's work: b051547.
 - [x] Part 3 pre-flight (read-only mapping, wf_e2476f62-5f5): `PART3_PREFLIGHT.md`; its points settled in `PART3_BRIEF.md`
       (governs the implementation) or put to the owner in `PART3_OPEN.md` (K1-K9; the code they touch stays as today)
 - [x] Part 3 questions (`PART3_QUESTIONS.md`, Q1-Q8) answered: `RESPONSE_PART1_PART3.md` section 5
-- [ ] Part 3 implementation, with the response document's sections 2-4 (every qtgui copy, the root included) and 6
+- [~] Part 3 implementation running: workflow wf_237d8a97-ab0 (base adf1e25; brief `PART3_BRIEF.md`; with part 1's answers)
+- [ ] (was) Part 3 implementation, with the response document's sections 2-4 (every qtgui copy, the root included) and 6
       (the colour-map sets): simulator.py and mo_ldos_projection edits wait until part 2's workflow has finished
       (one workflow edits a file at a time)
 - [ ] The later views-layout handoff: its decisions so far are in `PART3_simulator_views_layout_decisions.md`
