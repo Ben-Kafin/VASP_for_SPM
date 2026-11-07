@@ -7421,9 +7421,10 @@ class Figure:
     def savefig(self, path, dpi=None, how=None, **kw):
         """
         Save exactly what the window shows, at the window's size and shape, nothing laid out again
-        and nothing cropped.  Returns the path written.  `dpi` and any other keyword (matplotlib's
-        savefig arguments) are accepted and ignored: the image formats are always at
-        WINDOW_IMAGE_DPI.  how:
+        and nothing cropped.  Returns the path written.  `facecolor` and `transparent` are passed
+        on to the vector files (mplexport.export: the file's background); `dpi` and any other
+        keyword (matplotlib's savefig arguments) are accepted and ignored: the image formats are
+        always at WINDOW_IMAGE_DPI.  how:
           'vector' (default for .pdf .eps .ps .svg): written by matplotlib (mplexport.export): every
                    panel, curve, heatmap, stripe, marker, legend, colour bar and figure text at its
                    on-screen place and size, text at its on-screen size and editable; the controls
@@ -7451,7 +7452,8 @@ class Figure:
             return export_csv(self, path)
         if how == 'vector':
             from qtgui import mplexport
-            return mplexport.export(self, path)
+            return mplexport.export(self, path, facecolor=kw.get('facecolor'),
+                                    transparent=kw.get('transparent', False))
         if how == 'qt-svg':
             return export_vector(self, path)
         return self.window_image(path)

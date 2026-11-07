@@ -6395,8 +6395,7 @@ class NavigationToolbar(QtWidgets.QToolBar):
         self.a_zoom.toggled.connect(lambda on: self._mode('zoom rect' if on else ''))
         self.addSeparator()
         a = self.addAction(st.standardIcon(sp.SP_DialogSaveButton), 'Save')
-        a.setToolTip('Save exactly what the window shows: PDF / EPS / SVG (vector, editable) with the full info panel, '
-                     'an SVG of the whole window as Qt draws it, PNG / TIFF of the window at 720 dpi, or the curves as CSV')
+        a.setToolTip('Save the figure: PDF / EPS / SVG / PNG / TIFF for publication (matplotlib), PNG / SVG as on screen, or the curves as CSV')
         a.triggered.connect(self._save)
         spacer = QtWidgets.QWidget()
         spacer.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Preferred)
@@ -6495,10 +6494,8 @@ class NavigationToolbar(QtWidgets.QToolBar):
 class FigureManager:
     """
     The figure's window (matplotlib's Qt window): the navigation toolbar on top, the canvas, and
-    the info panel docked at the bottom (set_info: Figure.info_text, the details cut from the
-    titles, the window's own lines and the settings section of its controls; wrapped at its width;
-    hidden only until its first text, which comes when the window is shown, and once closed by hand
-    it stays closed).  The window opens at the canvas's size plus
+    the info panel docked at the bottom (set_info: the details cut from the titles; hidden while
+    empty, and once closed by hand it stays closed).  The window opens at the canvas's size plus
     the toolbar, limited to the screen's available area (98 % of its width, 95 % of its height).
     """
 
@@ -6643,8 +6640,7 @@ class Figure:
     the Qt controls of controls.py in the same layout, and (in its own window) a navigation toolbar
     and an info panel.  Its text zoom (font_zoom) and shape
     (portrait) follow the canvas (_relayout, on every resize); the design size it was opened with
-    (_design_px) is the reference of both.  A saved file is the window at its size on screen
-    (savefig).
+    (_design_px) is the reference of both and the size of the publication export.
     """
 
     def __init__(self, figsize=(6.4, 4.8), num=None, embed=False, fill_screen=False):
@@ -7536,8 +7532,9 @@ class Figure:
     def savefig(self, path, dpi=None, how=None, **kw):
         """
         Save exactly what the window shows, at the window's size and shape, nothing laid out again
-        and nothing cropped.  Returns the path written.  `dpi` and any other keyword (matplotlib's
-        savefig arguments) are accepted and ignored: the image formats are always at
+        and nothing cropped.  Returns the path written.  `facecolor` and `transparent` are passed on
+        to the 'vector' files (mplexport.export: their background); `dpi` and any other keyword
+        (matplotlib's savefig arguments) are accepted and ignored: the image formats are always at
         WINDOW_IMAGE_DPI.  how:
           'vector' (default for .pdf .eps .ps .svg): written by matplotlib (mplexport.export): every
                    panel, curve, heatmap, stripe, marker, legend, colour bar and figure text at its
@@ -7566,7 +7563,8 @@ class Figure:
             return export_csv(self, path)
         if how == 'vector':
             from . import mplexport
-            return mplexport.export(self, path)
+            return mplexport.export(self, path, facecolor=kw.get('facecolor'),
+                                    transparent=kw.get('transparent', False))
         if how == 'qt-svg':
             return export_vector(self, path)
         return self.window_image(path)

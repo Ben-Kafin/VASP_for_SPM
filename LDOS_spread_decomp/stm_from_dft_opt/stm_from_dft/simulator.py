@@ -1413,14 +1413,14 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         # The label over the Line / Path cluster and the Map rows ('LDOS', or 'LDOS: <element>' at the atom levels).
         self._cluster_label = controls.Label(fig, text='LDOS', fs=10)
         # The legend panel's Back button (Single Point, Line, Path; kept across views, as the tip-height boxes):
-        # gray, back one level as a right click (_decomp_click); hidden at level 0 with its place kept.  Its
-        # double-click event is dropped and a right press on it goes back (_LegendEvents).
+        # gray, back one level as a right click (_legend_back: ignored while Pan or Zoom is on); hidden at level 0
+        # with its place kept.  Its double-click event is dropped and a right press on it goes back (_LegendEvents).
         self._btn_back = controls.Button(fig, 'Back')
         self._btn_back.qt.setStyleSheet(self.LEGEND_BACK_CSS)
         pol = self._btn_back.qt.sizePolicy()
         pol.setRetainSizeWhenHidden(True)
         self._btn_back.qt.setSizePolicy(pol)
-        self._btn_back.on_change(lambda: self._decomp_click(plt.MouseButton.RIGHT))
+        self._btn_back.on_change(self._legend_back)
         self._legend_events = _LegendEvents(self)
         self._btn_back.qt.installEventFilter(self._legend_events)
         self._legend_rezoom_pending = False        # a redraw of the legend stack at a new text zoom is queued (_legend_placed)
@@ -1823,7 +1823,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         return None
 
     def _legend_back(self):
-        """Machinery: a right press on the legend panel's Back button or scroll bar (Qt widgets: _LegendEvents): back one level, as a right click in the panel; ignored while the toolbar's Pan or Zoom is on, as the canvas's presses are."""
+        """Machinery: the Back button's click, or a right press on the legend panel's Back button or scroll bar (Qt widgets: _LegendEvents): back one level, as a right click in the panel; ignored while the toolbar's Pan or Zoom is on, as the canvas's presses are."""
         if self.fig.canvas.manager.toolbar.mode == "":
             self._decomp_click(plt.MouseButton.RIGHT)
 
@@ -2717,6 +2717,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
                     self._broadening_topo_dirty = False
             if self.is_running:
                 self._update_all(full_refresh=True)
+            self._markers_changed()                # the Path's length (Extend) in the info panel's line and markers lines, running or not
             return
 
         # Path Pts box: adjust number of draggable path nodes.

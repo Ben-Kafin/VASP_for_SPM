@@ -432,8 +432,8 @@ class OrientedPanes(QtWidgets.QWidget):
     def fit_delta(self):
         """
         (dw, dh), each <= 0 px: how much narrower or shorter this widget could be with its main panel
-        keeping its size (rule 11: the window follows the panel; Figure.fit_window applies it to the
-        window).  With the main pane at the left ('h') the main panel spans the height the window
+        keeping its size (Figure.fit_window, which nothing calls: the window is never trimmed to its
+        panels).  With the main pane at the left ('h') the main panel spans the height the window
         gives, unless the share cap holds it shorter: the window can lose that height (the rest pane,
         free panels, follows).  With the main pane on top ('v') it spans the width, unless the cap
         holds it narrower: the window can lose that width.  (0, 0) when the main panel has no shape.
@@ -650,12 +650,17 @@ class Control:
     """
 
     _all = weakref.WeakSet()      # every control made (a window without a figure switches their short labels)
+    stateful = False              # a Button whose label shows a state: setting() gives its label
 
     def __init__(self, fig, name, label=None):
         self.fig = fig
         self.name = name
         self.spec = dict(SPECS.get(name, {'kind': None, 'w': 1.0, 'h': 0.3, 'fs': 8}))
         self.label = _label_of(name) if label is None else str(label)
+        # The name of this control's line in the info panel's settings section (setting, settings_text):
+        # its label, or its name when the label is empty; a composite box or a window sets another
+        # where a label is empty or repeated in its window.
+        self.setting_label = self.label if self.label.strip() else str(name)
         self._short = False
         self._cb = None
         self._quiet = False
@@ -707,6 +712,7 @@ class Control:
     def show(self, flag):
         self._visible = bool(flag)
         self.qt.setVisible(self._visible)
+        self._changed()
 
     def enable(self, flag):
         """The control takes events (True) or ignores them (False)."""
@@ -717,8 +723,33 @@ class Control:
         self._cb = callback
 
     def _fire(self, *args):
+        self._changed()                # the info panel shows the change, with or without a callback
         if self._cb is not None and not self._quiet and self.eventson:
             self._cb(*args)
+
+    def setting(self):
+        """
+        This control's line in the info panel's settings section: (setting_label, the value as
+        shown), or None for a control that holds no setting (a Button, unless stateful, whose label
+        then is the setting; a Label; a TextPanel).  A Checks gives a list, one (row label, on/off)
+        per row.  Each kind gives its own (Check, Checks, Radio, Text, Value, Count, Slider, Button).
+        """
+        return None
+
+    def _changed(self):
+        """
+        A setting of this control changed (or the control was shown, hidden or removed): its window's
+        hook (sm4_settings_changed: a figure window's coalesced info push) is called.  Never raises:
+        a control without a window, or a closed one, is ignored.
+        """
+        try:
+            if self.qt is None:
+                return
+            hook = getattr(self.qt.window(), 'sm4_settings_changed', None)
+            if hook is not None:
+                hook()
+        except Exception:              # the window or its Qt objects are already gone
+            pass
 
     @property
     def ax(self):
@@ -726,6 +757,7 @@ class Control:
         return _Anchor(self)
 
     def remove(self):
+        self._changed()
         if self.fig is not None:
             self.fig._unregister_control(self)
         if self.qt is not None:
@@ -773,6 +805,9 @@ class Check(Control):
     def get_status(self):
         return [self.value]
 
+    def setting(self):
+        return (self.setting_label, 'on' if self.value else 'off')
+
     def set(self, flag):
         if self.value != bool(flag):
             self._quiet = True
@@ -782,6 +817,7 @@ class Check(Control):
             finally:
                 self.widget.blockSignals(blocked)
                 self._quiet = False
+        self._changed()
 
     def set_label_color(self, color):
         self._labels[0].set_color(color)
@@ -867,6 +903,9 @@ class Checks(Control):
     def value(self):
         return [bool(cb.isChecked()) for cb in self.boxes]
 
+    def setting(self):
+        return [(lab, 'on' if cb.isChecked() else 'off') for cb, lab in zip(self.boxes, self.spec['labels'])]
+
     def set(self, i, flag):
         cb = self.boxes[i]
         if cb.isChecked() != bool(flag):
@@ -877,6 +916,7 @@ class Checks(Control):
             finally:
                 cb.blockSignals(blocked)
                 self._quiet = False
+        self._changed()
 
     def set_all(self, flags):
         for i, f in enumerate(flags):
@@ -938,6 +978,10 @@ class Radio(Control):
 
     value_selected = value
 
+    def setting(self):
+        v = self.value
+        return (self.setting_label, '' if v is None else str(v))
+
     def set(self, label):
         if label in self.labels and self.value != label:
             self._quiet = True
@@ -950,6 +994,7 @@ class Radio(Control):
                 for b in self.buttons:
                     b.blockSignals(False)
                 self._quiet = False
+        self._changed()
 
 
 class Button(Control):
@@ -968,9 +1013,13 @@ class Button(Control):
     def value(self):
         return self.widget.text()
 
+    def setting(self):
+        return (self.setting_label, self._text) if self.stateful else None
+
     def set_text(self, text):
         self._text = str(text)
         self._apply_labels()
+        self._changed()
 
     def _apply_labels(self):
         self.widget.setText(self.shown(self._text))
@@ -1173,6 +1222,9 @@ class Text(Control):
     def text(self):
         return self.widget.text()
 
+    def setting(self):
+        return (self.setting_label, self.widget.text())
+
     def set(self, text):
         text = str(text)
         self._last = text
@@ -1184,6 +1236,7 @@ class Text(Control):
             finally:
                 self.widget.blockSignals(blocked)
                 self._quiet = False
+        self._changed()
 
     set_val = set
 
@@ -1346,7 +1399,7 @@ class Slider(Control):
         lay.addWidget(sl, 1)
         lay.addWidget(self.readout)
         self._release = None
-        sl.valueChanged.connect(self._changed)
+        sl.valueChanged.connect(self._moved)
         sl.sliderReleased.connect(self._released)
         self.widget = sl
         self.qt = w
@@ -1355,7 +1408,7 @@ class Slider(Control):
     def _apply_labels(self):
         self._lab.setText(self.shown(self.label))
 
-    def _changed(self, v):
+    def _moved(self, v):
         self.readout.setText(str(v))
         if self._quiet:
             return
@@ -1374,6 +1427,9 @@ class Slider(Control):
     def value(self):
         return self.slider.value()
 
+    def setting(self):
+        return (self.setting_label, self.readout.text())
+
     def set(self, value):
         v = int(round(value))
         if self.slider.value() != v:
@@ -1385,6 +1441,7 @@ class Slider(Control):
             finally:
                 self.slider.blockSignals(blocked)
                 self._quiet = False
+        self._changed()
 
     def set_range(self, vmin, vmax):
         self._quiet = True
@@ -1513,6 +1570,45 @@ _KINDS = {'check': Check, 'checks': Checks, 'radio': Radio, 'button': Button, 't
 def make(fig, name, **kw):
     """The control named `name`, of the kind widgets.SPECS gives it ('count' and 'value' are the boxes that were sliders; 'window start' the one Slider)."""
     return _KINDS[SPECS[name]['kind']](fig, name, **kw)
+
+
+def settings_text(root):
+    """
+    The settings section of a window's info panel: every live control (Control._all) whose Qt widget
+    is visible and inside `root` (a window), with a setting (setting()), ordered by its place on
+    screen (its widget's top left mapped to `root`: top to bottom, then left to right), one line
+    each, 'label: value' (a Checks one line per row).  '' when there is none.
+    """
+    if root is None:
+        return ''
+    found = []
+    for c in list(Control._all):
+        qt = c.qt
+        if qt is None:
+            continue
+        try:
+            if not qt.isVisible() or not root.isAncestorOf(qt):
+                continue
+            s = c.setting()
+            if s is None:
+                continue
+            pos = qt.mapTo(root, QtCore.QPoint(0, 0))
+        except RuntimeError:           # its Qt widget is already deleted
+            continue
+        found.append(((pos.y(), pos.x()), s))
+    found.sort(key=lambda item: item[0])
+    lines = []
+    for _, s in found:
+        for lab, val in (s if isinstance(s, list) else [s]):
+            lines.append(f"{lab}: {val}")
+    return "\n".join(lines)
+
+
+# qtplot.Figure.info_text lists a figure window's settings through this module's settings_text,
+# bound to the qtplot this module imported: a window's info panel then always reads the controls of
+# the copy of this module that made them (a module reloader that drops the package from sys.modules
+# cannot split them).
+plt._settings_text = settings_text
 
 
 # ---------------------------------------------------------------------- #
@@ -2217,7 +2313,8 @@ class Arrangement(QtWidgets.QWidget):
     better by more than `hysteresis`; ties go to the larger plotted area).  Chosen again on every
     resize, on `rearrange()` (a window that rebuilt a group) and when a group's shape changes (its
     layout request).  `fit_delta` is the blank strip at the right and bottom edges that no region
-    reaches, which the window can lose (Figure.fit_window); `layout_name` the candidate taken;
+    reaches (Figure.fit_window, which nothing calls: the window is never trimmed to its panels);
+    `layout_name` the candidate taken;
     `blank_fraction()` the blank share of the area; `scales()` the groups' scales.
     """
 
@@ -2255,12 +2352,25 @@ class Arrangement(QtWidgets.QWidget):
         self._pending = False
         # A child's layout request arranges again only when a group's shape changed (a crop): a label's
         # width, a tick value or a colour bar's label changes nothing (the panels stay where they are).
-        if self._shapes() != getattr(self, '_last_shapes', None):
+        # The window's text zoom, control zoom or portrait setting changed since the last arrangement
+        # arranges again too (they follow a resize: the figure applies them after this widget's
+        # resizeEvent, Figure._relayout).
+        if self._shapes() != getattr(self, '_last_shapes', None) or self._window_state() != getattr(self, '_last_state', None):
             self._arrange()
 
     def _shapes(self):
         """The groups' panel shapes (_panel_shapes of each shaped group)."""
         return tuple(_panel_shapes(w) for w in self.shaped)
+
+    def _window_state(self):
+        """The text zoom, control zoom and portrait setting of the figure whose canvas holds this widget (font_zoom, control_zoom, portrait), None outside a figure's canvas."""
+        w = self.parentWidget()
+        while w is not None and not isinstance(w, QtWidgets.QGraphicsView):
+            w = w.parentWidget()
+        fig = getattr(w, 'figure', None)
+        if fig is None:
+            return None
+        return (getattr(fig, 'font_zoom', None), getattr(fig, 'control_zoom', None), getattr(fig, 'portrait', None))
 
     def on_arranged(self, callback):
         """callback(layout_name) after every arrangement."""
@@ -2272,6 +2382,11 @@ class Arrangement(QtWidgets.QWidget):
     def resizeEvent(self, ev):
         super().resizeEvent(ev)
         self._arrange()
+        if not self._pending:
+            # The figure applies a new text zoom, control zoom or portrait setting after this (Figure._relayout):
+            # arranged again then when one changed (_later).
+            self._pending = True
+            QtCore.QTimer.singleShot(0, self._later)
 
     def showEvent(self, ev):
         super().showEvent(ev)
@@ -2604,7 +2719,7 @@ class Arrangement(QtWidgets.QWidget):
         W, H = float(self.width()), float(self.height())
         if W <= 0 or H <= 0 or not self.shaped:
             return
-        plt.new_measure_pass()
+        plt.new_arrangement()
         # The same size, the same group shapes and the same free minimum as the last arrangement give the
         # same arrangement: it is applied again without the search (rearrange() or a show at the same size).
         sig = (round(W, 1), round(H, 1), tuple(_shaped_size(w, W, H) for w in self.shaped), self._free_min(W, H),
@@ -2619,6 +2734,7 @@ class Arrangement(QtWidgets.QWidget):
             self.layout_name, self._blank, self._placed = name, blank, rects
             self._last_sig = (sig[0], sig[1], sig[2], sig[3], sig[4], name)
         self._last_shapes = self._shapes()          # a child's layout request arranges again only when they change
+        self._last_state = self._window_state()     # arranged again when the window's text zoom, control zoom or portrait setting changes (_later)
         for w, (x, y, ww, hh) in rects.items():
             if w is self._fill_slot:
                 # fill_slot: sized and scored at its shaped size, placed in its whole slot.

@@ -1,5 +1,5 @@
 """
-qtgui: the one shared Qt layer of every interactive window of VASP_for_SPM (PySide6 + pyqtgraph),
+qtgui: this package's own copy of the Qt layer of VASP_for_SPM's interactive windows (PySide6 + pyqtgraph),
 the sm4_Browser layer of the conversion guide ("From a matplotlib-wired GUI to a real GUI",
 section 9) carried into this suite.
 
