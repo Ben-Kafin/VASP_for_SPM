@@ -95,6 +95,8 @@ Branch: `claude/jolly-babbage-ppmbdj`. Base of part 1's work: b051547.
 15. Relief at the cell edges (owner, 2026-11-07): "wrap at the cell edges" — the simulator passes `periodic=True` (as the
     follow-up brief already has it). The slope: the true slope (height per length, as implemented); the owner: "whatever
     is best" (recommended: resolution-independent, as matplotlib's LightSource with dx, dy and GDAL's gdaldem do).
+16. F1-F5 (owner, 2026-11-07): "a is fine for everything except I don't understand f5". F2 (a), F3 (a), F4 (a) taken.
+    F1's (a) is "as now" (the recommendation was (b)): asked to confirm. F5 explained; waiting.
 
 ## Conventions given to the implementing agents (part 1)
 
