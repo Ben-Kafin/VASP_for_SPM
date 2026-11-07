@@ -3,8 +3,8 @@
 Interactive STM Simulator: Multi-Tiered GPU Optimization
 Auto-detects ISPIN=1, ISPIN=2, and NCL/SOC calculations.
 
-The window (Interactive_STM_Simulator) is drawn with the package's own copy of the suite's Qt
-layer (stm_from_dft.qtgui: PySide6 + pyqtgraph): its panels are cells of one Qt layout and its controls
+The window (Interactive_STM_Simulator) is drawn with the suite's shared Qt layer (qtgui at the
+repository root: PySide6 + pyqtgraph): its panels are cells of one Qt layout and its controls
 real Qt widgets (automatic layout: the one rule for every window, nothing placed by hand), every
 slider of the old figure a number box, the orbital hover labels widgets.HoverLabels.
 
@@ -1134,7 +1134,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
 
         # The window's layout: the title cell, the left control column beside the panel area, the
         # bottom strip (automatic layout: the one rule for every window; nothing placed by hand).
-        self._title_cell = fig.cell(min_px=(round(40 / (1000 / 72) * plt.em_px()), round(24 / (1000 / 72) * plt.em_px())), stretch=(True, False))
+        self._title_cell = fig.cell(min_px=(40, 24), stretch=(True, False))
         fig.set_title_cell(self._title_cell)
         fig.suptitle(self.spin_mode.name, fontsize=12)
         self._hook_layout = QtWidgets.QVBoxLayout()        # the boxes other windows add (add_control_box)
@@ -1401,7 +1401,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
             # its label, filling its whole slot (fill_slot); the Tip Height
             # profile and the spectrum in the room left (at least readable: rule 11), side by side or stacked by that room's shape.
             self.ax_map, topo = self._placement()
-            self._cluster_row = plt.PanelRow(spacing=round(4 / (1000 / 72) * plt.em_px()))
+            self._cluster_row = plt.PanelRow(spacing=4)
             cluster = controls.Titled(plt.RowWidget(self._cluster_row), self._cluster_label.qt)
             self.ax_prof, prof_cell = self._cell_axes()
             self.ax_spec, spec_cell = self._cell_axes()
@@ -1420,14 +1420,14 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
             # shaped row; the energy maps as a wrapping block under its label (rebuilt by _update_all
             # when the counts change) with the spectrum as one of its cells (rule 11).  The topo panels keep
             # set_aspect('equal') and take the same crop.
-            row = plt.PanelRow(spacing=round(10 / (1000 / 72) * plt.em_px()))
+            row = plt.PanelRow(spacing=10)
             self.ax_map_global, topo = self._placement()
             row.addWidget(topo, 10)
             self.ax_map = self._panel_with_box(row, self._box_ldos_h, stretch=10)
             self.ax_map.set_rotated(self.cell_rotated)
             # The topo colour bar beside the Map Topo (the browser's: the ramp, no numbers), carrying the
             # contour slice's level line; the Map Topo's iso-line at that level goes on every energy map.
-            self.cax_topo = self._panel(row, inner_w=9 / (1000 / 72) * plt.em_px())
+            self.cax_topo = self._panel(row, inner_w=9)
             self._draw_topo_cbar(self.cax_topo)
             self._draw_level_line()
             topos = plt.RowWidget(row)
@@ -2646,9 +2646,9 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
 
         # Topo stripe: a narrow cell as wide as its 40-point stroke and its tick axis; in Path the LDOS h box above it.
         if self.mode == 'Path':
-            self.ax_stripe = self._panel_with_box(row, self._box_ldos_h, inner_w=58 / (1000 / 72) * plt.em_px())
+            self.ax_stripe = self._panel_with_box(row, self._box_ldos_h, inner_w=58)
         else:
-            self.ax_stripe = self._panel(row, inner_w=58 / (1000 / 72) * plt.em_px())
+            self.ax_stripe = self._panel(row, inner_w=58)
         self.line_decomp_axes.append(self.ax_stripe)
         self.ax_stripe.set_xticks([])
         self.ax_prof.set(ylabel="Height (Å)", title="Tip Height", xlabel="Dist (Å)")
@@ -2658,7 +2658,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
             self.line_decomp_axes.append(ax_l)
             cax_l = None
             if self.show_dcmp_norm or p_idx == num_p - 1:
-                cax_l = self._panel(row, inner_w=15 / (1000 / 72) * plt.em_px())
+                cax_l = self._panel(row, inner_w=15)
                 self.line_decomp_axes.append(cax_l)
             ax_l._cell.fill_as(1.0)       # sized and scored as a square panel; placed, its box fills its cell (no box aspect)
             ax_l.set_anchor('W')
@@ -2884,13 +2884,12 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
 
     def _move_line_markers(self):
         """
-        A Line / Path marker dragged: every counterpart moved with it (_place_line_markers; while
-        not running only the placement topo's markers, as the redraw of a stopped window) and,
-        while running, the marker spectra set from the display cache (_line_disp, built once per
-        data change by _update_all; _draw_spectrum in place).  Nothing is computed again while
-        the button is down.
+        A Line / Path marker dragged: every counterpart moved with it (_place_line_markers, running
+        or not) and, while running, the marker spectra set from the display cache (_line_disp,
+        built once per data change by _update_all; _draw_spectrum in place).  Nothing is computed
+        again while the button is down.
         """
-        self._place_line_markers(counterparts=self.is_running)
+        self._place_line_markers()
         if self.is_running and self._line_disp is not None and self._spec_key is not None:
             self._draw_spectrum(self._line_disp, None, self._line_geom[1])
         self.fig.canvas.draw_idle()
@@ -2915,20 +2914,20 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
                 cells.append(cell)
                 if self.cmap_norm:
                     # 'cmap norm': every map its own colour bar beside it (cax_list by the map's index).
-                    bar = self.fig.cell(inner_w=12 / (1000 / 72) * plt.em_px())
+                    bar = self.fig.cell(inner_w=12)
                     self._panel_cells.append(bar)
                     self.cax_list.append(self.fig.add_axes(cell=bar))
                     cell_bars[cell] = bar
             bar = None
             if self.show_dcmp_norm and not self.cmap_norm:
-                bar = self.fig.cell(inner_w=15 / (1000 / 72) * plt.em_px())
+                bar = self.fig.cell(inner_w=15)
                 self._panel_cells.append(bar)
                 self.cax_list.append(self.fig.add_axes(cell=bar))
             groups.append((cells, bar))
             self._map_cells += cells + ([bar] if bar is not None else []) + [cell_bars[c] for c in cells if c in cell_bars]
         shared = None
         if not self.show_dcmp_norm and not self.cmap_norm:
-            shared = self.fig.cell(inner_w=15 / (1000 / 72) * plt.em_px())
+            shared = self.fig.cell(inner_w=15)
             self._panel_cells.append(shared)
             self.cax_list.append(self.fig.add_axes(cell=shared))
             self._map_cells.append(shared)

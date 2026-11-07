@@ -1856,14 +1856,15 @@ class _Axis(pg.AxisItem):
         axisSpec, tickSpecs, textSpecs = specs
         b = self._strip(view)
         txt = f"1e{self._sci}"
+        fm = QtGui.QFontMetricsF(self.style['tickFont'])        # the label's room: its own font's height and advance
+        th, tw = fm.height(), fm.horizontalAdvance(txt)
         if self.orientation in ('left', 'right'):
             rect = QtCore.QRectF(b.right() - 12 / (1000 / 72) * em_px() if self.orientation == 'left'
-                                 else b.left() + 2 / (1000 / 72) * em_px(), b.top() - 15 / (1000 / 72) * em_px(),
-                                 90 / (1000 / 72) * em_px(), 14 / (1000 / 72) * em_px())
+                                 else b.left() + 2 / (1000 / 72) * em_px(), b.top() - 1 / (1000 / 72) * em_px() - th,
+                                 tw, th)
             flags = Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignBottom
         else:
-            rect = QtCore.QRectF(b.right() - 60 / (1000 / 72) * em_px(), b.bottom() - 14 / (1000 / 72) * em_px(),
-                                 75 / (1000 / 72) * em_px(), 14 / (1000 / 72) * em_px())
+            rect = QtCore.QRectF(b.right() + 15 / (1000 / 72) * em_px() - tw, b.bottom() - th, tw, th)
             flags = Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignBottom
         textSpecs = list(textSpecs) + [(rect, flags | Qt.TextFlag.TextDontClip, txt)]
         return axisSpec, tickSpecs, textSpecs
@@ -1921,10 +1922,9 @@ class _Axis(pg.AxisItem):
 
     def boundingRect(self):
         # pyqtgraph's bounding rect on the strip (_strip: the box's extent along the axis, so no mark or
-        # label of the box's edge is cut): widened along the axis for the labels at its ends (15 px at
-        # the old 100 DPI, by em_px, unless hideOverlappingLabels gives another margin), across it for
-        # ticks pointing inward, over the box when the grid is on, and over a power-of-ten label above a
-        # vertical axis.
+        # label of the box's edge is cut): widened along the axis for the labels at its ends (15 px
+        # unless hideOverlappingLabels gives another margin), across it for ticks pointing inward, over
+        # the box when the grid is on, and over a power-of-ten label above a vertical axis.
         view = self.linkedView()
         br = self._strip(view)
         if view is not None and self.grid is not False:
@@ -1941,8 +1941,10 @@ class _Axis(pg.AxisItem):
         else:
             br = br.adjusted(-m, min(0, tl), m, 0)
         if getattr(self, '_had_sci', False):
-            br = br.united(QtCore.QRectF(br.left(), br.top() - 16 / (1000 / 72) * em_px(),
-                                         br.width() + 80 / (1000 / 72) * em_px(), 16 / (1000 / 72) * em_px()))
+            fm = QtGui.QFontMetricsF(self.style['tickFont'])    # the label's room: its font's height and its text's advance
+            sh = fm.height() + 2 / (1000 / 72) * em_px()
+            sw = fm.horizontalAdvance(f"1e{self._sci}") if self._sci is not None else 0.0
+            br = br.united(QtCore.QRectF(br.left(), br.top() - sh, br.width() + sw, sh))
         return br
 
     def tickValues(self, minVal, maxVal, size):
@@ -2155,9 +2157,9 @@ class Line2D(Artist):
     """
     A curve and/or markers: a pyqtgraph PlotCurveItem for a plain curve, a PlotDataItem with
     markers (the '.' marker at half its size).  get_xdata, get_ydata, set_data, set_color, ...;
-    NaN points break the curve and are not drawn.  A picker (a radius in pixels at the old 100
-    DPI, converted by em_px where read, or True for 5) makes contains_px test the distance to the
-    polyline, or to the points when there is no line.
+    NaN points break the curve and are not drawn.  A picker (a radius in display pixels, or
+    True for 5) makes contains_px test the distance to the polyline, or to the points when there
+    is no line.
     """
 
     def __init__(self, axes, x=None, y=None, color='C0', lw=1.5, ls='-', marker=None, ms=6.0, mec=None, mfc=None,
@@ -3448,7 +3450,7 @@ class Annotation(Artist):
         if s:
             off = (0.0, 0.0)
             if xytext is not None and textcoords in ('offset points', 'offset pixels'):
-                k = pt2px(1) if textcoords == 'offset points' else 1 / (1000 / 72) * em_px()
+                k = pt2px(1) if textcoords == 'offset points' else 1.0
                 off = (float(xytext[0]) * k, float(xytext[1]) * k)
                 pos = xy
             elif xytext is not None:
@@ -3718,8 +3720,7 @@ class PanelCell(QtWidgets.QWidget):
     empty, mouse-transparent widget whose rectangle the layout sets.  The objects bound to it (an
     Axes made with cell=..., a figure text made with cell=...) are placed again whenever the cell,
     or any widget holding it, moves or changes size.  `stretch` (horizontal, vertical) says whether
-    the cell takes the room the layout has to spare in that direction; `min_px` is its smallest size
-    (pixels at the old fixed 100 DPI, converted by em_px where used).
+    the cell takes the room the layout has to spare in that direction; `min_px` is its smallest size.
     """
 
     def __init__(self, figure, min_px=(40, 40), stretch=(True, True), inner_w=None):
@@ -3729,9 +3730,8 @@ class PanelCell(QtWidgets.QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
         pol = QtWidgets.QSizePolicy.Policy
-        # inner_w: a narrow panel (a colour bar, a ramp) whose box is inner_w pixels (at the old fixed
-        # 100 DPI, converted by em_px where used) wide at text zoom 1; the cell is as wide as that box
-        # plus its tick axes and label (sizeHint).
+        # inner_w: a narrow panel (a colour bar, a ramp) whose box is inner_w pixels wide at text
+        # zoom 1; the cell is as wide as that box plus its tick axes and label (sizeHint).
         self.inner_w = inner_w
         if inner_w is not None:
             self.setSizePolicy(pol.Fixed, pol.Expanding if stretch[1] else pol.Preferred)
@@ -3951,7 +3951,7 @@ class PanelRow(QtWidgets.QLayout):
     def __init__(self, spacing=8):
         super().__init__()
         self._items = []            # [QLayoutItem, stretch]
-        self._sp = int(round(spacing / (1000 / 72) * em_px()))     # spacing: pixels at the old fixed 100 DPI
+        self._sp = spacing / (1000 / 72) * em_px()
         self.setContentsMargins(0, 0, 0, 0)
 
     # --- QLayout ---
@@ -4398,7 +4398,8 @@ class Axes:
         top = 0.0
         t = self._title
         if t is not None and t.get_text() and t.item.isVisible():
-            lift = 15.0 / (1000 / 72) * em_px() if any(getattr(a, '_had_sci', False) for a in [ya] + self._side_axes) else 0.0
+            lift = max((QtGui.QFontMetricsF(a.style['tickFont']).height() + 1 / (1000 / 72) * em_px()
+                        for a in [ya] + self._side_axes if getattr(a, '_had_sci', False)), default=0.0)
             top = float(t.item.boundingRect().height()) + abs(t._offset_px[1]) + lift
         elif ya.isVisible() or self._side_axes:
             top = 0.5 * float(QtGui.QFontMetricsF(qfont(10.0, zoom=self.figure.font_zoom)).height())   # the top tick value's half
@@ -4590,10 +4591,9 @@ class Axes:
         """
         The y limits raised so that no curve reaches the legend (an upper legend): the visible
         curves' range with 5 % of it below and 2 % above (matplotlib's margins), then the top
-        raised so that the legend's height (plus `pad_px` pixels at the old fixed 100 DPI, converted
-        by em_px; at most 0.8 of the panel) lies above the curves.  Marks the axes so that _place and
-        _refont re-run it when the panel's height or the zoom changes.  Nothing happens without a
-        legend or without curves.
+        raised so that the legend's height (plus `pad_px`, at most 0.8 of the panel) lies above the
+        curves.  Marks the axes so that _place and _refont re-run it when the panel's height or the
+        zoom changes.  Nothing happens without a legend or without curves.
         """
         leg = self._legend
         ys = []
@@ -4697,7 +4697,8 @@ class Axes:
             a.setGeometry(QtCore.QRectF(xr, y0, sw, h))
             xr += sw
         if self._title is not None:
-            lift = 15.0 / (1000 / 72) * em_px() if any(getattr(a, '_had_sci', False) for a in [self.yaxis_item] + self._side_axes) else 0.0
+            lift = max((QtGui.QFontMetricsF(a.style['tickFont']).height() + 1 / (1000 / 72) * em_px()
+                        for a in [self.yaxis_item] + self._side_axes if getattr(a, '_had_sci', False)), default=0.0)
             base = getattr(self._title, '_base_offset', None)
             if base is None:
                 base = self._title._base_offset = self._title.item._offset.y()
@@ -5528,7 +5529,7 @@ class Axes:
         matplotlib's scatter: a PathCollection of markers at (x, y), `s` their areas in points
         squared (36: the 6-point marker), `c` one colour, one colour per point, or numbers
         coloured through `cmap` and `norm` (vmin / vmax), `edgecolors` 'face', 'none' or a
-        colour, `picker` a pick radius in pixels at the old 100 DPI, converted by em_px where read (True: 5).
+        colour, `picker` a pick radius in pixels (True: 5).
         """
         x = np.asarray(np.ma.filled(np.ma.asarray(x, dtype=np.float64), np.nan), dtype=np.float64).ravel()
         y = np.asarray(np.ma.filled(np.ma.asarray(y, dtype=np.float64), np.nan), dtype=np.float64).ravel()
@@ -6621,7 +6622,7 @@ class Figure:
         # declares it as a DESIGN constant): the text is at FONT_SCALE x its points when the canvas
         # has this size and grows / shrinks with the canvas (font_zoom = window_zoom(...), ZOOM_MIN to
         # ZOOM_MAX, the one rule of every window), so it stays readable on any monitor and in a
-        # maximized window.  On a high-DPI screen the window opens proportionally larger.
+        # maximized window.
         self._design_px = (w_px, h_px)
         self.font_zoom = 1.0
         self.portrait = False          # the window taller than wide: short labels and stamp titles (set_portrait)
@@ -6830,7 +6831,7 @@ class Figure:
         self._fit_controls()
 
     def cell(self, min_px=(40, 40), stretch=(True, True), inner_w=None):
-        """A new PanelCell of this figure for the window's layout (an axes or a text goes in it with cell=...); inner_w for a narrow panel (a colour bar); min_px and inner_w in pixels at the old fixed 100 DPI (PanelCell converts them)."""
+        """A new PanelCell of this figure for the window's layout (an axes or a text goes in it with cell=...); inner_w for a narrow panel (a colour bar)."""
         return PanelCell(self, min_px=min_px, stretch=stretch, inner_w=inner_w)
 
     def set_title_cell(self, cell):

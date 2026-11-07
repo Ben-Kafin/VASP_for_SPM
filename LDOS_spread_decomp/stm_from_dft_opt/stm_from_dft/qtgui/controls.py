@@ -36,8 +36,9 @@ from .widgets import SPECS, LABELS, short_form
 
 Qt = QtCore.Qt
 
-# The box frame of every group of controls in every window (the light frame of the figure windows).
-FRAME_CSS = "QFrame#box { background: #f0f0f0; border: 1px solid #c8c8c8; border-radius: 3px; }"
+# The box frame of every group of controls in every window (the light frame of the figure windows):
+# its border width and radius are filled in where it is set (1 and 3 px at the old fixed 100 DPI, by em_px).
+FRAME_CSS = "QFrame#box { background: #f0f0f0; border: %dpx solid #c8c8c8; border-radius: %dpx; }"
 COLOR_FRAME_CSS = "QFrame#count { border: 2px solid %s; border-radius: 3px; }"
 
 
@@ -81,7 +82,7 @@ def box(*items, title=None, orient='h', spacing=4, margins=(4, 2, 4, 2), stretch
     """
     frame = QtWidgets.QFrame()
     frame.setObjectName('box')
-    frame.setStyleSheet(FRAME_CSS)
+    frame.setStyleSheet(FRAME_CSS % (round(1 / (1000 / 72) * plt.em_px()), round(3 / (1000 / 72) * plt.em_px())))
     outer = QtWidgets.QVBoxLayout(frame)
     outer.setContentsMargins(*(round(m / (1000 / 72) * plt.em_px()) for m in margins))
     outer.setSpacing(round(2 / (1000 / 72) * plt.em_px()))
@@ -790,9 +791,8 @@ class Checks(Control):
     """
     A box frame of toggle rows: value is the list of states; set(i, flag) never fires;
     callback(label, states) after a click (the clicked row already flipped).  `indents` gives a
-    left indent per row: pixels (at the old fixed 100 DPI, converted to the screen with
-    qtplot.em_px), or a text whose width (in the box's font) is the indent (the calibrate box's
-    rows under 'calibrate').
+    left indent per row: pixels, or a text whose width (in the box's font) is the indent (the
+    calibrate box's rows under 'calibrate').
     """
 
     def __init__(self, fig, name, values=None, labels=None, title=None, indents=None):
@@ -803,7 +803,7 @@ class Checks(Control):
         self._title = title or ''
         frame = QtWidgets.QFrame()
         frame.setObjectName('box')
-        frame.setStyleSheet(FRAME_CSS)
+        frame.setStyleSheet(FRAME_CSS % (round(1 / (1000 / 72) * plt.em_px()), round(3 / (1000 / 72) * plt.em_px())))
         lay = QtWidgets.QVBoxLayout(frame)
         lay.setContentsMargins(round(4 / (1000 / 72) * plt.em_px()), round(2 / (1000 / 72) * plt.em_px()),
                                round(4 / (1000 / 72) * plt.em_px()), round(2 / (1000 / 72) * plt.em_px()))
@@ -898,7 +898,7 @@ class Radio(Control):
         self._title = title or ''
         frame = QtWidgets.QFrame()
         frame.setObjectName('box')
-        frame.setStyleSheet(FRAME_CSS)
+        frame.setStyleSheet(FRAME_CSS % (round(1 / (1000 / 72) * plt.em_px()), round(3 / (1000 / 72) * plt.em_px())))
         lay = QtWidgets.QVBoxLayout(frame)
         lay.setContentsMargins(round(4 / (1000 / 72) * plt.em_px()), round(2 / (1000 / 72) * plt.em_px()),
                                round(4 / (1000 / 72) * plt.em_px()), round(2 / (1000 / 72) * plt.em_px()))
@@ -1244,7 +1244,8 @@ class Count(Text):
         """The box's frame in `color` (a marker group's colour)."""
         if color != self._color:
             self._color = color
-            self.widget.setStyleSheet(f"QLineEdit#count {{ border: 2px solid {qcolor(color).name()}; border-radius: 3px; }}")
+            self.widget.setStyleSheet(f"QLineEdit#count {{ border: {round(2 / (1000 / 72) * plt.em_px())}px solid {qcolor(color).name()}; "
+                                      f"border-radius: {round(3 / (1000 / 72) * plt.em_px())}px; }}")
 
 
 class Value(Text):
@@ -1885,7 +1886,7 @@ class MapBlock(QtWidgets.QWidget):
     def __init__(self, fig, spacing=4):
         super().__init__()
         self.fig = fig
-        self._sp = int(round(spacing / (1000 / 72) * plt.em_px()))
+        self._sp = spacing / (1000 / 72) * plt.em_px()
         self._groups = []             # [(cells, bar)]
         self._shared = None
         self._extra = None            # the extra cell (set_groups), one map's size at the first free slot
@@ -2230,7 +2231,7 @@ class Arrangement(QtWidgets.QWidget):
             w.setParent(self)
             w.show()
             w.installEventFilter(self)
-        self._sp, self._hys = int(round(spacing / (1000 / 72) * plt.em_px())), float(hysteresis)
+        self._sp, self._hys = spacing / (1000 / 72) * plt.em_px(), float(hysteresis)
         self._free_min_fn, self._free_cap_fn, self._free_scored = free_min, free_cap, bool(free_scored)
         self._group_cap = group_cap       # (A, B, k, box_a, box_b): group A's plot box at most k times group B's
         self._lim = {}                    # {group: (max w, max h)} while a candidate is sized under group_cap
