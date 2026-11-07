@@ -1969,12 +1969,18 @@ class MapBlock(QtWidgets.QWidget):
     that fit the block's region (`fit`); each partition may have a colour-bar cell at its right
     spanning its rows, or one bar serves the whole block at its right.  The cells are placed by
     the block itself (rule 11: the row of each visual line shares one band, Figure.align_row).
-    `set_groups([(cells, bar_or_None), ...], shared_bar=None, extra=None, cell_bars=None)` gives
-    it the cells (the block takes them as children; the old ones are the window's to remove);
+    `set_groups([(cells, bar_or_None), ...], shared_bar=None, extra=None, cell_bars=None,
+    extra_side=None)` gives it the cells (the block takes them as children; the old ones are the
+    window's to remove);
     `extra` is one more cell of a map's size (the simulator's spectrum) placed in the free slot of
     the last row, or in a row of its own when the last row is full (alone in the block before
     there are maps); it counts in the block's shape but not in the maps' room for titles and tick
-    axes.  `cell_bars` ({cell: bar cell}) puts a narrow colour-bar cell right of each map named,
+    axes.  `extra_side` is a widget of fixed width beside the extra cell (the simulator's legend
+    panel; taken only with `extra`): drawn one spacing right of the extra cell, at that row's top
+    and height (the extra cell keeps a map's size), its fixed width counted in the block's width
+    and in the maps' fit (_size_at), the colour bars placed right of it when it reaches past the
+    maps' columns (_right); it sets no row's height and is not aligned with the row's panels.
+    `cell_bars` ({cell: bar cell}) puts a narrow colour-bar cell right of each map named,
     inside the map's column (the simulator's 'cmap norm': every map its own scale and bar, as the
     sm4_Browser grid view).
     """
@@ -1986,6 +1992,7 @@ class MapBlock(QtWidgets.QWidget):
         self._groups = []             # [(cells, bar)]
         self._shared = None
         self._extra = None            # the extra cell (set_groups), one map's size at the first free slot
+        self._extra_side = None       # the extra cell's side item (set_groups extra_side), right of it at its row's height
         self._cell_bars = {}          # {cell: bar cell} beside each map named (set_groups cell_bars)
         self._metrics_cache = None    # the cells' Qt-measured room (_metrics), kept for one layout pass (_invalidate)
         self._best_cache = {}         # _best per (W, H) within that pass
@@ -2005,7 +2012,8 @@ class MapBlock(QtWidgets.QWidget):
         above and below per partition, 'title_w' the widest title, 'bar_w' the partition / shared
         bars' width, 'cell_bar_w' a map's own bar's, 'ratio' a map's height over its width,
         'tb_cells' the room above and below of every cell per partition and 'tb_extra' the extra
-        cell's (_row_tb: each row is as tall as its own cells ask).  The
+        cell's (_row_tb: each row is as tall as its own cells ask), 'side_w' the extra cell's side
+        item's fixed width (None without one: _side_w).  The
         arrangement asks the block its size hundreds of times in one pass (the candidates, their
         bisections): without this each question measured every cell again.
         """
@@ -2015,15 +2023,16 @@ class MapBlock(QtWidgets.QWidget):
                  'tb_cells': [[self._tb_of([c]) for c in cells] for cells, _ in self._groups],
                  'tb_extra': self._tb_of([self._extra]) if self._extra is not None else 0.0,
                  'title_w': self._title_w(), 'bar_w': self._bar_w(), 'cell_bar_w': self._cell_bar_w(),
-                 'ratio': self._ratio()}
+                 'side_w': self._side_w(), 'ratio': self._ratio()}
             self._metrics_cache = m
         return m
 
-    def set_groups(self, groups, shared_bar=None, extra=None, cell_bars=None):
+    def set_groups(self, groups, shared_bar=None, extra=None, cell_bars=None, extra_side=None):
         self._invalidate()
         self._groups = [(list(cells), bar) for cells, bar in groups]
         self._shared = shared_bar
         self._extra = extra
+        self._extra_side = extra_side if extra is not None else None   # a side item only beside an extra cell
         self._cell_bars = dict(cell_bars or {})
         for cells, bar in self._groups:
             for c in cells + ([bar] if bar is not None else []):
@@ -2038,6 +2047,9 @@ class MapBlock(QtWidgets.QWidget):
         if extra is not None:
             extra.setParent(self)
             extra.show()
+        if self._extra_side is not None:
+            self._extra_side.setParent(self)
+            self._extra_side.show()
         self.cols = max(1, max([len(c) for c, _ in self._groups] + [1]))
         self.updateGeometry()
         self._arrange()
@@ -2081,6 +2093,28 @@ class MapBlock(QtWidgets.QWidget):
             return 0.0
         return float(max(b.sizeHint().width() for b in self._cell_bars.values())) + self._sp
 
+    def _side_w(self):
+        """The extra cell's side item's fixed width (its minimumWidth, which QWidget.setFixedWidth sets); None without a side item."""
+        if self._extra_side is None:
+            return None
+        return float(self._extra_side.minimumWidth())
+
+    def _extra_col(self, n):
+        """The extra cell's column at `n` columns: after the last partition's maps in its last row, 0 in a row of its own (or alone in the block)."""
+        return len(self._groups[-1][0]) % n if self._groups else 0
+
+    def _right(self, n, cw, cbw, side_w):
+        """
+        The right edge of the block's cells at `n` columns of `cw`-wide cells (each column with `cbw`
+        for a map's own bar): the maps' columns, or the extra cell's side item's right edge (`side_w`
+        wide, one spacing right of the extra cell; None without one) when it reaches past them.  The
+        partition and shared colour bars go one spacing right of it, so they stay clear of the side item.
+        """
+        right = n * (cw + cbw) + (n - 1) * self._sp
+        if side_w is not None:
+            right = max(right, self._extra_col(n) * (cw + cbw + self._sp) + cw + self._sp + side_w)
+        return right
+
     def _lines(self, k, cols):
         """The rows partition k takes at `cols` columns (the extra cell counted with the last partition)."""
         n = len(self._groups[k][0]) + (1 if self._extra is not None and k == len(self._groups) - 1 else 0)
@@ -2123,17 +2157,22 @@ class MapBlock(QtWidgets.QWidget):
         return out
 
     def _size_at(self, cols, W, H):
-        """(w, h, box_w) of the block at `cols` columns inside W x H: the largest maps that fit by width, then by height."""
+        """(w, h, box_w) of the block at `cols` columns inside W x H: the largest maps that fit by width (the extra cell's side item counted), then by height."""
         n = max(1, min(cols, max([len(c) for c, _ in self._groups] + [1])))
         R = self._rows(n)
         if R == 0:
             return (1.0, 1.0, 0.0)
         m = self._metrics()
         lr, bar_w, cbw = m['lr'], m['bar_w'], m['cell_bar_w']   # cbw: a map's own colour bar beside it, in its column
+        sw = m['side_w']
         r = m['ratio']
         # Every row carries its own room (_row_tb: titles on the first partition's rows, the spectrum's labels on its row).
         tb_sum = sum(self._row_tb(n))
         cw = (W - bar_w - (n - 1) * self._sp) / n - cbw
+        if sw is not None:
+            # The side item right of the extra cell (in its column c) inside W as well, the bars right of it (_right).
+            c = self._extra_col(n)
+            cw = min(cw, (W - bar_w - self._sp - sw - c * (cbw + self._sp)) / (c + 1))
         box_w = max(cw - lr, 1.0)
         box_h = box_w * r
         total = R * box_h + tb_sum + (R - 1) * self._sp
@@ -2141,7 +2180,7 @@ class MapBlock(QtWidgets.QWidget):
             box_h = max((H - (R - 1) * self._sp - tb_sum) / R, 1.0)
             box_w = box_h / r
         cw = max(box_w + lr, m['title_w'] + 4.0 / (1000 / 72) * plt.em_px())                 # a cell at least as wide as its title
-        w = n * (cw + cbw) + (n - 1) * self._sp + bar_w
+        w = self._right(n, cw, cbw, sw) + bar_w
         h = R * (box_w * r) + tb_sum + (R - 1) * self._sp
         return (w, h, box_w)
 
@@ -2210,6 +2249,8 @@ class MapBlock(QtWidgets.QWidget):
         cw = max(box_w + lr, m['title_w'] + 4.0 / (1000 / 72) * plt.em_px())
         cbw = m['cell_bar_w']
         bar_w = m['bar_w'] - self._sp if m['bar_w'] > 0 else 0.0
+        sw = m['side_w']
+        bx = self._right(n, cw, cbw, sw) + self._sp              # the colour bars' left: right of the maps and of the side item
         y = 0.0
         rows_for_align = []
         groups = self._groups or [([], None)]
@@ -2236,16 +2277,16 @@ class MapBlock(QtWidgets.QWidget):
                 if b is not None:                                # the map's own colour bar, right of it
                     b.setGeometry(int(round(x + cw + self._sp)), int(round(cy)), int(round(max(cbw - self._sp, 1.0))), int(round(ch)))
                     row.append(b)
+                if c is self._extra and sw is not None:          # the extra cell's side item, right of it at the row's top and height
+                    self._extra_side.setGeometry(int(round(x + cw + self._sp)), int(round(cy)), int(round(sw)), int(round(ch)))
             if row:
                 rows_for_align.append(row)
             line0 += lines
             gh = sum(heights) + (lines - 1) * self._sp
             if bar is not None:
-                bx = n * (cw + cbw) + (n - 1) * self._sp + self._sp
                 bar.setGeometry(int(round(bx)), int(round(y0)), int(round(bar_w)), int(round(gh)))
             y = y0 + gh + self._sp
         if self._shared is not None:
-            bx = n * (cw + cbw) + (n - 1) * self._sp + self._sp
             self._shared.setGeometry(int(round(bx)), 0, int(round(bar_w)), int(round(max(y - self._sp, 1.0))))
         for row in rows_for_align:
             axes = [o for c in row for o in c._bound if isinstance(o, plt.Axes)]

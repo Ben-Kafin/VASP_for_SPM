@@ -58,11 +58,8 @@ from . import ldos_decomp
 # kappa0 = KAPPA0_PER_SQRT_EV sqrt(phi):
 #   Decay on:  w(E, V) = exp(-S(E, V)), the exact tilted barrier, with its V derivative dw/dV
 #              (gpu_chen_tunneling_factor, below);
-#   Decay off: w = exp(-2 kappa0 d), the same weight without its energy and bias dependence (dw/dV = 0).  It is
-#              inline code, not a def: the two lines `kappa0 = KAPPA0_PER_SQRT_EV * cp.sqrt(phi_local)` and
-#              `sf = cp.exp(-2.0 * kappa0[None, :] * dists)` in each of the two Decay-off branches (the last
-#              `else:` of each branch of preserve_orbitals) of _compute_channel, nested in
-#              Unified_STM_Simulator._calculate_ldos_at_points_gpu.
+#   Decay off: w = exp(-2 kappa0 d), the same weight without its energy and bias dependence (dw/dV = 0)
+#              (gpu_decay_off_factor, below).
 # As in a measurement (C. J. Chen, Introduction to Scanning Tunneling Microscopy, 3rd ed., Oxford University Press
 # 2021), the topography is taken at one frozen bias and the displayed LDOS is dI/dV with the bias swept:
 #   I(V)       = sum over the images of  integral_0^V (sum_o rho_o(E)) w(E, V) dE
@@ -118,6 +115,20 @@ def gpu_chen_tunneling_factor(E, V, phi, d, topo):
     dS = cp.where(both, (2.0 / 3.0) * kd * (sa + 2.0 * sb) / (ss * ss),
                   cp.where(none, 0.0, (4.0 / 3.0) * kd * (1.5 * sa / V - diff / (V * V))))
     return w, -dS * w
+
+
+def gpu_decay_off_factor(phi, d):
+    """
+    Physics: the decay weight with Decay off of an atom image at distance d (Angstrom) from the tip, with phi
+    the local barrier (the LOCPOT potential at the tip point minus E_F, eV):
+        w = exp(-2 kappa0 d),   kappa0 = KAPPA0_PER_SQRT_EV sqrt(phi)   (Chen Eq. 2.38),
+    the weight of gpu_chen_tunneling_factor without its energy and bias dependence (dw/dV = 0): every state
+    of the image, at every bias, carries the same w.
+    phi: (n_pts,) float32 CuPy, one per tip point; d: (n_images, n_pts) float32 CuPy; the result is
+    (n_images, n_pts) float32.
+    """
+    kappa0 = KAPPA0_PER_SQRT_EV * cp.sqrt(phi)
+    return cp.exp(-2.0 * kappa0[None, :] * d)
 
 
 # ==== NUMERICS AND GPU (no physics) ====
@@ -702,6 +713,23 @@ class Unified_STM_Simulator:
     def _precision_cache_suffix(self):
         return "_f32"
 
+    def _display_indices(self, emin, emax):
+        """
+        Machinery: the displayed DOSCAR samples of the window [emin, emax], ascending, as
+        _calculate_ldos_at_points_gpu takes them (samples=, and its emin / emax path): from E Min's
+        snapped sample (_snap 'emin', a tie to the higher) to E Max's (_snap 'emax', a tie to the lower),
+        both included.  An end of exactly 0.0 is 0 V, not a sample, and adds no point: the display then
+        starts (E Min = 0.0) at the first sample above 0 V, or ends (E Max = 0.0) at the last sample below
+        it, so a sample exactly at 0 V is then not displayed.  No 0 V value is ever displayed.
+        """
+        lo = _snap(self.energies, emin, 'emin')
+        hi = _snap(self.energies, emax, 'emax')
+        if lo is ZERO_V:
+            lo = self.k0 + 1
+        if hi is ZERO_V:
+            hi = self.k0 if self.e0 != 0.0 else self.k0 - 1
+        return np.arange(lo, hi + 1)
+
     def _calculate_ldos_at_points_gpu(self, tip_positions, emin, emax,
                                       use_energy_decay=False, preserve_orbitals=False,
                                       topo_only=False, v_bias=None, with_current=False, samples=None):
@@ -835,8 +863,7 @@ class Unified_STM_Simulator:
                     if want_cur:
                         cur = tot_c if in_order else tot_c[:, cp.asarray(u_inv)]
                 else:
-                    kappa0 = KAPPA0_PER_SQRT_EV * cp.sqrt(phi_local)
-                    sf = cp.exp(-2.0 * kappa0[None, :] * dists)
+                    sf = gpu_decay_off_factor(phi_local, dists)
                     output_ldos = cp.dot(sf.T, dos_active)
                     if want_cur:
                         cur = _current_decay_off(sf.T, dos_periodic)
@@ -864,8 +891,7 @@ class Unified_STM_Simulator:
                     if want_cur:
                         cur = cur_u.sum(axis=2) if in_order else cur_u.sum(axis=2)[:, cp.asarray(u_inv)]
                 else:
-                    kappa0 = KAPPA0_PER_SQRT_EV * cp.sqrt(phi_local)
-                    sf = cp.exp(-2.0 * kappa0[None, :] * dists)
+                    sf = gpu_decay_off_factor(phi_local, dists)
                     w_atom = cp.dot(self.map_mat_gpu, sf)
                     output_ldos = w_atom.T[:, None, :, None] * dos_gpu[:, energy_indices, :].transpose(1, 0, 2)[None, :, :, :]
                     if want_cur:
@@ -1200,23 +1226,6 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
     # ------------------------------------------------------------------
     # 'Feenstra': the display divided by I/V (feenstra.py)
     # ------------------------------------------------------------------
-    def _display_indices(self, emin, emax):
-        """
-        Machinery: the displayed DOSCAR samples of the window [emin, emax], ascending, as
-        _calculate_ldos_at_points_gpu takes them (samples=, and its emin / emax path): from E Min's
-        snapped sample (_snap 'emin', a tie to the higher) to E Max's (_snap 'emax', a tie to the lower),
-        both included.  An end of exactly 0.0 is 0 V, not a sample, and adds no point: the display then
-        starts (E Min = 0.0) at the first sample above 0 V, or ends (E Max = 0.0) at the last sample below
-        it, so a sample exactly at 0 V is then not displayed.  No 0 V value is ever displayed.
-        """
-        lo = _snap(self.energies, emin, 'emin')
-        hi = _snap(self.energies, emax, 'emax')
-        if lo is ZERO_V:
-            lo = self.k0 + 1
-        if hi is ZERO_V:
-            hi = self.k0 if self.e0 != 0.0 else self.k0 - 1
-        return np.arange(lo, hi + 1)
-
     def _map_sample_indices(self, targets):
         """
         Machinery: the DOSCAR sample each Map energy is snapped to, in the order given: the nearest of
@@ -1931,10 +1940,12 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         self._cluster_row = None
         self._map_block = None
         self._map_cells = []
-        # The spectrum's built curves (_draw_spectrum) and the Line / Path drag cache: none in the new view.
+        # The spectrum's built curves (_draw_spectrum) and the Line / Path drag cache with its Norm factors: none
+        # in the new view.
         self._spec_key, self._spec_lines, self._spec_emarkers, self._spec_title = None, [], [], None
         self._spec_curves = []                     # the decomp's records of _spec_lines (ldos_decomp.Curve), in the same order
         self._line_disp = None
+        self._line_norm = None
         if getattr(self, 'cursor', None) is not None:
             self.cursor.remove()
             self.cursor = None
@@ -3007,6 +3018,12 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
             # marker spectra from it and computes nothing while the button is down (_move_line_markers).
             # NumPy: copied to the host once here, so a drag does no GPU work.
             self._line_disp = cp.asnumpy(f_ldos_raw) if f_ldos_raw is not None else None
+            # Beside it, the Norm factors: each point's integral over the energies of its total displayed LDOS
+            # (what 'Norm' divides a spectrum by), computed here once on the GPU (quadrature.simpson) and kept
+            # as NumPy in the float32 they were computed in; under 'Norm' a drag divides the marker spectra by
+            # them (_draw_spectrum, line_norm).
+            self._line_norm = (cp.asnumpy(quadrature.simpson(cp.sum(f_ldos_raw, axis=(2, 3)), dx=self.e_step32, axis=1))
+                               if f_ldos_raw is not None else None)
 
         self._draw_spectrum(f_ldos_raw, spec_disp, p_dist if self.mode in ('Line', 'Path') else None,
                             nepts=nepts, full_refresh=full_refresh)
@@ -3115,7 +3132,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
 
         self.fig.canvas.draw_idle()
 
-    def _draw_spectrum(self, f_ldos_raw, spec_disp, p_dist, nepts=None, full_refresh=False):
+    def _draw_spectrum(self, f_ldos_raw, spec_disp, p_dist, nepts=None, full_refresh=False, line_norm=None):
         """
         Machinery: the spectrum panel (ax_spec) for the state.  Its curves are drawn anew (the panel cleared,
         the curves plotted, the legends and the hover labels made, as before) when the set of
@@ -3125,7 +3142,11 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         _RefLine.set_xdata), with the limits and the title.  f_ldos_raw: the displayed LDOS of
         the Line / Path points (in a drag the cache, _line_disp); spec_disp: the displayed marker
         spectra (Single Point, Map); p_dist: the Line / Path distances; nepts and full_refresh:
-        the Map energy markers as _update_all gives them.  The caller draws the canvas.
+        the Map energy markers as _update_all gives them; line_norm: in a Line / Path drag or a
+        mark_dynamic pick, the Norm factors kept beside the drag cache (_line_norm), by which, under
+        'Norm', each spectrum is divided here (its point's factor + 1e-15), so the drag does no GPU
+        work; None otherwise (under 'Norm' the curves are then divided by their integrals,
+        quadrature.simpson, in ldos_decomp.Decomp.curves).  The caller draws the canvas.
         """
         if self.mode in ('Line', 'Path'):
             active_idx = int(self.marker_ratios[min(self.active_marker_idx, len(self.marker_ratios) - 1)] * (self.npts - 1))
@@ -3133,6 +3154,12 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
             # Every marker's spectrum in index order (level 0), at the marker's point on the line.
             marker_spectra = ([f_ldos_raw[int(r * (self.npts - 1))] for r in self.marker_ratios]
                               if f_ldos_raw is not None else None)
+            if line_norm is not None and self.normalize and f_ldos_raw is not None:
+                # 'Norm' in a drag: each spectrum divided by its point's kept factor, on the host (new arrays:
+                # the drag cache stays as it is).
+                active_ldos = active_ldos / (line_norm[active_idx] + 1e-15)
+                marker_spectra = [s / (line_norm[int(r * (self.npts - 1))] + 1e-15)
+                                  for s, r in zip(marker_spectra, self.marker_ratios)]
         else:
             active_idx = min(self.active_marker_idx, len(self.marker_coords) - 1)
             active_ldos = spec_disp[active_idx]
@@ -3147,7 +3174,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         # The level's curves (ldos_decomp: data, style, label, pickable), the markers' colours in index order.
         marker_colors = (self.line_marker_colors if self.mode in ('Line', 'Path')
                          else [self.m_colors[i % len(self.m_colors)] for i in range(n_marks)])
-        integral =(lambda y: quadrature.simpson(y, dx=self.e_step32)) if self.normalize else None
+        integral =(lambda y: quadrature.simpson(y, dx=self.e_step32)) if self.normalize and line_norm is None else None
         curves = self.decomp.curves(active_ldos, marker_spectra, marker_colors, self.atomtypes, self.atomnums,
                                     self.orbitals, self.dos_up_gpu, self._type_color_map, self.cached_eg, integral)
         key = (self.mode, self.plot_level, tuple(c.label for c in curves), bool(self.feenstra),
@@ -3469,13 +3496,14 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
     def _move_line_markers(self):
         """
         Machinery: a Line / Path marker dragged: every counterpart moved with it (_place_line_markers, running
-        or not) and, while running, the marker spectra set from the display cache (_line_disp,
-        built once per data change by _update_all; _draw_spectrum in place); the info panel's
-        markers line follows (_markers_changed).  Nothing is computed again while the button is down.
+        or not) and, while running, the marker spectra set from the display cache (_line_disp and its
+        Norm factors _line_norm, built once per data change by _update_all; _draw_spectrum in place); the
+        info panel's markers line follows (_markers_changed).  Nothing is computed again while the button
+        is down.
         """
         self._place_line_markers()
         if self.is_running and self._line_disp is not None and self._spec_key is not None:
-            self._draw_spectrum(self._line_disp, None, self._line_geom[1])
+            self._draw_spectrum(self._line_disp, None, self._line_geom[1], line_norm=self._line_norm)
         self._markers_changed()
         self.fig.canvas.draw_idle()
 
@@ -3739,7 +3767,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
             self.active_marker_idx = int(event.artist.get_label().split('_')[1])
             # Only what shows the active marker is updated: the spectrum, from the display cache.
             if self.is_running and self.mode in ('Line', 'Path') and self._line_disp is not None and self._spec_key is not None:
-                self._draw_spectrum(self._line_disp, None, self._line_geom[1])
+                self._draw_spectrum(self._line_disp, None, self._line_geom[1], line_norm=self._line_norm)
             self._markers_changed()                # the info panel's markers line stars the active marker
             self.fig.canvas.draw_idle()
 
