@@ -88,7 +88,6 @@ SPECS = {
     'Topo h': _spec('value', 0.6, 0.24, vmin=0.0, vmax=None, decimals=3),      # tip heights (Å); the window passes vmax
     'LDOS h': _spec('value', 0.6, 0.24, vmin=0.0, vmax=None, decimals=3),
     'σ broad': _spec('value', 0.5, 0.22, fs=7, vmin=0.0, vmax=1.0, decimals=2),   # the simulator: extra broadening per atom type (eV), labelled 'σ <type>'
-    'width (V)': _spec('value', 0.6, 0.24, vmin=0.001, vmax=None, decimals=3),   # the simulator: the Feenstra I/V broadening width (V), > 0 as the sm4_Browser's
     'σ (eV)': _spec('value', 0.6, 0.24, decimals=3),                           # SigmaBox: the window passes the limits
     'γ': _spec('text', 0.45, 0.24, fs=7),                                      # GammaBox (plane slice)
     'LDOS γ': _spec('text', 0.45, 0.24, fs=7),                                 # GammaBox (the simulator's heatmaps)
