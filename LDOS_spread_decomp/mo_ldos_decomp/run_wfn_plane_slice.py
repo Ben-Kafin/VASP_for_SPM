@@ -310,7 +310,6 @@ def _resolve_cmap(name: str, invert: bool) -> str:
     return name[:-2] if name.endswith("_r") else name + "_r"
 
 
-# The shared Qt layer: the simulator's qtgui copy (mo_ldos_projection._imports.resolve_qt).
 from mo_ldos_projection._imports import resolve_qt  # noqa: E402
 plt, controls, widgets, mplexport = resolve_qt()
 

@@ -86,7 +86,6 @@ import numpy as np
 if __name__ != "__main__":
     from ._imports import PlotConfig, _gauss_sum, resolve_qt
     from .decomp_window import _offset_name, load_static_mo_data
-    # The shared Qt layer: the simulator's qtgui copy (_imports.resolve_qt).
     plt, controls, widgets, mplexport = resolve_qt()
     ScalarMappable = plt.ScalarMappable
     LinearSegmentedColormap = plt.LinearSegmentedColormap

@@ -141,7 +141,6 @@ if __name__ != "__main__":
         resolve_qt,
     )
     from .synthetic_doscar import read_doscar_header
-    # The shared Qt layer: the simulator's qtgui copy (_imports.resolve_qt).
     plt, controls, widgets, mplexport = resolve_qt()
 
 # Near-zero numerical-noise filter on the in-window entity area (eV⁻¹·eV).

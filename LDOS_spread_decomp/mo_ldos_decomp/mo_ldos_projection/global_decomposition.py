@@ -61,7 +61,6 @@ if __name__ != "__main__":
         homo_entity_offsets,
         resolve_qt,
     )
-    # The shared Qt layer: the simulator's qtgui copy (_imports.resolve_qt).
     plt, controls, widgets, mplexport = resolve_qt()
 
 # σ box range / default (eV), VASP SIGMA convention.

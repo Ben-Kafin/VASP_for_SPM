@@ -18,11 +18,10 @@ markers, line scans, path scans and energy maps.
 ## The window
 
 The window is a Qt window (PySide6 + pyqtgraph) drawn with the package's own copy of the `qtgui`
-layer, `stm_from_dft/qtgui/` (imported from the package, no folder walking; the MO to LDOS
-decomposition windows use it too): its panels and controls sit in one automatic layout (nothing is
-placed by hand, nothing overlaps at any window size, the window never scrolls), every text follows
-the window's size and is never below 10 pt, and a panel's title shows its short name with the
-details (bias, height, the marker) in the
+layer, `stm_from_dft/qtgui/` (imported from the package, no folder walking): its panels and
+controls sit in one automatic layout (nothing is placed by hand, nothing overlaps at any window
+size, the window never scrolls), every text follows the window's size and is never below 10 pt,
+and a panel's title shows its short name with the details (bias, height, the marker) in the
 information panel docked at the bottom. The panels are arranged by one rule (the guide's rule 11):
 every plotted panel is a first-class citizen, the plots fill the window, spatial panels keep their
 ratio, nothing plotted is shrunk to make room, and blank space is what is minimized. The shaped
@@ -74,7 +73,7 @@ left column through `Interactive_STM_Simulator.add_control_box`.
 
 | module | role |
 |---|---|
-| `simulator.py` | `Unified_STM_Simulator` (GPU LDOS, Simpson integration, Chen's tunneling matrix element `gpu_chen_tunneling_factor`, constant-current convergence, caches) and `Interactive_STM_Simulator` (the window: its controls made once, its panels per view, on the shared `qtgui` layer). The decay model is described in the `Decay` row above |
+| `simulator.py` | `Unified_STM_Simulator` (GPU LDOS, Simpson integration, Chen's tunneling matrix element `gpu_chen_tunneling_factor`, constant-current convergence, caches) and `Interactive_STM_Simulator` (the window: its controls made once, its panels per view, on the package's own `qtgui` copy, `stm_from_dft/qtgui/`). The decay model is described in the `Decay` row above |
 | `feenstra.py` | the `Feenstra` toggle's arithmetic (numpy only): `current_from_ldos` (I(V), the LDOS integrated from 0 V), `iv_ratio` (I/V, plain or broadened: a port of the sm4_Browser's `feenstra.iv_broadened` without its current filters and 0Vsub, which have no counterpart for a computed current), `divide` |
 | `doscar_parser.py` | `SpinAwareDosParser`, `SpinMode`: DOSCAR reader for all three spin modes |
 | `locpot_manager.py` | `LocpotManager`: LOCPOT loading and `.npy` caching for all three spin modes |

@@ -67,8 +67,10 @@ windows:
   on every view change, rebuild, crop and resize; each tip-height box sits above the panel it
   belongs to. The placement topography can be cropped: two draggable cursors per axis with the
   outside shaded, a box riding with each cursor, Crop and Uncrop above the panel; a crop changes
-  the panel's shape and the layout follows it. A window of spatial panels trims the blank strips
-  at its edges at its first show and after every resize.
+  the panel's shape and the layout follows it. A window of spatial panels on the root layer trims
+  the blank strips at its edges at its first show and after every resize; the windows of
+  `stm_from_dft_opt`, `MOPmatcher_mem` and `mo_ldos_decomp` are never trimmed (a maximized window
+  stays full screen).
 - **One control set.** A control of a given name is the same in every window (`qtgui/widgets.py`,
   `SPECS`): the checks, the radio, the buttons, and number boxes instead of sliders. In a number
   box, select one or more digits and press Up or Down: the selected digits step by one in the place
@@ -88,8 +90,10 @@ windows:
 - **One text-size rule.** Every window has a design size (its `DESIGN` constant, the old figure
   size); all of its text scales with the window's size relative to it, from 0.5x to 4x, and no
   text is ever cut: when the controls would not fit, their text shrinks together to at most 75 % of
-  that, and below that the window stops shrinking. A window taller than it is wide shows the
-  short labels (`SHORT_LABELS`).
+  that, and below that the window stops shrinking; in the windows of `stm_from_dft_opt`,
+  `MOPmatcher_mem` and `mo_ldos_decomp` no text is ever below 10 pt (the controls' text shrinks
+  toward 10 pt, never below). A window taller than it is wide shows the short labels
+  (`SHORT_LABELS`).
 - **Saving.** The toolbar's Save button writes PDF, EPS, SVG, PNG or TIFF through matplotlib
   (`qtgui/mplexport.py`: the figure at its design size, every line and text an editable object,
   the controls left out), PNG / SVG as drawn on screen, a screenshot of the window, or the curves

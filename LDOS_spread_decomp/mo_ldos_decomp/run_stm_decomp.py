@@ -36,7 +36,6 @@ from mo_ldos_projection._imports import PlotConfig, resolve_run_match, resolve_q
 from mo_ldos_projection.sim_wrapper import StmDecompSession
 from mo_ldos_projection.decomp_window import MO_AREA_NOISE_THRESHOLD
 
-# The shared Qt layer: the simulator's qtgui copy (mo_ldos_projection._imports.resolve_qt).
 plt, controls, widgets, mplexport = resolve_qt()
 
 # ======================================================================

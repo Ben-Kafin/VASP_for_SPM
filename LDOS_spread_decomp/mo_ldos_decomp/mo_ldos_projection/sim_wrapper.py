@@ -77,8 +77,6 @@ if __name__ != "__main__":
     from .synthetic_doscar import read_doscar_header, make_sigma_workdir
     from .decomp_window import DecompWindow, MO_AREA_NOISE_THRESHOLD
     from .topo_decomp_window import TopoDecompWindow
-    # The shared Qt layer: the simulator's qtgui copy (_imports.resolve_qt), the one the
-    # simulator's window is built with (the wrapper's controls go into that window).
     plt, controls, widgets, mplexport = resolve_qt()
     QtCore = plt.QtCore
 

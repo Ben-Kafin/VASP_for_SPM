@@ -38,9 +38,8 @@ Every window of this package is a Qt window of the simulator's copy of the layer
 (`stm_from_dft/qtgui/`, through `resolve_qt()`), laid out automatically: the panels sit in a
 grid of cells and the controls in one strip
 under them, nothing is placed by hand, and a window never scrolls. A row of panels is as tall as
-its spatial panels ask (no empty band above or below them), and a window whose panels are all
-spatial (the topography decomposition, the plane slice) takes the size they give it at its first
-show and after every resize. Its toolbar has Home, Pan, Zoom
+its spatial panels ask (no empty band above or below them), and a window is never trimmed to its
+panels (a maximized window stays full screen). Its toolbar has Home, Pan, Zoom
 and Save; Save writes PDF, EPS, SVG, PNG or TIFF through matplotlib (every curve and text an
 editable object, the controls left out), a PNG or SVG as drawn on screen, a screenshot, or the
 curves as CSV. A panel title shows its short name; the details after the first `": "` go to the

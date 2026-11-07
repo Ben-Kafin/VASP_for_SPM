@@ -879,7 +879,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         self.grid_xy = grid_xy
         self.global_z_map = self.current_z_map.copy()
         self.grid_xy_gpu = grid_xy_gpu
-        self.fig = plt.figure(figsize=DESIGN, fill_screen=True)   # opened on the screen; the panes then size it (rule 11)
+        self.fig = plt.figure(figsize=DESIGN, fill_screen=True)   # opened on the screen's available area; never trimmed to its panels
         self._make_controls()
         self._build_ui()
         plt.show()
@@ -1112,7 +1112,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         # cursors per axis, the area outside each pair shaded, a box riding with each cursor in a band
         # above (x) and right of (y) the panel, 'Crop' applying the ranges between the cursors as the
         # panel's limits and 'Uncrop' restoring the full extent.  A crop changes the panel's shape, so
-        # the arrangement and the window follow it (rule 11).
+        # the arrangement follows it (rule 11; the window keeps its size).
         self.btn_crop = controls.make(fig, 'Crop')
         self.btn_crop.on_change(self._on_crop)
         self.btn_uncrop = controls.make(fig, 'Uncrop')
@@ -1174,7 +1174,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
             self._hook_layout.addWidget(w)
         self._panel_cells = []
         self._arrangement = None                           # the view's controls.Arrangement (the shaped groups and the curve panels)
-        self._cluster_row = None                           # Line / Path: the heatmap row's PanelRow (rebuilt per refresh)
+        self._cluster_row = None                           # Line / Path: the heatmap row's PanelRow (its panels built again only when their count changes)
         self._map_block = None                             # Map: the energy maps' wrapping block (controls.MapBlock)
         self._spec_cell = None                             # Map: the spectrum's cell, one cell of the block
         self._map_cells = []                               # Map: the cells in the block (rebuilt when the counts change)
@@ -1285,7 +1285,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         return (self._box_topo_h, self._box_ldos_h, self._cluster_label.qt, self._box_crop) + tuple(b.qt for b in self._cursor_boxes.values())
 
     def _clear_cluster(self):
-        """The Line / Path cluster's axes removed and its row emptied (it is rebuilt per refresh); the LDOS h box detached from its pair first."""
+        """The Line / Path cluster's axes removed and its row emptied (it is built again only when its panel count changes: _build_heat_row); the LDOS h box detached from its pair first."""
         for ax in list(self.line_decomp_axes):
             if ax in self.fig.axes:
                 ax.remove()
@@ -1356,16 +1356,21 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         ratio, the heat-map data comes first, a curve panel never grows at its expense yet stays
         readable, blank space and the controls' footprint are what is minimized).  The shaped groups of a
         view: the placement topo in its crop panel (Topo h, Crop / Uncrop and the cursor boxes
-        above and beside it); in Line / Path the heatmap row (its label over it); in Map the
+        above and beside it); in Line / Path the heatmap row (its label over it), sized and scored
+        with each heatmap counted as square, then placed in its whole slot, which its heatmaps fill
+        (Arrangement fill_slot, PanelCell.fill_as); in Map the
         Global Topo and Map Topo pair (their boxes above) and the energy maps' wrapping block.  The
         curve panels (Tip Height and Partitioned LDOS, beside or over each other by their room)
         take the room the heatmaps and topographies leave, at least their readable size
         (_curves_readable), the topographies at most twice a heatmap (_topo_cap); in Map the
         spectrum is a cell of the map block, a map's size; in Single Point it is a first-class
         panel beside the placement topo.
-        The arrangement is chosen
-        again and the window trimmed (Figure.fit_window) on every view change, rebuild, crop and
-        resize; the unit-cell panels' orientation (as drawn, or turned 90 degrees: the way the
+        The window is never trimmed to its panels (no Figure.fit_window): it keeps the size it is
+        given, and a maximized window stays full screen.  The panels are built once per view (here)
+        and then updated in place (_update_all); the arrangement is chosen again, and the panels
+        moved, only when their number changes (a view change; the heatmap row or the Map block
+        built again for a new count), when a crop changes a panel's shape, or when the user resizes
+        the window (maximizing included); the unit-cell panels' orientation (as drawn, or turned 90 degrees: the way the
         window fits better, _choose_orientation) is decided when the view is built and on Crop /
         Uncrop.  The controls of the view are shown and the others hidden, then
         _update_all(full_refresh=True).  Called at the first show and on every view change; the
@@ -1391,8 +1396,9 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
             groups, free = [topo], spec_cell
             self.marks = self.ax_map.scatter([], [], s=150, edgecolors='black', zorder=15, picker=5)
         elif mode in ('Line', 'Path'):
-            # The placement topo; the heatmap row (rebuilt by _update_all each refresh, the LDOS h box
-            # above the Line Topo panel or above the Path stripe) under its label; the Tip Height
+            # The placement topo; the heatmap row (built by _update_all, again only when its panel
+            # count changes; the LDOS h box above the Line Topo panel or above the Path stripe) under
+            # its label, filling its whole slot (fill_slot); the Tip Height
             # profile and the spectrum in the room left (at least readable: rule 11), side by side or stacked by that room's shape.
             self.ax_map, topo = self._placement()
             self._cluster_row = plt.PanelRow(spacing=round(4 / (1000 / 72) * plt.em_px()))
@@ -1442,9 +1448,12 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         # take the room those leave (Line / Path: the Tip Height profile and the spectrum in the room beside
         # or under the heatmap row; Map: the spectrum a cell of the map block); in Single Point the spectrum
         # is a first-class panel beside the placement topo (Arrangement free_min / free_scored / group_cap).
+        # In Line / Path the heatmap row, sized and scored with each heatmap counted as square, is then
+        # placed in its whole slot and its heatmaps fill it (fill_slot; PanelCell.fill_as, _build_heat_row).
         self._arrangement = controls.Arrangement(groups, free, spacing=8, free_min=self._curves_readable,
                                                  free_scored=mode == 'Single Point',
-                                                 group_cap=self._topo_cap(mode, groups))
+                                                 group_cap=self._topo_cap(mode, groups),
+                                                 fill_slot=cluster if mode in ('Line', 'Path') else None)
         self._arrangement.on_arranged(self._on_arranged)
         self._panel_area.addWidget(self._arrangement, 1)
         self._box_topo_h.setVisible(True)
@@ -1616,7 +1625,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
             self._contour_artists.append(lc)
 
     def _rearrange(self, orient=False):
-        """The arrangement chosen again for the panels as they now are, and the window trimmed to them (rule 11); with `orient` the unit-cell panels' orientation is decided first (_choose_orientation)."""
+        """The arrangement chosen again for the panels as they now are, at the window's size (rule 11): called when their number changes (the view built; the heatmap row or the Map block built again) and when a crop changes a panel's shape (a resize arranges by itself); the window is never trimmed to them (no Figure.fit_window).  With `orient` the unit-cell panels' orientation is decided first (_choose_orientation)."""
         if orient:
             self._choose_orientation()
         if self._arrangement is not None:
@@ -1831,7 +1840,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
                 ax.set_ylim(*y_rng)
 
     def _on_crop(self, event=None):
-        """'Crop': what lies between the cursors is kept, on both axes; the cursors then sit at the new edges; the unit-cell panels' orientation is decided again for the new shape, and the arrangement and the window follow."""
+        """'Crop': what lies between the cursors is kept, on both axes; the cursors then sit at the new edges; the unit-cell panels' orientation is decided again for the new shape, and the arrangement follows (the window keeps its size)."""
         if self._crop_ax is None:
             return
         if self._cursors is None:
@@ -2089,9 +2098,12 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         The window redrawn for its state: the maps (full_refresh), the markers, then, while
         running, the computations the state asks for (needs_topo / needs_ldos / needs_spec, the
         same functions as before) and the panels of the view.  The Line / Path cluster and the Map
-        rows are rebuilt as cells of their own PanelRows in the rest pane (automatic layout: the
-        one rule for every window; rule 11: the rows size themselves from the panels), after which
-        the panes are arranged again and the window trimmed; the periodic images of a map are one
+        rows are built again as cells of their own PanelRows in the rest pane (automatic layout: the
+        one rule for every window; rule 11: the rows size themselves from the panels) only when
+        their panel count changes (_build_heat_row, _build_map_block), after which the panels are
+        arranged again (_rearrange; the window is never trimmed); otherwise every panel takes the
+        new data in place (_draw_spectrum, _fill_heat_row, _fill_map), with one draw_idle at the
+        end; the periodic images of a map are one
         raster drawn at every cell offset (tricontourf offsets=: moved, never re-imaged).
         """
         if full_refresh:
@@ -2648,7 +2660,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
             if self.show_dcmp_norm or p_idx == num_p - 1:
                 cax_l = self._panel(row, inner_w=15 / (1000 / 72) * plt.em_px())
                 self.line_decomp_axes.append(cax_l)
-            ax_l.set_box_aspect(1)
+            ax_l._cell.fill_as(1.0)       # sized and scored as a square panel; placed, its box fills its cell (no box aspect)
             ax_l.set_anchor('W')
             ax_l.set_yticks([])
             if cax_l is not None:
@@ -2659,8 +2671,9 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         self._heat_meshes, self._heat_grids, self._heat_cmaps = [None] * n, [None] * n, [None] * n
         self._heat_cbars, self._heat_titles = [None] * n, [None] * n
 
-        # The cluster's row shares one height (the row rule, Figure.align_row): the stripe and the
-        # colour bars follow the heatmaps' box aspect at any window size.
+        # The cluster's row shares one height (the row rule, Figure.align_row): the heatmaps (no box
+        # aspect: they fill their cells), the stripe and the colour bars take the row's band, in Line at
+        # most the height the Line Topo's box aspect asks for.
         self.fig.align_row(*self.line_decomp_axes)
         self._row_key = (n_heat, self.show_dcmp_norm)
 
