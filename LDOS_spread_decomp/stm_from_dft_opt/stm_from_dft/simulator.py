@@ -38,7 +38,7 @@ from time import time
 
 from .qtgui import qtplot as plt
 from .qtgui import controls, widgets
-from .qtgui.qtplot import QtWidgets, QtCore
+from .qtgui.qtplot import QtWidgets, QtCore, QtGui
 
 from .doscar_parser import SpinAwareDosParser, SpinMode
 from .locpot_manager import LocpotManager
@@ -945,6 +945,30 @@ CONTOUR_COLOR = 'white'
 CONTOUR_LEVEL_COLOR = 'cyan'
 
 
+class _LegendEvents(QtCore.QObject):
+    """
+    Machinery: the legend panel's mouse events that the window's canvas never sees, filtered on its two Qt
+    widgets (installEventFilter): the Back button's double-click event is dropped (a double click is one
+    Back), and a right press on the Back button or on the scroll bar goes back one level, as a right click
+    anywhere in the panel (Interactive_STM_Simulator._legend_back).  `sim` is the simulator's window.
+    """
+
+    def __init__(self, sim):
+        """Machinery: the filter of the window `sim` (kept by the window: Qt does not own an event filter)."""
+        super().__init__()
+        self._sim = sim
+
+    def eventFilter(self, obj, ev):
+        """Machinery: True (the event consumed) for the Back button's double-click event and for a right press on either widget; False (Qt's own handling) for every other event."""
+        t = ev.type()
+        if t == QtCore.QEvent.Type.MouseButtonDblClick and obj is self._sim._btn_back.qt:
+            return True
+        if t == QtCore.QEvent.Type.MouseButtonPress and ev.button() == QtCore.Qt.MouseButton.RightButton:
+            self._sim._legend_back()
+            return True
+        return False
+
+
 class Interactive_STM_Simulator(Unified_STM_Simulator):
     """
     The simulator's window: one qtgui figure of DESIGN size whose panels are cells of its Qt
@@ -1369,6 +1393,18 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         self._crop_panel = None                    # its CropPanel (the bands the boxes ride in)
         # The label over the Line / Path cluster and the Map rows ('LDOS', or 'LDOS: <element>' at the atom levels).
         self._cluster_label = controls.Label(fig, text='LDOS', fs=10)
+        # The legend panel's Back button (Single Point, Line, Path; kept across views, as the tip-height boxes):
+        # gray, back one level as a right click (_decomp_click); hidden at level 0 with its place kept.  Its
+        # double-click event is dropped and a right press on it goes back (_LegendEvents).
+        self._btn_back = controls.Button(fig, 'Back')
+        self._btn_back.qt.setStyleSheet(self.LEGEND_BACK_CSS)
+        pol = self._btn_back.qt.sizePolicy()
+        pol.setRetainSizeWhenHidden(True)
+        self._btn_back.qt.setSizePolicy(pol)
+        self._btn_back.on_change(lambda: self._decomp_click(plt.MouseButton.RIGHT))
+        self._legend_events = _LegendEvents(self)
+        self._btn_back.qt.installEventFilter(self._legend_events)
+        self._legend_rezoom_pending = False        # a redraw of the legend stack at a new text zoom is queued (_legend_placed)
 
         # The window's layout: the title cell, the left control column beside the panel area, the
         # bottom strip (automatic layout: the one rule for every window; nothing placed by hand).
@@ -1424,6 +1460,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         self.fig.canvas.mpl_connect('motion_notify_event', self._on_motion)
         self.fig.canvas.mpl_connect('button_release_event', self._on_rel)
         self.fig.canvas.mpl_connect('button_press_event', self._on_press)
+        self.fig.canvas.mpl_connect('scroll_event', self._on_scroll)     # the wheel over the legend stack
         # The decomp's line in the new window's info panel (kept current by _decomp_changed).
         self._decomp_changed()
 

@@ -290,8 +290,8 @@ pg.setConfigOptions(imageAxisOrder='row-major', background='w', foreground='k', 
 
 def screen_scale():
     """
-    How many times larger than 96 dpi the primary screen's logical resolution is: figure windows
-    open this much larger, and their text follows (font_zoom).  1 under Qt 6's default high-DPI
+    How many times larger than 96 dpi the primary screen's logical resolution is (nothing calls it
+    now: every size on screen comes from em_px).  1 under Qt 6's default high-DPI
     scaling, which passes the scale factor through unrounded and reports 96 dpi; the monitor's own
     dpi, e.g. 1.5 for a 4K screen at 150 %, under Qt 5 without scaling or with Qt's scaling off,
     and then per monitor (QScreen::logicalDotsPerInch; the tick axes, _Axis, are drawn so that no
@@ -364,12 +364,19 @@ def pt2px(pt):
     return float(pt) * px_per_pt()
 
 
-_EPOCH = [0]            # the layout pass (new_measure_pass): a PanelCell's room is measured once per pass (PanelCell._decor)
+_EPOCH = [0]            # the layout pass (new_measure_pass): a measurement kept for the pass (pass_cached) is made once per pass
+_ARRANGED = [0]         # the arrangement (new_arrangement): a PanelCell's room for its labels is measured once per arrangement (PanelCell._decor, _want_w)
 
 
 def new_measure_pass():
-    """A new layout pass: every panel cell measures its room (its axes' tick axes and title, Qt calls) again at its next size question (PanelCell._decor, pass_cached).  The arrangement and the figure's relayout start one; so does anything that changes what a pass measures (a panel's shape, a panel added or removed, a control's font or label, a band's items).  An axes' placement does not: a cell's room is measured at an arrangement and kept until the next one, the axes moving its box inside the cell to fit its labels (Axes._place)."""
+    """A new layout pass: every measurement kept for the pass (pass_cached) is made again at its next question.  The arrangement and the figure's relayout start one (new_arrangement); so does anything that changes what a pass measures (a panel's shape, a panel added or removed, a control's font or label, a band's items).  An axes' placement does not: a cell's room is measured at an arrangement and kept until the next one (new_arrangement), the axes moving its box inside the cell to fit its labels (Axes._place)."""
     _EPOCH[0] += 1
+
+
+def new_arrangement():
+    """An arrangement (controls.Arrangement's, and the figure's relayout, Figure._relayout: the window laid out at its show and on a resize): every panel cell measures its room for its labels (its axes' tick axes and title, Qt calls) again at its next size question and keeps it until the next arrangement (PanelCell._decor, _want_w); a new layout pass too (new_measure_pass).  A layout pass that is not an arrangement (a search for the best arrangement, a control's font or label, a band's items) leaves the cells' room as it is."""
+    _ARRANGED[0] += 1
+    new_measure_pass()
 
 
 def pass_cached(obj, key, compute):
@@ -3732,7 +3739,7 @@ class PanelCell(QtWidgets.QWidget):
     def __init__(self, figure, min_px=(40, 40), stretch=(True, True), inner_w=None):
         super().__init__()
         self.figure = figure
-        self._decor_epoch, self._decor_val = -1, None      # the room measured in the current layout pass (_decor)
+        self._decor_epoch, self._decor_val = -1, None      # the room measured at the current arrangement (_decor)
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
         pol = QtWidgets.QSizePolicy.Policy
@@ -3754,10 +3761,14 @@ class PanelCell(QtWidgets.QWidget):
 
     def _want_w(self):
         z = getattr(self.figure, 'font_zoom', 1.0)
-        # Kept for the layout pass (pass_cached): the width a pass sized the cell with stays until the next
-        # pass (an arrangement), whatever its labels noted since (_note_decor).
-        return pass_cached(self, ('want_w', z), lambda: int(round(max(self.inner_w / (1000 / 72) * em_px() * z + self._decor_w,
-                                                                       self._title_w + 2.0 / (1000 / 72) * em_px()))))
+        # Kept for the arrangement (new_arrangement): the width an arrangement sized the cell with stays until
+        # the next one, whatever its labels noted since (_note_decor).
+        c = self.__dict__.get('_want_cache')
+        if c is None or c[0] != (_ARRANGED[0], z):
+            c = self.__dict__['_want_cache'] = ((_ARRANGED[0], z),
+                                                int(round(max(self.inner_w / (1000 / 72) * em_px() * z + self._decor_w,
+                                                              self._title_w + 2.0 / (1000 / 72) * em_px()))))
+        return c[1]
 
     def sizeHint(self):
         if self.inner_w is None:
@@ -3770,7 +3781,7 @@ class PanelCell(QtWidgets.QWidget):
         return QtCore.QSize(self._want_w(), self.minimumHeight())
 
     def _note_decor(self, left_right, title_w=0.0):
-        """The tick axes and label, and the title, of the axes in a narrow cell (Axes._cell_px): the cell's width follows at the next layout pass (_want_w keeps the current pass's width)."""
+        """The tick axes and label, and the title, of the axes in a narrow cell (Axes._cell_px): the cell's width follows at the next arrangement (_want_w keeps the current arrangement's width)."""
         if self.inner_w is not None and (abs(left_right - self._decor_w) > 0.5 or abs(title_w - self._title_w) > 0.5):
             self._decor_w = float(left_right)
             self._title_w = float(title_w)
@@ -3810,11 +3821,11 @@ class PanelCell(QtWidgets.QWidget):
         return self._fill_ratio is not None
 
     def _decor(self):
-        """The room around the panel's box (_measure_decor), measured once per layout pass (new_measure_pass): the arrangement asks a cell its size hundreds of times in one pass."""
-        if self._decor_epoch == _EPOCH[0] and self._decor_val is not None:
+        """The room around the panel's box (_measure_decor), measured once per arrangement (new_arrangement): the arrangement asks a cell its size hundreds of times in one pass."""
+        if self._decor_epoch == _ARRANGED[0] and self._decor_val is not None:
             return self._decor_val
         self._decor_val = self._measure_decor()
-        self._decor_epoch = _EPOCH[0]
+        self._decor_epoch = _ARRANGED[0]
         return self._decor_val
 
     def _measure_decor(self):
@@ -4437,11 +4448,12 @@ class Axes:
             left, top, right, bottom = self._decor_px()
             if cell.inner_w is not None:
                 # A narrow panel (a colour bar, a ramp): its box keeps its own width, the box with its
-                # tick axes centred in the cell, which is wide enough for them and for the title.
+                # tick axes centred in the cell, which is wide enough for them and for the title; while the
+                # cell is narrower (its width kept from the arrangement, _want_w), the box shrinks to stay inside it.
                 t = self._title
                 tw = float(t.item.boundingRect().width()) if t is not None and t.get_text() else 0.0
                 cell._note_decor(left + right, tw)
-                bw = cell.inner_w / (1000 / 72) * em_px() * self.figure.font_zoom
+                bw = min(cell.inner_w / (1000 / 72) * em_px() * self.figure.font_zoom, cw - left - right)
                 off = max(0.5 * (cw - (left + bw + right)), 0.0)
                 return (cx + off + left, cy + top, max(bw, 1.0), max(ch - top - bottom, 1.0))
             return (cx + left, cy + top, max(cw - left - right, 1.0), max(ch - top - bottom, 1.0))
@@ -6788,7 +6800,7 @@ class Figure:
     # --- layout ---
 
     def _relayout(self):
-        new_measure_pass()
+        new_arrangement()
         if self._shown and (not self._embedded or self.canvas.isVisible()):
             vp = self.canvas.viewport()
             self.canvas._size_px = (vp.width(), vp.height())
@@ -6922,7 +6934,7 @@ class Figure:
                 if lay.hasHeightForWidth():
                     # A row of controls that wraps: the smallest height the layout needs at this width (the
                     # panel rows count their minimum, not their natural height: a window may be shorter than
-                    # its panels ask, they shrink; rule 11's fit is Figure.fit_window's).
+                    # its panels ask, they shrink; the window is never trimmed to its panels).
                     m = QtCore.QSize(m.width(), max(m.height(), total_min_hfw(lay, max(W, m.width()))))
                 if fits_controls((m.width(), m.height()), (W, H), zc, self._fit_zoom):
                     self._fit_zoom = zc
@@ -7010,7 +7022,7 @@ class Figure:
         return bool(items) and all(shaped for _, shaped in items)
 
     def _schedule_fit(self):
-        """The fit after a resize (rule 11: the window always adjusts), a moment after the last resize event."""
+        """The fit after a resize (fit_window), a moment after the last resize event; nothing calls it (the window is never trimmed to its panels)."""
         if self._embedded or not self._shown or getattr(self, '_fitting_window', False) or self._size_override is not None:
             return
         t = getattr(self, '_fit_timer', None)
@@ -7030,9 +7042,8 @@ class Figure:
         the window is made narrower until the natural height fits.  For a window of oriented
         panes (controls.OrientedPanes, _fit_pane) the panes say what the window can lose
         (fit_delta: the height beside a main panel at the left, the width beside one on top).
-        Done at the first show (qtplot.show), a moment after every resize (_schedule_fit: the
-        height follows the width the user sets), and by a window after it rebuilt its panels.
-        Returns True when the window was resized.
+        Nothing calls it: the window is never trimmed to its panels (a maximized window stays
+        full screen).  Returns True when the window was resized.
         """
         lay = self._layout
         win = getattr(self.manager, 'window', None)
