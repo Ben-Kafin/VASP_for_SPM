@@ -42,6 +42,14 @@ Branch: `claude/jolly-babbage-ppmbdj`. Base of part 1's work: b051547.
    No design report is waited on before code. Rules 1 (stop and report where the code does not match the plan or
    a step needs a change the plan does not name), 3, 4, 5 and 7 stand. The pre-flight's mapping serves as the
    implementing agents' brief; its open questions go to the owner in one batch, and only the work they block waits.
+10. The owner's response document (2026-11-07): `RESPONSE_PART1_PART3.md` (this folder). It answers `PART1_OPEN.md`
+    (every R except P2, which takes (a) with the height-sharing rule; P13 (b) as a new `mo_ldos_projection/_resolve.py`;
+    P10 changed for `export_vector`) and `PART3_QUESTIONS.md` (Q1 a, Q2 a, Q3 a with the scroll bar's strip in the fixed
+    width, Q4 as its sections 2 and 3, Q5 a, Q6 a, Q7 the label, Q8 a), and adds: what is taken from sm4_browser
+    (settled things stand, the rest as it is), 720 dpi for every saved file that is not a matplotlib vector file,
+    matplotlib required (no fallback), and the two colour-map sets in the simulator (added to part 3). Where it differs
+    from the part 3 plan or an earlier answer, it stands. Verified: pyqtgraph's `colors/maps/` has CET-L3, CET-L6,
+    CET-R1, CET-D1A and CET-L19 (.csv), the names it uses; `qtplot._builtin_cmap` reads them with `pg.colormap.get`.
 
 ## Conventions given to the implementing agents (part 1)
 
@@ -64,7 +72,8 @@ Branch: `claude/jolly-babbage-ppmbdj`. Base of part 1's work: b051547.
 - [x] Owner's ruling 1 applied to `stm_from_dft/qtgui/__init__.py`
 - [x] Copy `stm_from_dft/qtgui/` over `matcher/qtgui/`; byte-identical
 - [x] Part 1: py_compile every changed file (30, all pass)
-- [ ] Owner's answers to `PART1_OPEN.md`; apply them; per-file change list (rule 7)
+- [x] Owner's answers to `PART1_OPEN.md`: `RESPONSE_PART1_PART3.md` section 1 (ruling 10)
+- [ ] Apply them (with part 3: the simulator and mo_ldos_projection items after part 2's workflow); per-file change list (rule 7)
 - [x] Part 2: pre-flight (read-only mapping of every bullet onto the code) done; questions in `PART2_QUESTIONS.md`
 - [x] Owner's answers to `PART2_QUESTIONS.md`: `PART2_ANSWERS.md` (they override the plan; they also add three
       part-2 items: the synthetic DOSCAR removed, procar_dos.py moved to PROCAR_tools/, Map panels kept in
@@ -76,8 +85,10 @@ Branch: `claude/jolly-babbage-ppmbdj`. Base of part 1's work: b051547.
       order and colours, sm4_browser's info panel and saves in every qtgui window); owner's ruling 8 on its info panel
 - [~] Part 3 pre-flight (read-only mapping): workflow wf_e2476f62-5f5; its mapping goes to `PART3_PREFLIGHT.md` as the
       implementation brief, its rule-1 questions to the owner (ruling 9: no approval of the design is waited on)
-- [ ] Part 3 implementation: section 6 (qtgui) and ldos_decomp.py may start once the mapping is back; simulator.py
-      edits wait until part 2's workflow has finished (one workflow edits simulator.py at a time)
+- [x] Part 3 questions (`PART3_QUESTIONS.md`, Q1-Q8) answered: `RESPONSE_PART1_PART3.md` section 5
+- [ ] Part 3 implementation, with the response document's sections 2-4 (every qtgui copy, the root included) and 6
+      (the colour-map sets): simulator.py and mo_ldos_projection edits wait until part 2's workflow has finished
+      (one workflow edits a file at a time)
 - [ ] The later views-layout handoff: its decisions so far are in `PART3_simulator_views_layout_decisions.md`
       (not part of parts 1 to 3; nothing done for it yet)
 - [ ] Delete this folder in the final commit
