@@ -16,25 +16,19 @@ from typing import Any, Dict, List, Optional, Tuple#, Union
 
 import numpy as np
 
-# The shared Qt layer (qtgui at the repository root): found by walking up from this file.
-import os as _os, sys as _sys
-_root = _os.path.dirname(_os.path.abspath(__file__))
-while not _os.path.isdir(_os.path.join(_root, 'qtgui')) and _os.path.dirname(_root) != _root:
-    _root = _os.path.dirname(_root)
-if _root not in _sys.path:
-    _sys.path.insert(0, _root)
-from qtgui import qtplot as plt
-from qtgui import widgets
-
 # Relative imports when loaded as the 'matcher' package; absolute fallbacks when
 # the package is run directly as a standalone script (e.g. %runfile on
 # matcher_vacupot.py, which imports this module). matcher_vacupot.py inserts the
 # repo root on sys.path before importing this, so the absolute forms resolve.
 try:
+    from .qtgui import qtplot as plt
+    from .qtgui import widgets
     from .classifier import StateBehaviorClassifier
     from .builder import detect_ncl_from_incar
     from .kramers import pair_entities, infer_soc_from_spectra
 except ImportError:
+    from matcher.qtgui import qtplot as plt
+    from matcher.qtgui import widgets
     from classifier import StateBehaviorClassifier
     from builder import detect_ncl_from_incar
     from kramers import pair_entities, infer_soc_from_spectra

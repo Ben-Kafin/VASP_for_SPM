@@ -3,8 +3,8 @@
 Interactive STM Simulator: Multi-Tiered GPU Optimization
 Auto-detects ISPIN=1, ISPIN=2, and NCL/SOC calculations.
 
-The window (Interactive_STM_Simulator) is drawn with the suite's shared Qt layer (qtgui at the
-repository root: PySide6 + pyqtgraph): its panels are cells of one Qt layout and its controls
+The window (Interactive_STM_Simulator) is drawn with the package's own copy of the suite's Qt
+layer (stm_from_dft.qtgui: PySide6 + pyqtgraph): its panels are cells of one Qt layout and its controls
 real Qt widgets (automatic layout: the one rule for every window, nothing placed by hand), every
 slider of the old figure a number box, the orbital hover labels widgets.HoverLabels.
 
@@ -22,16 +22,6 @@ bias swept (the derivative of Eq. 2.40 at each bias).
 Developed by Benjamin Kafin
 """
 
-import os as _os
-import sys as _sys
-
-# The shared Qt layer (qtgui at the repository root): found by walking up from this file.
-_root = _os.path.dirname(_os.path.abspath(__file__))
-while not _os.path.isdir(_os.path.join(_root, 'qtgui')) and _os.path.dirname(_root) != _root:
-    _root = _os.path.dirname(_root)
-if _root not in _sys.path:
-    _sys.path.insert(0, _root)
-
 import numpy as np
 import cupy as cp
 import cupyx.scipy.ndimage as cp_ndimage
@@ -42,9 +32,9 @@ from scipy.integrate import simpson
 import colorsys
 from time import time
 
-from qtgui import qtplot as plt
-from qtgui import controls, widgets
-from qtgui.qtplot import QtWidgets, QtCore
+from .qtgui import qtplot as plt
+from .qtgui import controls, widgets
+from .qtgui.qtplot import QtWidgets, QtCore
 
 from .doscar_parser import SpinAwareDosParser, SpinMode
 from .locpot_manager import LocpotManager
@@ -768,6 +758,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         self.marker_coords = [[self.lv[0, 0] * 0.2, self.lv[1, 1] * 0.2],
                               [self.lv[0, 0] * 0.8, self.lv[1, 1] * 0.8]]
         self.active_obj = None
+        self._drag_moved = False          # the dragged item moved since its press (_on_motion): its release work is due (_on_rel)
         self.active_marker_idx = 0
         self.plot_level = 0
         self.active_element, self.active_atom = None, None
@@ -1143,12 +1134,12 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
 
         # The window's layout: the title cell, the left control column beside the panel area, the
         # bottom strip (automatic layout: the one rule for every window; nothing placed by hand).
-        self._title_cell = fig.cell(min_px=(40, 24), stretch=(True, False))
+        self._title_cell = fig.cell(min_px=(round(40 / (1000 / 72) * plt.em_px()), round(24 / (1000 / 72) * plt.em_px())), stretch=(True, False))
         fig.set_title_cell(self._title_cell)
         fig.suptitle(self.spin_mode.name, fontsize=12)
         self._hook_layout = QtWidgets.QVBoxLayout()        # the boxes other windows add (add_control_box)
         self._hook_layout.setContentsMargins(0, 0, 0, 0)
-        self._hook_layout.setSpacing(4)
+        self._hook_layout.setSpacing(round(4 / (1000 / 72) * plt.em_px()))
         self._left_column = controls.column(
             controls.box(self.ui_radio),
             controls.box(self.chk_broad, controls.column(*self.s_broad.values()), title='broadening'),
@@ -1159,10 +1150,10 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         left_w.setSizePolicy(QtWidgets.QSizePolicy.Policy.Fixed, QtWidgets.QSizePolicy.Policy.Preferred)
         self._panel_area = QtWidgets.QVBoxLayout()         # the view's arrangement (controls.Arrangement; _build_ui fills it)
         self._panel_area.setContentsMargins(0, 0, 0, 0)
-        self._panel_area.setSpacing(6)
+        self._panel_area.setSpacing(round(6 / (1000 / 72) * plt.em_px()))
         main = QtWidgets.QHBoxLayout()
         main.setContentsMargins(0, 0, 0, 0)
-        main.setSpacing(8)
+        main.setSpacing(round(8 / (1000 / 72) * plt.em_px()))
         main.addWidget(left_w)
         main.addLayout(self._panel_area, 1)
         strip = controls.FlowLayout()
@@ -1174,7 +1165,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
             self._strip_boxes[name] = frame
             strip.addWidget(frame)
         root = QtWidgets.QVBoxLayout()
-        root.setSpacing(6)
+        root.setSpacing(round(6 / (1000 / 72) * plt.em_px()))
         root.addWidget(self._title_cell)
         root.addLayout(main, 1)
         root.addLayout(strip)
@@ -1306,6 +1297,14 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
             setattr(self, name, None)
         self._detach(self._box_ldos_h)
         self._empty_layout(self._cluster_row, self._kept_widgets())
+        # The built row's state (_build_heat_row, _fill_heat_row): none until the row is built again.
+        self._row_key = None                       # (heatmap count, per-heatmap colour bars) of the built row
+        self._heat_axes, self._heat_caxes = [], []  # the heatmaps' axes and their colour bars' (None: no bar)
+        self._heat_meshes, self._heat_grids, self._heat_cmaps = [], [], []
+        self._heat_cbars, self._heat_titles = [], []
+        self._stripe_lc, self._stripe_len, self._prof_line = None, None, None
+        self._line_topo_arts, self._line_topo_key, self._line_topo_z = [], None, None
+        self._line_markers, self._line_markers_n = [], None
 
     def _clear_map_rows(self):
         """The Map rows' axes removed and their cells deleted out of the block (they are rebuilt when the counts change)."""
@@ -1320,6 +1319,11 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         self._map_cells = []
         if self._map_block is not None:
             self._map_block.set_groups([], None, extra=getattr(self, '_spec_cell', None))
+        # The built block's state (_build_map_block, _fill_map): none until the block is built again.
+        self._block_key = None                     # (partitions, E Pts, 'cmap norm', per-partition bars) of the built block
+        self._map_state, self._map_cbar_state, self._map_marks = {}, {}, {}
+        self._map_titles, self._map_ylabels = {}, {}
+        self._map_marks_xy, self._contour_z = None, None
 
     def _clear_panels(self):
         """Every panel of the view removed: its axes, its cells, the panes of the panel area; the reused boxes and label detached first."""
@@ -1338,6 +1342,9 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         self._cluster_row = None
         self._map_block = None
         self._map_cells = []
+        # The spectrum's built curves (_draw_spectrum) and the Line / Path drag cache: none in the new view.
+        self._spec_key, self._spec_lines, self._spec_emarkers, self._spec_title = None, [], [], None
+        self._line_disp = None
         if getattr(self, 'cursor', None) is not None:
             self.cursor.remove()
             self.cursor = None
@@ -1388,7 +1395,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
             # above the Line Topo panel or above the Path stripe) under its label; the Tip Height
             # profile and the spectrum in the room left (at least readable: rule 11), side by side or stacked by that room's shape.
             self.ax_map, topo = self._placement()
-            self._cluster_row = plt.PanelRow(spacing=4)
+            self._cluster_row = plt.PanelRow(spacing=round(4 / (1000 / 72) * plt.em_px()))
             cluster = controls.Titled(plt.RowWidget(self._cluster_row), self._cluster_label.qt)
             self.ax_prof, prof_cell = self._cell_axes()
             self.ax_spec, spec_cell = self._cell_axes()
@@ -1407,14 +1414,14 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
             # shaped row; the energy maps as a wrapping block under its label (rebuilt by _update_all
             # when the counts change) with the spectrum as one of its cells (rule 11).  The topo panels keep
             # set_aspect('equal') and take the same crop.
-            row = plt.PanelRow(spacing=10)
+            row = plt.PanelRow(spacing=round(10 / (1000 / 72) * plt.em_px()))
             self.ax_map_global, topo = self._placement()
             row.addWidget(topo, 10)
             self.ax_map = self._panel_with_box(row, self._box_ldos_h, stretch=10)
             self.ax_map.set_rotated(self.cell_rotated)
             # The topo colour bar beside the Map Topo (the browser's: the ramp, no numbers), carrying the
             # contour slice's level line; the Map Topo's iso-line at that level goes on every energy map.
-            self.cax_topo = self._panel(row, inner_w=9)
+            self.cax_topo = self._panel(row, inner_w=9 / (1000 / 72) * plt.em_px())
             self._draw_topo_cbar(self.cax_topo)
             self._draw_level_line()
             topos = plt.RowWidget(row)
@@ -1449,7 +1456,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         self._update_all(full_refresh=True)
         self._rearrange(orient=True)             # the view built: the unit-cell panels' orientation decided
 
-    CURVE_BOX_MIN_PX = (220, 140)      # a curve panel's readable plot box at text zoom 1 (its labels come on top)
+    CURVE_BOX_MIN_PX = (220, 140)      # a curve panel's readable plot box at text zoom 1 (its labels come on top), in pixels at the old fixed 100 DPI (converted by em_px where used, _curves_readable)
 
     def _curve_axes(self):
         """The curve panels of the view: the spectrum, with the Tip Height profile before it in Line / Path."""
@@ -1469,12 +1476,12 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         ws, hs = [], []
         for ax in self._curve_axes():
             l, t, r, b = ax._decor_px()
-            w, h = int(round(bw * z + l + r)), int(round(bh * z + t + b))
+            w, h = int(round(bw / (1000 / 72) * plt.em_px() * z + l + r)), int(round(bh / (1000 / 72) * plt.em_px() * z + t + b))
             if ax._cell is not None and (ax._cell.minimumWidth(), ax._cell.minimumHeight()) != (w, h):
                 ax._cell.setMinimumSize(w, h)
             ws.append(w)
             hs.append(h)
-        return (sum(ws) + 6 * (len(ws) - 1), max(hs)) if ws else (0, 0)
+        return (sum(ws) + 6 / (1000 / 72) * plt.em_px() * (len(ws) - 1), max(hs)) if ws else (0, 0)
 
     TOPO_MAX_FACTOR = 2.0              # a topography's plot box at most this many times a heatmap's (Map, Line, Path)
 
@@ -1614,7 +1621,6 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
             self._choose_orientation()
         if self._arrangement is not None:
             self._arrangement.rearrange()
-        self.fig.fit_window()
 
     # --- the unit-cell panels' orientation (rule 11: turned when the window fits them better that way) ---
 
@@ -1848,15 +1854,16 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
             self._rearrange(orient=True)
 
     def _draw_map_slice(self, ax, slice_data, v_min, v_max, use_diverging, has_mag):
-        """One energy map on `ax`: the slice over the 2 x 2 cells drawn (one raster at four offsets), the colour scale of the view."""
+        """One energy map on `ax`: the slice over the 2 x 2 cells drawn (one raster at four offsets), the colour scale of the view; returns its contour set (_set_map_slice removes it when the map is drawn again)."""
         offs = self._cell_offsets_2x2()
         if use_diverging:
-            ax.tricontourf(self.grid_xy[:, 0], self.grid_xy[:, 1], slice_data, levels=40, cmap='bwr', vmin=v_min, vmax=v_max, offsets=offs)
+            cs = ax.tricontourf(self.grid_xy[:, 0], self.grid_xy[:, 1], slice_data, levels=40, cmap='bwr', vmin=v_min, vmax=v_max, offsets=offs)
         elif self.show_mag and has_mag:
-            ax.tricontourf(self.grid_xy[:, 0], self.grid_xy[:, 1], slice_data, levels=40, cmap='hot', norm=plt.PowerNorm(self.ldos_gamma, vmin=v_min, vmax=v_max), offsets=offs)
+            cs = ax.tricontourf(self.grid_xy[:, 0], self.grid_xy[:, 1], slice_data, levels=40, cmap='hot', norm=plt.PowerNorm(self.ldos_gamma, vmin=v_min, vmax=v_max), offsets=offs)
         else:
-            ax.tricontourf(self.grid_xy[:, 0], self.grid_xy[:, 1], slice_data, levels=40, cmap=self.cmap_map, norm=plt.PowerNorm(self.ldos_gamma, vmin=v_min, vmax=v_max), offsets=offs)
+            cs = ax.tricontourf(self.grid_xy[:, 0], self.grid_xy[:, 1], slice_data, levels=40, cmap=self.cmap_map, norm=plt.PowerNorm(self.ldos_gamma, vmin=v_min, vmax=v_max), offsets=offs)
         ax.set_aspect('equal')
+        return cs
 
     def _map_cmap(self, use_diverging, has_mag):
         """The energy maps' colour map: 'bwr' for a signed magnetization, 'hot' for |m|, else cmap_map."""
@@ -1872,7 +1879,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         return float(np.min(slice_data)) if self.cmap_norm else float(group_vmin)
 
     def _draw_map_cbar(self, cax, v_min, v_max, use_diverging, has_mag, labelsize=None):
-        """One colour bar of the energy maps into `cax`: their colour map over v_min..v_max, the ticks in units of 10^exp with the exponent as the bar's title."""
+        """One colour bar of the energy maps into `cax`: their colour map over v_min..v_max, the ticks in units of 10^exp with the exponent as the bar's title; returns the Colorbar (_set_map_cbar updates it in place)."""
         cax.clear()
         norm_choice = plt.Normalize(vmin=v_min, vmax=v_max)
         sm = plt.cm.ScalarMappable(cmap=self._map_cmap(use_diverging, has_mag), norm=norm_choice)
@@ -1883,6 +1890,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         cax.set_title(f"1e{exp}", fontsize=10 if labelsize is None else labelsize)
         if labelsize is not None:
             cax.tick_params(labelsize=labelsize)
+        return cb
 
     def _on_cmap_norm(self, flag):
         """'cmap norm' (Map): each energy map on its own colour scale with its own colour bar (on), or every map on one scale, the maximum over all of them, with one bar (off); the map block is rebuilt with the bars."""
@@ -2136,12 +2144,14 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
             p_len = norm(v)
             p_dist = np.linspace(0, p_len, self.npts)
             p_xy = np.array([self.p1 + r * v for r in np.linspace(0, 1, self.npts)])
+            self._line_geom = (p_xy, p_dist, p_len)        # the line's points as drawn, kept for the drags (_on_motion, _place_line_markers)
             self.line_art.set_data([self.p1[0], self.p2[0]], [self.p1[1], self.p2[1]])
             self.ends.set_offsets([self.p1, self.p2])
             self.marks.set_offsets(np.array([self.p1 + r * v for r in self.marker_ratios]))
             self.marks.set_facecolors(self.m_colors[:len(self.marker_ratios)])
         elif self.mode == 'Path':
             p_xy, p_dist, p_len, verts = self._build_path_xy()
+            self._line_geom = (p_xy, p_dist, p_len)        # the path's points as drawn, kept for the drags (_on_motion, _place_line_markers)
             self.line_art.set_data(verts[:, 0], verts[:, 1])
             self.path_pts.set_offsets(np.array(self.path_nodes))
             mark_idx = (np.array(self.marker_ratios) * (self.npts - 1)).astype(int)
@@ -2313,13 +2323,159 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         use_diverging = self.show_mag and has_mag and mag_signed
 
         if self.mode in ('Line', 'Path'):
+            # The drag cache: the displayed LDOS of every line / path point as drawn now (the display
+            # path above: _combine_ldos_display and the active display options); a marker drag sets the
+            # marker spectra from it and computes nothing while the button is down (_move_line_markers).
+            self._line_disp = f_ldos_raw
+
+        self._draw_spectrum(f_ldos_raw, spec_disp, p_dist if self.mode in ('Line', 'Path') else None,
+                            nepts=nepts, full_refresh=full_refresh)
+
+        if self.mode in ('Line', 'Path'):
+            processed_partitions = []
+            global_vmax = 0.0
+            global_vmin = np.inf
+
+            if self.normalize and f_ldos_raw is not None:
+                total_ldos_line = np.sum(f_ldos_raw, axis=(2, 3))
+                norm_denom_line = simpson(total_ldos_line, x=self.cached_eg, axis=1)[:, None] + 1e-15
+            else:
+                norm_denom_line = 1.0
+
+            for p_label, p_data in partitions:
+                t_data = p_data.copy()
+                if self.normalize:
+                    t_data /= norm_denom_line
+                processed_partitions.append((p_label, t_data))
+                v_max = np.max(np.abs(t_data))
+                if v_max > global_vmax:
+                    global_vmax = v_max
+                global_vmin = min(global_vmin, float(np.min(t_data)))
+            if global_vmax == 0:
+                global_vmax = 1e-15
+
+            num_p = max(1, len(partitions))
+            # The row is built only when its panel count changes (the partitions of the level, the
+            # per-heatmap colour bars); otherwise its panels take the new data in place.
+            built = (len(processed_partitions), self.show_dcmp_norm) != self._row_key
+            if built:
+                self._build_heat_row(len(processed_partitions))
+            self._fill_heat_row(processed_partitions, num_p, global_vmax, global_vmin, p_dist, p_len,
+                                use_diverging, has_mag)
+            quantity = "(dI/dV)/(I/V)" if self.feenstra else "LDOS"
+            self._cluster_label.set_text(f"{quantity}: {self.active_element}" if self.plot_level >= 3 else quantity)
+            if built:
+                self._rearrange()                  # the row is new: the arrangement follows (rule 11)
+
+        elif self.mode == 'Map':
+            num_p = max(1, len(partitions))
+
+            # The block is built only when its panel count changes (the partitions of the level, E Pts,
+            # the colour bars of 'cmap norm'); otherwise each map takes its new data in place (_fill_map).
+            built = (num_p, nepts, self.cmap_norm, self.show_dcmp_norm) != self._block_key
+            if built:
+                self._build_map_block(num_p, nepts)
+
+            if not hasattr(self, 'map_e_targets') or len(self.map_e_targets) != nepts or full_refresh:
+                self.map_e_targets = np.linspace(self.s_emin.val, self.s_emax.val, nepts)
+            m_coords_np = np.array(self.marker_coords)
+
+            processed_partitions = []
+            global_vmax = 0.0
+            global_vmin = np.inf
+            if self.normalize and f_ldos_raw is not None:
+                total_ldos_map = np.sum(f_ldos_raw, axis=(2, 3))
+                s_idx = np.argsort(self.map_e_targets)
+                norm_denom_map = simpson(total_ldos_map[:, s_idx], x=self.map_e_targets[s_idx], axis=1)[:, None] + 1e-15
+            else:
+                norm_denom_map = 1.0
+
+            for p_label, p_data in partitions:
+                t_data = p_data.copy()
+                if self.normalize:
+                    t_data /= norm_denom_map
+                t_data = np.nan_to_num(t_data, nan=0.0, posinf=0.0, neginf=0.0)
+                processed_partitions.append((p_label, t_data))
+                v_max = np.max(np.abs(t_data))
+                if v_max > global_vmax:
+                    global_vmax = v_max
+                global_vmin = min(global_vmin, float(np.min(t_data)))
+            if global_vmax == 0:
+                global_vmax = 1e-15
+
+            for p_idx, (p_label, t_data) in enumerate(processed_partitions):
+                p_vmax = np.max(np.abs(t_data)) if self.show_dcmp_norm else global_vmax
+                p_vmin = np.min(t_data) if self.show_dcmp_norm else global_vmin
+                for i, target_e in enumerate(self.map_e_targets):
+                    k = p_idx * nepts + i
+                    slice_data = t_data[:, i]
+                    v_max = self._map_vmax(slice_data, p_vmax)
+                    v_min = self._map_vmin(slice_data, p_vmin)
+                    self._fill_map(k, p_idx, i, p_label, slice_data, v_min, v_max, target_e, use_diverging, has_mag,
+                                   m_coords_np)
+
+                if self.show_dcmp_norm and not self.cmap_norm:
+                    self._set_map_cbar(p_idx, p_vmin, p_vmax if p_vmax > 0 else 1e-15, use_diverging, has_mag)
+
+            if not self.show_dcmp_norm and not self.cmap_norm and len(processed_partitions) > 0:
+                self._set_map_cbar(0, global_vmin, global_vmax, use_diverging, has_mag)
+            if self._map_marks_xy is None or not np.array_equal(self._map_marks_xy, m_coords_np):
+                self._place_map_markers()
+            # The contour slice on the maps: drawn again when the maps are new or the Map Topo's heights changed.
+            if built or self._contour_z is None or not np.array_equal(self._contour_z, self.current_z_map):
+                self._draw_contour_artists()
+                self._contour_z = np.array(self.current_z_map, copy=True)
+
+            quantity = "(dI/dV)/(I/V)" if self.feenstra else "LDOS"
+            self._cluster_label.set_text(f"{quantity}: {self.active_element}" if self.plot_level >= 3 else quantity)
+            if built:
+                self._rearrange()                  # the block is new: the arrangement follows (rule 11)
+
+        self.fig.canvas.draw_idle()
+
+    def _draw_spectrum(self, f_ldos_raw, spec_disp, p_dist, nepts=None, full_refresh=False):
+        """
+        The spectrum panel (ax_spec) for the state.  Its curves are drawn anew (the panel cleared,
+        the curves plotted, the legends and the hover labels made, as before) when the set of
+        curves changes (_spec_key: the view, the level, the marker count at level 0, the element
+        and atom of the atom levels, 'Feenstra', the Map energy markers' count); otherwise the
+        same curves take their new data in place (Line2D.set_data, the energy markers
+        _RefLine.set_xdata), with the limits and the title.  f_ldos_raw: the displayed LDOS of
+        the Line / Path points (in a drag the cache, _line_disp); spec_disp: the displayed marker
+        spectra (Single Point, Map); p_dist: the Line / Path distances; nepts and full_refresh:
+        the Map energy markers as _update_all gives them.  The caller draws the canvas.
+        """
+        if self.mode in ('Line', 'Path'):
             active_idx = int(self.marker_ratios[min(self.active_marker_idx, len(self.marker_ratios) - 1)] * (self.npts - 1))
             active_ldos = f_ldos_raw[active_idx] if f_ldos_raw is not None else np.zeros_like(self.cached_spec_ldos[0])
         else:
             active_idx = min(self.active_marker_idx, len(self.marker_coords) - 1)
             active_ldos = spec_disp[active_idx]
 
-        self.ax_spec.clear()
+        if self.mode == 'Map':
+            if not hasattr(self, 'map_e_targets') or len(self.map_e_targets) != nepts or full_refresh:
+                self.map_e_targets = np.linspace(self.s_emin.val, self.s_emax.val, nepts)
+
+        n_marks = len(self.marker_ratios) if self.mode in ('Line', 'Path') else len(self.marker_coords)
+        key = (self.mode, self.plot_level, n_marks if self.plot_level == 0 else None,
+               self.active_element if self.plot_level >= 3 else None,
+               self.active_atom if self.plot_level == 4 else None, bool(self.feenstra),
+               len(self.map_e_targets) if self.mode == 'Map' else None)
+        build = key != self._spec_key
+        if build:
+            self.ax_spec.clear()
+            self._spec_lines, self._spec_emarkers, self._spec_title = [], [], None
+        drawn = iter(list(self._spec_lines))      # in place: the curves in the order they were drawn
+
+        def _curve(y, **kw):
+            """One curve of the spectrum: plotted when the curves are drawn anew, else the next drawn curve given y."""
+            if build:
+                ln, = self.ax_spec.plot(self.cached_eg, y, **kw)
+                self._spec_lines.append(ln)
+                return ln
+            ln = next(drawn)
+            ln.set_data(self.cached_eg, y)
+            return ln
 
         def _orbit_base(orb):
             if orb.endswith('_up'):
@@ -2353,7 +2509,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
                     if self.normalize:
                         t_y /= (simpson(t_y, x=self.cached_eg) + 1e-15)
                     color = self.m_colors[i % len(self.m_colors)]
-                    self.ax_spec.plot(self.cached_eg, t_y, color=color, lw=2.5, picker=True, pickradius=5, label=f'marker_{i}')
+                    _curve(t_y, color=color, lw=2.5, picker=True, pickradius=5, label=f'marker_{i}')
             else:
                 for i, pt in enumerate(self.marker_coords):
                     c_ldos = spec_disp[i].copy()
@@ -2361,62 +2517,68 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
                     if self.normalize:
                         t_y /= (simpson(t_y, x=self.cached_eg) + 1e-15)
                     color = self.m_colors[i % len(self.m_colors)]
-                    self.ax_spec.plot(self.cached_eg, t_y, color=color, lw=2.5, picker=True, pickradius=5, label=f'marker_{i}')
-            self.ax_spec.legend(loc='upper right', frameon=False)
+                    _curve(t_y, color=color, lw=2.5, picker=True, pickradius=5, label=f'marker_{i}')
+            if build:
+                self.ax_spec.legend(loc='upper right', frameon=False)
         elif self.plot_level == 1:
-            self.ax_spec.plot(self.cached_eg, np.sum(active_ldos_norm, axis=(1, 2)), color='black', lw=1.5, alpha=0.1, zorder=1)
+            _curve(np.sum(active_ldos_norm, axis=(1, 2)), color='black', lw=1.5, alpha=0.1, zorder=1)
             atom_types_exp = np.repeat(self.atomtypes, self.atomnums)
             au_idx = [i for i, t in enumerate(atom_types_exp) if t == 'Au']
             mol_idx = [i for i, t in enumerate(atom_types_exp) if t != 'Au']
             au_y = np.sum(active_ldos_norm[:, au_idx, :], axis=(1, 2)) if au_idx else np.zeros_like(self.cached_eg)
             mol_y = np.sum(active_ldos_norm[:, mol_idx, :], axis=(1, 2)) if mol_idx else np.zeros_like(self.cached_eg)
-            self.ax_spec.plot(self.cached_eg, au_y, color='orange', lw=2, label='Au', picker=True, pickradius=5, zorder=2)
-            self.ax_spec.plot(self.cached_eg, mol_y, color='black', lw=2, label='Molecule', picker=True, pickradius=5, zorder=2)
-            self.ax_spec.legend([plt.Line2D([0], [0], color='orange', lw=2), plt.Line2D([0], [0], color='black', lw=2)], ['Au', 'Molecule'], title="Partition", loc='upper right', frameon=False)
+            _curve(au_y, color='orange', lw=2, label='Au', picker=True, pickradius=5, zorder=2)
+            _curve(mol_y, color='black', lw=2, label='Molecule', picker=True, pickradius=5, zorder=2)
+            if build:
+                self.ax_spec.legend([plt.Line2D([0], [0], color='orange', lw=2), plt.Line2D([0], [0], color='black', lw=2)], ['Au', 'Molecule'], title="Partition", loc='upper right', frameon=False)
         elif self.plot_level == 2:
             atom_types_exp = np.repeat(self.atomtypes, self.atomnums)
             for t in self.atomtypes:
                 t_idx = [i for i, x in enumerate(atom_types_exp) if x == t]
                 t_y = np.sum(active_ldos_norm[:, t_idx, :], axis=(1, 2)) if t_idx else np.zeros_like(self.cached_eg)
-                self.ax_spec.plot(self.cached_eg, t_y, color=self._type_color_map.get(t, 'grey'), lw=2, label=t, picker=True, pickradius=3)
-            self.ax_spec.legend([plt.Line2D([0], [0], color=self._type_color_map.get(t, 'grey'), lw=2) for t in self.atomtypes], self.atomtypes, title="Atom Types", loc='upper right', frameon=False)
+                _curve(t_y, color=self._type_color_map.get(t, 'grey'), lw=2, label=t, picker=True, pickradius=3)
+            if build:
+                self.ax_spec.legend([plt.Line2D([0], [0], color=self._type_color_map.get(t, 'grey'), lw=2) for t in self.atomtypes], self.atomtypes, title="Atom Types", loc='upper right', frameon=False)
         elif self.plot_level == 3:
             atom_types_exp = np.repeat(self.atomtypes, self.atomnums)
             e_idx = [i for i, x in enumerate(atom_types_exp) if x == self.active_element]
             e_y = np.sum(active_ldos_norm[:, e_idx, :], axis=(1, 2)) if e_idx else np.zeros_like(self.cached_eg)
-            self.ax_spec.plot(self.cached_eg, e_y, color=self._type_color_map.get(self.active_element, 'grey'), lw=2, alpha=0.15, zorder=1)
+            _curve(e_y, color=self._type_color_map.get(self.active_element, 'grey'), lw=2, alpha=0.15, zorder=1)
             for a_idx, label in self.vesta_label_map.items():
                 if label.startswith(self.active_element):
                     y_sum = np.sum(active_ldos_norm[:, a_idx - 1, :], axis=1)
-                    self.ax_spec.plot(self.cached_eg, y_sum, color=self._type_color_map.get(self.active_element, 'grey'), lw=2, label=label, picker=True, pickradius=3, zorder=2)
-            self.ax_spec.legend([plt.Line2D([0], [0], color=self._type_color_map.get(t, 'grey'), lw=2) for t in self.atomtypes], self.atomtypes, title="Atom Types", loc='upper right', frameon=False)
+                    _curve(y_sum, color=self._type_color_map.get(self.active_element, 'grey'), lw=2, label=label, picker=True, pickradius=3, zorder=2)
+            if build:
+                self.ax_spec.legend([plt.Line2D([0], [0], color=self._type_color_map.get(t, 'grey'), lw=2) for t in self.atomtypes], self.atomtypes, title="Atom Types", loc='upper right', frameon=False)
         elif self.plot_level == 4:
             for a_idx, label in self.vesta_label_map.items():
                 if label.startswith(self.active_element):
                     y_sum = np.sum(active_ldos_norm[:, a_idx - 1, :], axis=1)
                     element_color = self._type_color_map.get(self.active_element, 'grey')
                     if a_idx == self.active_atom:
-                        self.ax_spec.plot(self.cached_eg, y_sum, color=element_color, lw=2.5, alpha=1.0, zorder=5)
+                        _curve(y_sum, color=element_color, lw=2.5, alpha=1.0, zorder=5)
                         orb_artists = []
                         for orb in self.orbitals:
                             col_idx = self.orbitals.index(orb)
                             y_orb = active_ldos_norm[:, a_idx - 1, col_idx]
                             ls = linestyle_map[_orbit_base(orb)]
                             p_color = _lighten_color(element_color, 0.3) if orb.endswith('_up') else element_color
-                            o_line, = self.ax_spec.plot(self.cached_eg, y_orb, color=p_color, linestyle=ls, lw=1.2, label=f"{label} – {orb}", zorder=10)
+                            o_line = _curve(y_orb, color=p_color, linestyle=ls, lw=1.2, label=f"{label} – {orb}", zorder=10)
                             orb_artists.append(o_line)
-                        if getattr(self, 'cursor', None) is not None:
-                            self.cursor.remove()
-                        # The hover label of the orbital curves (their labels), on from the start as the old cursor was.
-                        self.cursor = widgets.HoverLabels(self.ax_spec, orb_artists, enabled=True, arm_by_click=False)
+                        if build:
+                            if getattr(self, 'cursor', None) is not None:
+                                self.cursor.remove()
+                            # The hover label of the orbital curves (their labels), on from the start as the old cursor was.
+                            self.cursor = widgets.HoverLabels(self.ax_spec, orb_artists, enabled=True, arm_by_click=False)
                     else:
                         orig = plt.to_rgb(element_color)
                         lumi = 0.299 * orig[0] + 0.587 * orig[1] + 0.114 * orig[2]
                         faded_color = (S * np.array(orig)) + ((1 - S) * lumi)
-                        self.ax_spec.plot(self.cached_eg, y_sum, color=faded_color, lw=1.5, alpha=0.05, zorder=2)
-            leg1 = self.ax_spec.legend([plt.Line2D([0], [0], color=self._type_color_map.get(t, 'grey'), lw=2) for t in self.atomtypes], self.atomtypes, title="Atom Types", loc='upper right', frameon=False)
-            self.ax_spec.add_artist(leg1)
-            self.ax_spec.legend([plt.Line2D([0], [0], color='black', linestyle=linestyle_map[b], lw=1.5) for b in unique_bases], unique_bases, title="Orbitals", loc='upper left', frameon=False)
+                        _curve(y_sum, color=faded_color, lw=1.5, alpha=0.05, zorder=2)
+            if build:
+                leg1 = self.ax_spec.legend([plt.Line2D([0], [0], color=self._type_color_map.get(t, 'grey'), lw=2) for t in self.atomtypes], self.atomtypes, title="Atom Types", loc='upper right', frameon=False)
+                self.ax_spec.add_artist(leg1)
+                self.ax_spec.legend([plt.Line2D([0], [0], color='black', linestyle=linestyle_map[b], lw=1.5) for b in unique_bases], unique_bases, title="Orbitals", loc='upper left', frameon=False)
 
         lines = self.ax_spec.get_lines()
         active_maxes = [np.max(l.get_ydata()) for l in lines if l.get_visible() and l.get_alpha() == 1.0]
@@ -2476,7 +2638,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
                 v_line = self.p2 - self.p1
                 v_hat = v_line / p_len
                 v_perp = np.array([-v_hat[1], v_hat[0]])
-                half_w = p_len / 2.0
+                half_w = p_len / 3.0
 
                 n_tile = max(int(self.s_cell.val), 1) + 1
                 margin = p_len * 0.15
@@ -2524,7 +2686,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
 
                 self.ax_line_topo.set_xlim(-half_w, half_w)
                 self.ax_line_topo.set_ylim(0, p_len)
-                self.ax_line_topo.set_box_aspect(1)
+                self.ax_line_topo.set_box_aspect(1.5)
                 self.ax_line_topo.set_xlabel("Perp. (Å)", fontsize=10)
                 self.ax_line_topo.set_ylabel("Position (Å)", fontsize=10)
                 self.ax_line_topo.set_title("Topo", fontsize=10)
@@ -2533,9 +2695,9 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
 
             # Topo stripe: a narrow cell as wide as its 40-point stroke and its tick axis; in Path the LDOS h box above it.
             if self.mode == 'Path':
-                self.ax_stripe = self._panel_with_box(row, self._box_ldos_h, inner_w=58)
+                self.ax_stripe = self._panel_with_box(row, self._box_ldos_h, inner_w=58 / (1000 / 72) * plt.em_px())
             else:
-                self.ax_stripe = self._panel(row, inner_w=58)
+                self.ax_stripe = self._panel(row, inner_w=58 / (1000 / 72) * plt.em_px())
             self.line_decomp_axes.append(self.ax_stripe)
             lc = plt.LineCollection(
                 np.array([np.array([np.zeros_like(p_dist), p_dist]).T[:-1],
@@ -2554,7 +2716,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
                 self.line_decomp_axes.append(ax_l)
                 cax_l = None
                 if self.show_dcmp_norm or p_idx == num_p - 1:
-                    cax_l = self._panel(row, inner_w=15)
+                    cax_l = self._panel(row, inner_w=15 / (1000 / 72) * plt.em_px())
                     self.line_decomp_axes.append(cax_l)
 
                 v_max = np.max(np.abs(t_data)) if self.show_dcmp_norm else global_vmax
@@ -2622,20 +2784,20 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
                         cells.append(cell)
                         if self.cmap_norm:
                             # 'cmap norm': every map its own colour bar beside it (cax_list by the map's index).
-                            bar = self.fig.cell(inner_w=12)
+                            bar = self.fig.cell(inner_w=12 / (1000 / 72) * plt.em_px())
                             self._panel_cells.append(bar)
                             self.cax_list.append(self.fig.add_axes(cell=bar))
                             cell_bars[cell] = bar
                     bar = None
                     if self.show_dcmp_norm and not self.cmap_norm:
-                        bar = self.fig.cell(inner_w=15)
+                        bar = self.fig.cell(inner_w=15 / (1000 / 72) * plt.em_px())
                         self._panel_cells.append(bar)
                         self.cax_list.append(self.fig.add_axes(cell=bar))
                     groups.append((cells, bar))
                     self._map_cells += cells + ([bar] if bar is not None else []) + [cell_bars[c] for c in cells if c in cell_bars]
                 shared = None
                 if not self.show_dcmp_norm and not self.cmap_norm:
-                    shared = self.fig.cell(inner_w=15)
+                    shared = self.fig.cell(inner_w=15 / (1000 / 72) * plt.em_px())
                     self._panel_cells.append(shared)
                     self.cax_list.append(self.fig.add_axes(cell=shared))
                     self._map_cells.append(shared)

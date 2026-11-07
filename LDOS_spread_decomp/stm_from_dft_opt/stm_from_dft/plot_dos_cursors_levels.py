@@ -9,20 +9,22 @@ import re
 import os as _os
 import sys as _sys
 
-# The shared Qt layer (qtgui at the repository root): found by walking up from this file.
-_root = _os.path.dirname(_os.path.abspath(__file__))
-while not _os.path.isdir(_os.path.join(_root, 'qtgui')) and _os.path.dirname(_root) != _root:
-    _root = _os.path.dirname(_root)
-if _root not in _sys.path:
-    _sys.path.insert(0, _root)
-
 import numpy as np
 import sys
 from os.path import exists, join
 import colorsys
 
-from qtgui import qtplot as plt
-from qtgui import widgets
+if __package__ in (None, ''):
+    # Run directly: the package's parent folder (stm_from_dft_opt/, fixed from this file) on sys.path,
+    # and the package's own Qt layer (stm_from_dft.qtgui).
+    _pkg_parent = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
+    if _pkg_parent not in _sys.path:
+        _sys.path.insert(0, _pkg_parent)
+    from stm_from_dft.qtgui import qtplot as plt
+    from stm_from_dft.qtgui import widgets
+else:
+    from .qtgui import qtplot as plt
+    from .qtgui import widgets
 
 from doscar_parser import SpinAwareDosParser, SpinMode
 

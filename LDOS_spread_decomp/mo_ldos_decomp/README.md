@@ -6,9 +6,10 @@ partitioning). Package `mo_ldos_projection/` plus the run scripts next to it.
 
 The package reaches the matcher and the simulator through `mo_ldos_projection/_imports.py`, which
 expects `../MOPmatcher_mem/` and `../stm_from_dft_opt/` next to this folder (two levels above the
-package). Keep the three folders side by side. The windows draw with the shared Qt layer `qtgui`
-at the repository root (PySide6 + pyqtgraph; every window finds it by walking up from its own
-file), see [The windows](#the-windows).
+package). Keep the three folders side by side. The windows draw with the simulator's copy of the
+Qt layer `qtgui` (`stm_from_dft/qtgui/` in `../stm_from_dft_opt/`; PySide6 + pyqtgraph), which
+`_imports.py` finds as it finds the simulator (`resolve_qt()`, no folder walking), see
+[The windows](#the-windows).
 
 ## Run scripts (edit the settings at the top of each `__main__` block)
 
@@ -30,12 +31,12 @@ file), see [The windows](#the-windows).
 | `decomp_window.py` | `DecompWindow`: the per-marker LDOS + MO decomposition window (one block of panels per marker, rebuilt on every toggle). Controls under the panels: the layout toggles `Vertical`, `Horizontal`, `Amplitude`; the `area ≥` box (the MO area threshold; Enter or leaving the box applies it, a non-number is put back); the `Metal curve` toggle; `Save data` (`decomp_window_data.txt` in the run directory). Hover labels on every panel (see below) |
 | `topo_decomp_window.py` | `TopoDecompWindow`: the offsets × components grid of single-colour alpha-ramp maps, one colour bar beside every drawn map, the `Amplitude` and `Norm` toggles and `Save data` (`topo_decomp_data.txt`) under the grid; the figure background is transparent in the exports |
 | `_imports.py` | import resolution of the matcher and simulator packages |
-| `tests/` | pytest suite, run offscreen: `QT_QPA_PLATFORM=offscreen python -m pytest mo_ldos_projection/tests` from this folder (`conftest.py` sets the offscreen platform itself when none is set and takes the example directory from `MO_LDOS_EXAMPLE_DIR`; the tests that need the example run or a GPU skip without them) |
 
 ## The windows
 
-Every window of this package is a Qt window of the shared layer (`qtgui/` at the repository
-root), laid out automatically: the panels sit in a grid of cells and the controls in one strip
+Every window of this package is a Qt window of the simulator's copy of the layer
+(`stm_from_dft/qtgui/`, through `resolve_qt()`), laid out automatically: the panels sit in a
+grid of cells and the controls in one strip
 under them, nothing is placed by hand, and a window never scrolls. A row of panels is as tall as
 its spatial panels ask (no empty band above or below them), and a window whose panels are all
 spatial (the topography decomposition, the plane slice) takes the size they give it at its first
@@ -57,13 +58,9 @@ Hover labels (the decomposition window): a left click on a panel arms its labels
 curve under the click (an MO curve's projection, the LDOS area, the metal composite's projection);
 moving over another curve moves the label; a right click clears the label and disarms the panel.
 
-`checks/check_decomp.py` at the repository root opens every window of this package offscreen on
-synthetic inputs, scripts every control and measures the layout at four sizes.
-
 Inputs: the MOPMatcher outputs (`matcher_results.h5`), PROCAR (LORBIT=14), DOSCAR, LOCPOT,
 POSCAR/CONTCAR of the full run, vaspkit real-space wavefunction files. Outputs: decomposition
 figures, synthetic DOSCARs in σ-tagged working directories, CHGCAR-format maps.
 
-Dependencies: those of `MOPmatcher_mem` and `stm_from_dft_opt`, PySide6 and pyqtgraph (the shared
-`qtgui` layer at the repository root; matplotlib stays for the publication files), plus pytest for
-the tests.
+Dependencies: those of `MOPmatcher_mem` and `stm_from_dft_opt`, PySide6 and pyqtgraph (the
+simulator's `qtgui` copy; matplotlib stays for the publication files).

@@ -32,17 +32,12 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import h5py
 
-# The shared Qt layer (qtgui at the repository root): found by walking up from this file.
-_root = os.path.dirname(os.path.abspath(__file__))
-while not os.path.isdir(os.path.join(_root, 'qtgui')) and os.path.dirname(_root) != _root:
-    _root = os.path.dirname(_root)
-if _root not in sys.path:
-    sys.path.insert(0, _root)
-from qtgui import qtplot as plt
-
-from mo_ldos_projection._imports import PlotConfig, resolve_run_match
+from mo_ldos_projection._imports import PlotConfig, resolve_run_match, resolve_qt
 from mo_ldos_projection.sim_wrapper import StmDecompSession
 from mo_ldos_projection.decomp_window import MO_AREA_NOISE_THRESHOLD
+
+# The shared Qt layer: the simulator's qtgui copy (mo_ldos_projection._imports.resolve_qt).
+plt, controls, widgets, mplexport = resolve_qt()
 
 # ======================================================================
 # Directories: one isolated VASP directory per molecule, the metal

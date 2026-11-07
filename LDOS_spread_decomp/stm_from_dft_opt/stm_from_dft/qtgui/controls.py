@@ -25,18 +25,14 @@ Value or a Count stops at its limits.  Each press applies the new value at once,
 (rule 8 of the guide: number boxes instead of sliders; the one slider kept scrubs a list).
 """
 
-if __package__ in (None, ''):
-    # Run as a file (Spyder F5): make the package importable from wherever its folder sits.
-    import os as _os, sys as _sys
-    _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
 import re
 import weakref
 from decimal import Decimal, InvalidOperation
 import numpy as np
-from qtgui import qtplot as plt
-from qtgui.qtplot import QtCore, QtGui, QtWidgets, qfont, qcolor
-from qtgui import widgets
-from qtgui.widgets import SPECS, LABELS, short_form
+from . import qtplot as plt
+from .qtplot import QtCore, QtGui, QtWidgets, qfont, qcolor
+from . import widgets
+from .widgets import SPECS, LABELS, short_form
 
 Qt = QtCore.Qt
 
@@ -87,8 +83,8 @@ def box(*items, title=None, orient='h', spacing=4, margins=(4, 2, 4, 2), stretch
     frame.setObjectName('box')
     frame.setStyleSheet(FRAME_CSS)
     outer = QtWidgets.QVBoxLayout(frame)
-    outer.setContentsMargins(*margins)
-    outer.setSpacing(2)
+    outer.setContentsMargins(*(round(m / (1000 / 72) * plt.em_px()) for m in margins))
+    outer.setSpacing(round(2 / (1000 / 72) * plt.em_px()))
     if title:
         fig = next((f for f in (_fig_of(it) for it in items) if f is not None), None)
         if fig is not None:
@@ -102,7 +98,7 @@ def box(*items, title=None, orient='h', spacing=4, margins=(4, 2, 4, 2), stretch
         outer.addWidget(t)
     inner = QtWidgets.QHBoxLayout() if orient == 'h' else QtWidgets.QVBoxLayout()
     inner.setContentsMargins(0, 0, 0, 0)
-    inner.setSpacing(spacing)
+    inner.setSpacing(round(spacing / (1000 / 72) * plt.em_px()))
     for it in items:
         if isinstance(it, QtWidgets.QLayout):
             inner.addLayout(it)
@@ -118,7 +114,7 @@ def row(*items, spacing=4, stretch=False, align=None):
     """A plain row (no frame) of items: a QHBoxLayout (automatic layout)."""
     lay = QtWidgets.QHBoxLayout()
     lay.setContentsMargins(0, 0, 0, 0)
-    lay.setSpacing(spacing)
+    lay.setSpacing(round(spacing / (1000 / 72) * plt.em_px()))
     for it in items:
         if it == 'stretch':
             lay.addStretch(1)
@@ -138,7 +134,7 @@ def column(*items, spacing=4, stretch=False, align=None):
     """A plain column (no frame) of items: a QVBoxLayout (automatic layout)."""
     lay = QtWidgets.QVBoxLayout()
     lay.setContentsMargins(0, 0, 0, 0)
-    lay.setSpacing(spacing)
+    lay.setSpacing(round(spacing / (1000 / 72) * plt.em_px()))
     for it in items:
         if it == 'stretch':
             lay.addStretch(1)
@@ -166,8 +162,8 @@ class FlowLayout(QtWidgets.QLayout):
     def __init__(self, hspacing=6, vspacing=4, push_last=False):
         super().__init__()
         self._items = []
-        self._hs = int(hspacing)
-        self._vs = int(vspacing)
+        self._hs = int(round(hspacing / (1000 / 72) * plt.em_px()))
+        self._vs = int(round(vspacing / (1000 / 72) * plt.em_px()))
         self._push_last = bool(push_last)
         self.setContentsMargins(0, 0, 0, 0)
 
@@ -260,7 +256,7 @@ class UnderPanel(QtWidgets.QWidget):
         super().__init__()
         lay = QtWidgets.QHBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
-        lay.setSpacing(spacing)
+        lay.setSpacing(round(spacing / (1000 / 72) * plt.em_px()))
         lay.addStretch(1)
         for it in items:
             lay.addWidget(_qw(it))
@@ -315,13 +311,13 @@ class PanelWithBox(QtWidgets.QWidget):
         super().__init__()
         lay = QtWidgets.QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
-        lay.setSpacing(spacing)
+        lay.setSpacing(round(spacing / (1000 / 72) * plt.em_px()))
         narrow = getattr(cell, 'inner_w', None) is not None
         self.above = AbovePanel(ax, *items, follow=not narrow)
         lay.addWidget(self.above, 0)
         lay.addWidget(cell, 1)
         self.cell = cell
-        self._sp = int(spacing)
+        self._sp = int(round(spacing / (1000 / 72) * plt.em_px()))
         if narrow:
             # Over a narrow cell (a tip-height stripe): the pair is as wide as the wider of the box and
             # the cell, a fixed-width item of its row like the cell itself (PanelRow._fixed).
@@ -375,7 +371,7 @@ class OrientedPanes(QtWidgets.QWidget):
             w.setParent(self)
             w.show()
         main._pane_main = True                 # the render check's mark: this panel's room follows the pane rule, not a row's
-        self.main_share, self._sp, self._hys = float(main_share), int(spacing), float(hysteresis)
+        self.main_share, self._sp, self._hys = float(main_share), int(round(spacing / (1000 / 72) * plt.em_px())), float(hysteresis)
         self.orientation = None
         pol = QtWidgets.QSizePolicy.Policy
         self.setSizePolicy(pol.Expanding, pol.Expanding)
@@ -484,10 +480,10 @@ class OrientedPanes(QtWidgets.QWidget):
 
     def minimumSizeHint(self):
         a, b = self.main.minimumSizeHint(), self.rest.minimumSizeHint()
-        return QtCore.QSize(max(a.width(), b.width(), 100), max(a.height(), b.height(), 100))
+        return QtCore.QSize(max(a.width(), b.width(), round(100 / (1000 / 72) * plt.em_px())), max(a.height(), b.height(), round(100 / (1000 / 72) * plt.em_px())))
 
     def sizeHint(self):
-        return QtCore.QSize(900, 600)
+        return QtCore.QSize(round(900 / (1000 / 72) * plt.em_px()), round(600 / (1000 / 72) * plt.em_px()))
 
 
 class RideBand(QtWidgets.QWidget):
@@ -792,8 +788,9 @@ class Checks(Control):
     """
     A box frame of toggle rows: value is the list of states; set(i, flag) never fires;
     callback(label, states) after a click (the clicked row already flipped).  `indents` gives a
-    left indent per row: pixels, or a text whose width (in the box's font) is the indent (the
-    calibrate box's rows under 'calibrate').
+    left indent per row: pixels (at the old fixed 100 DPI, converted to the screen with
+    qtplot.em_px), or a text whose width (in the box's font) is the indent (the calibrate box's
+    rows under 'calibrate').
     """
 
     def __init__(self, fig, name, values=None, labels=None, title=None, indents=None):
@@ -806,8 +803,9 @@ class Checks(Control):
         frame.setObjectName('box')
         frame.setStyleSheet(FRAME_CSS)
         lay = QtWidgets.QVBoxLayout(frame)
-        lay.setContentsMargins(4, 2, 4, 2)
-        lay.setSpacing(1)
+        lay.setContentsMargins(round(4 / (1000 / 72) * plt.em_px()), round(2 / (1000 / 72) * plt.em_px()),
+                               round(4 / (1000 / 72) * plt.em_px()), round(2 / (1000 / 72) * plt.em_px()))
+        lay.setSpacing(round(1 / (1000 / 72) * plt.em_px()))
         self._title_w = None
         if self._title:
             self._title_w = QtWidgets.QLabel(self._title)
@@ -831,7 +829,7 @@ class Checks(Control):
                 lay.addLayout(r)
             elif ind:
                 r = QtWidgets.QHBoxLayout()
-                r.setContentsMargins(int(ind), 0, 0, 0)
+                r.setContentsMargins(int(round(ind / (1000 / 72) * plt.em_px())), 0, 0, 0)
                 r.addWidget(cb)
                 r.addStretch(1)
                 lay.addLayout(r)
@@ -900,8 +898,9 @@ class Radio(Control):
         frame.setObjectName('box')
         frame.setStyleSheet(FRAME_CSS)
         lay = QtWidgets.QVBoxLayout(frame)
-        lay.setContentsMargins(4, 2, 4, 2)
-        lay.setSpacing(1)
+        lay.setContentsMargins(round(4 / (1000 / 72) * plt.em_px()), round(2 / (1000 / 72) * plt.em_px()),
+                               round(4 / (1000 / 72) * plt.em_px()), round(2 / (1000 / 72) * plt.em_px()))
+        lay.setSpacing(round(1 / (1000 / 72) * plt.em_px()))
         self._title_w = None
         if self._title:
             self._title_w = QtWidgets.QLabel(self._title)
@@ -1098,14 +1097,14 @@ class Text(Control):
         w = QtWidgets.QWidget()
         lay = QtWidgets.QHBoxLayout(w)
         lay.setContentsMargins(0, 0, 0, 0)
-        lay.setSpacing(3)
+        lay.setSpacing(round(3 / (1000 / 72) * plt.em_px()))
         self._lab = QtWidgets.QLabel(self.label)
         lay.addWidget(self._lab)
         if not self.label.strip():
             self._lab.hide()
         e = _DigitEdit(str(value), self)
         e.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._base_w = int(width) if width is not None else int(round(self.spec.get('w', 0.6) * plt.DPI))
+        self._base_w = int(round(width / (1000 / 72) * plt.em_px())) if width is not None else int(round(self.spec.get('w', 0.6) * 72 * plt.px_per_pt()))
         if fig is None:
             e.setMaximumWidth(self._base_w)          # its window scales it
         else:
@@ -1340,7 +1339,7 @@ class Slider(Control):
         sl.setPageStep(max(1, (int(vmax) - int(vmin)) // 20))
         self.slider = sl
         self.readout = QtWidgets.QLabel(str(int(value)))
-        self.readout.setMinimumWidth(36)
+        self.readout.setMinimumWidth(round(36 / (1000 / 72) * plt.em_px()))
         lay.addWidget(sl, 1)
         lay.addWidget(self.readout)
         self._release = None
@@ -1435,8 +1434,8 @@ class TextPanel(Control):
         self.widget.setFont(f)
         if self._lines:
             # `lines` lines of text tall: exactly (fixed) or at least; more text scrolls.
-            fm = QtGui.QFontMetrics(f)
-            h = int(fm.lineSpacing() * self._lines + 2 * self.widget.document().documentMargin() + 4)
+            fm = QtGui.QFontMetricsF(f)
+            h = int(fm.lineSpacing() * self._lines + 2 * self.widget.document().documentMargin() + 4 / (1000 / 72) * plt.em_px())
             if self._fixed:
                 self.widget.setFixedHeight(h)
             else:
@@ -1531,7 +1530,7 @@ class StepButtons:
         if chevrons:
             for b in (self.left, self.right):
                 b.spec['fs'] = 13
-                b.widget.setStyleSheet("QPushButton { font-weight: bold; padding: 0px 10px; }")
+                b.widget.setStyleSheet(f"QPushButton {{ font-weight: bold; padding: 0px {round(10 / (1000 / 72) * plt.em_px())}px; }}")
         self._cb = None
         self.left.on_change(lambda: self._fire(-1))
         self.right.on_change(lambda: self._fire(+1))
@@ -1706,12 +1705,12 @@ class Titled(QtWidgets.QWidget):
         super().__init__()
         lay = QtWidgets.QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
-        lay.setSpacing(spacing)
+        lay.setSpacing(round(spacing / (1000 / 72) * plt.em_px()))
         self.label = _qw(label)
         lay.addWidget(self.label, 0, QtCore.Qt.AlignmentFlag.AlignHCenter)
         lay.addWidget(body, 1)
         self.body = body
-        self._sp = int(spacing)
+        self._sp = int(round(spacing / (1000 / 72) * plt.em_px()))
 
     def _label_h(self):
         return 0.0 if self.label.isHidden() else float(self.label.sizeHint().height()) + self._sp
@@ -1750,7 +1749,7 @@ class FlipBox(QtWidgets.QWidget):
         super().__init__()
         self._lay = QtWidgets.QBoxLayout(QtWidgets.QBoxLayout.Direction.LeftToRight, self)
         self._lay.setContentsMargins(0, 0, 0, 0)
-        self._lay.setSpacing(spacing)
+        self._lay.setSpacing(round(spacing / (1000 / 72) * plt.em_px()))
         for it in items:
             w, st = (it if isinstance(it, tuple) else (it, 1))
             self._lay.addWidget(_qw(w), int(st))
@@ -1778,10 +1777,10 @@ class FlipBox(QtWidgets.QWidget):
         super().resizeEvent(ev)
 
     def minimumSizeHint(self):
-        return QtCore.QSize(120, 90)
+        return QtCore.QSize(round(120 / (1000 / 72) * plt.em_px()), round(90 / (1000 / 72) * plt.em_px()))
 
     def sizeHint(self):
-        return QtCore.QSize(400, 300)
+        return QtCore.QSize(round(400 / (1000 / 72) * plt.em_px()), round(300 / (1000 / 72) * plt.em_px()))
 
 
 class CropPanel(QtWidgets.QWidget):
@@ -1801,8 +1800,8 @@ class CropPanel(QtWidgets.QWidget):
         super().__init__()
         grid = QtWidgets.QGridLayout(self)
         grid.setContentsMargins(0, 0, 0, 0)
-        grid.setHorizontalSpacing(spacing)
-        grid.setVerticalSpacing(spacing)
+        grid.setHorizontalSpacing(round(spacing / (1000 / 72) * plt.em_px()))
+        grid.setVerticalSpacing(round(spacing / (1000 / 72) * plt.em_px()))
         self.above = AbovePanel(ax, *items)
         self.band_x = RideBand('h')
         self.band_y = RideBand('v')
@@ -1813,7 +1812,7 @@ class CropPanel(QtWidgets.QWidget):
         grid.setColumnStretch(0, 1)
         grid.setRowStretch(2, 1)
         self.cell = cell
-        self._sp = int(spacing)
+        self._sp = int(round(spacing / (1000 / 72) * plt.em_px()))
 
     def _box_h(self):
         # Measured once per layout pass (plt.pass_cached): the arrangement asks it hundreds of times in one.
@@ -1868,7 +1867,7 @@ class MapBlock(QtWidgets.QWidget):
     def __init__(self, fig, spacing=4):
         super().__init__()
         self.fig = fig
-        self._sp = int(spacing)
+        self._sp = int(round(spacing / (1000 / 72) * plt.em_px()))
         self._groups = []             # [(cells, bar)]
         self._shared = None
         self._extra = None            # the extra cell (set_groups), one map's size at the first free slot
@@ -2026,7 +2025,7 @@ class MapBlock(QtWidgets.QWidget):
         if total > H:
             box_h = max((H - (R - 1) * self._sp - tb_sum) / R, 1.0)
             box_w = box_h / r
-        cw = max(box_w + lr, m['title_w'] + 4.0)                 # a cell at least as wide as its title
+        cw = max(box_w + lr, m['title_w'] + 4.0 / (1000 / 72) * plt.em_px())                 # a cell at least as wide as its title
         w = n * (cw + cbw) + (n - 1) * self._sp + bar_w
         h = R * (box_w * r) + tb_sum + (R - 1) * self._sp
         return (w, h, box_w)
@@ -2093,7 +2092,7 @@ class MapBlock(QtWidgets.QWidget):
         m = self._metrics()
         lr = m['lr']
         r = m['ratio']
-        cw = max(box_w + lr, m['title_w'] + 4.0)
+        cw = max(box_w + lr, m['title_w'] + 4.0 / (1000 / 72) * plt.em_px())
         cbw = m['cell_bar_w']
         bar_w = m['bar_w'] - self._sp if m['bar_w'] > 0 else 0.0
         y = 0.0
@@ -2151,10 +2150,10 @@ class MapBlock(QtWidgets.QWidget):
         return super().event(ev)
 
     def minimumSizeHint(self):
-        return QtCore.QSize(120, 80)
+        return QtCore.QSize(round(120 / (1000 / 72) * plt.em_px()), round(80 / (1000 / 72) * plt.em_px()))
 
     def sizeHint(self):
-        return QtCore.QSize(600, 300)
+        return QtCore.QSize(round(600 / (1000 / 72) * plt.em_px()), round(300 / (1000 / 72) * plt.em_px()))
 
 
 class Arrangement(QtWidgets.QWidget):
@@ -2207,7 +2206,7 @@ class Arrangement(QtWidgets.QWidget):
             w.setParent(self)
             w.show()
             w.installEventFilter(self)
-        self._sp, self._hys = int(spacing), float(hysteresis)
+        self._sp, self._hys = int(round(spacing / (1000 / 72) * plt.em_px())), float(hysteresis)
         self._free_min_fn, self._free_cap_fn, self._free_scored = free_min, free_cap, bool(free_scored)
         self._group_cap = group_cap       # (A, B, k, box_a, box_b): group A's plot box at most k times group B's
         self._lim = {}                    # {group: (max w, max h)} while a candidate is sized under group_cap
@@ -2254,10 +2253,10 @@ class Arrangement(QtWidgets.QWidget):
         return super().event(ev)
 
     def minimumSizeHint(self):
-        return QtCore.QSize(200, 150)
+        return QtCore.QSize(round(200 / (1000 / 72) * plt.em_px()), round(150 / (1000 / 72) * plt.em_px()))
 
     def sizeHint(self):
-        return QtCore.QSize(1000, 700)
+        return QtCore.QSize(round(1000 / (1000 / 72) * plt.em_px()), round(700 / (1000 / 72) * plt.em_px()))
 
     # --- the candidates ---
 

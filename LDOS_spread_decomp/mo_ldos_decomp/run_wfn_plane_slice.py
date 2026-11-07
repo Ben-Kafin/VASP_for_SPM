@@ -310,13 +310,9 @@ def _resolve_cmap(name: str, invert: bool) -> str:
     return name[:-2] if name.endswith("_r") else name + "_r"
 
 
-# The shared Qt layer (qtgui at the repository root): found by walking up from this file.
-_root = os.path.dirname(os.path.abspath(__file__))
-while not os.path.isdir(os.path.join(_root, 'qtgui')) and os.path.dirname(_root) != _root:
-    _root = os.path.dirname(_root)
-if _root not in sys.path:
-    sys.path.insert(0, _root)
-from qtgui import qtplot as plt, controls           # noqa: E402
+# The shared Qt layer: the simulator's qtgui copy (mo_ldos_projection._imports.resolve_qt).
+from mo_ldos_projection._imports import resolve_qt  # noqa: E402
+plt, controls, widgets, mplexport = resolve_qt()
 
 
 class _GammaNorm(plt.Normalize):
@@ -350,7 +346,7 @@ class _GammaNorm(plt.Normalize):
 
     def to_matplotlib(self):
         from matplotlib.colors import Normalize
-        from qtgui.mplexport import _mpl_norm
+        _mpl_norm = mplexport._mpl_norm
         base = _mpl_norm(self.base)
         gamma = self.gamma
 

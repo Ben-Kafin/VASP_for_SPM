@@ -108,15 +108,9 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 from math import sqrt
 
-# The shared Qt layer (qtgui at the repository root): found by walking up from this file.
-import os as _os, sys as _sys
-_root = _os.path.dirname(_os.path.abspath(__file__))
-while not _os.path.isdir(_os.path.join(_root, 'qtgui')) and _os.path.dirname(_root) != _root:
-    _root = _os.path.dirname(_root)
-if _root not in _sys.path:
-    _sys.path.insert(0, _root)
-from qtgui import qtplot as plt
-from qtgui import controls, widgets
+if __name__ != "__main__":
+    from .qtgui import qtplot as plt
+    from .qtgui import controls, widgets
 
 # y-axis label of the original-MO row in the multi-run figure: same overlap
 # form as PlotConfig.ylabel but with psi_MO on both sides of the bracket.
@@ -1535,6 +1529,8 @@ if __name__ == "__main__":
     _pkg = types.ModuleType("matcher")
     _pkg.__path__ = [_pkg_dir]
     sys.modules.setdefault("matcher", _pkg)
+    from matcher.qtgui import qtplot as plt
+    from matcher.qtgui import controls, widgets
     from matcher.vacupot_plotter import (
         RectAEPAWColorPlotter,
         PlotConfig,

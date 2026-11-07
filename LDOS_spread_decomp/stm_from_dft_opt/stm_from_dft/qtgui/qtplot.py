@@ -1,7 +1,7 @@
 """
 qtplot: the drawing and window layer of the suite's windows on PySide6 + pyqtgraph (the
-sm4_Browser layer, section 9 of the conversion guide, carried into VASP_for_SPM as the one
-shared layer at the repository root, package `qtgui`).
+sm4_Browser layer, section 9 of the conversion guide, carried into VASP_for_SPM; this file is
+the package's own copy of the layer, its subpackage `qtgui`).
 
 The suite's windows were written against matplotlib's pyplot: figures laid
 out in figure fractions, axes, artists returned by plot / imshow / axhline,
@@ -74,7 +74,7 @@ size is raised, so nothing overlaps and no window scrolls.  The publication
 export lays a window out at its design size (Figure.at_design_size).
 
 Text size: every window declares its design size as a DESIGN constant
-(inches, the figsize it opens with, at DPI logical pixels per inch) and
+(inches, the figsize it opens with, at 72 * px_per_pt() logical pixels per inch) and
 its text zoom is window_zoom(W, H, W0, H0) = min(W / W0, H / H0) limited to
 ZOOM_MIN .. ZOOM_MAX (Figure.font_zoom, set in Figure._relayout on every
 resize): plots, ticks, legends, the controls of controls.py, the info panel
@@ -263,11 +263,11 @@ _check_qt_binding()
 
 WINDOW_BG = '#f0f0f0'     # the window colour around the white panels
 FONT_SCALE = 1.25         # every text (plots, legends, controls) this much larger than matplotlib's points
-DPI = 100.0               # logical pixels per inch: figure sizes, widget sizes, and font points as matplotlib's
+DPI = 100.0               # the old fixed logical pixels per inch: no longer used for anything on screen (sizes: em_px, px_per_pt, pt2px)
 ANTIALIAS = True          # antialiased curves (False draws faster, with jagged lines)
 ZOOM_MIN, ZOOM_MAX = 0.5, 4.0   # the text zoom of any window: its size relative to its design size, within these
 CONTROL_FIT_MIN = 0.75          # the controls' text shrinks to at most this fraction of the zoom to fit its window (every window: Figure._fit_controls)
-CONTROL_FIT_SLACK = 8           # px: a larger control text is taken only when the controls fit with this to spare (no flip-flop at the edge)
+CONTROL_FIT_SLACK = 8           # px at the old fixed 100 DPI (converted by em_px where used, fits_controls): a larger control text is taken only when the controls fit with this to spare (no flip-flop at the edge)
 
 
 def fits_controls(need, room, zoom, current):
@@ -277,7 +277,7 @@ def fits_controls(need, room, zoom, current):
     with CONTROL_FIT_SLACK to spare, so a window at the edge keeps its text size instead of switching
     between two sizes on every layout pass.
     """
-    s = CONTROL_FIT_SLACK if current is not None and zoom > current + 1e-9 else 0
+    s = CONTROL_FIT_SLACK / (1000 / 72) * em_px() if current is not None and zoom > current + 1e-9 else 0
     return need[0] <= room[0] - s and need[1] <= room[1] - s
 pg.setConfigOptions(imageAxisOrder='row-major', background='w', foreground='k', antialias=ANTIALIAS)
 
@@ -315,9 +315,47 @@ def window_zoom(W, H, W0, H0):
     return float(min(max(z, ZOOM_MIN), ZOOM_MAX))
 
 
+def base_font():
+    """The application font at 10 pt (setPointSizeF(10)): the font every size on screen is measured from (em_px)."""
+    f = QtGui.QFont(_app().font())
+    f.setPointSizeF(10)
+    return f
+
+
+_EM = [None]            # em_px's value: None until first asked (then the primary screen's), measured again on a window's screen (FigureManager.show, QWindow.screenChanged)
+
+
+def _measure_em(device=None):
+    """The base font's size in pixels: QFontInfo's pixel size of a 100 pt copy of base_font, divided by 10 (on `device`'s screen, a widget, when given)."""
+    f = base_font()
+    f.setPointSizeF(100.0)
+    if device is not None:
+        f = QtGui.QFont(f, device)
+    return QtGui.QFontInfo(f).pixelSize() / 10.0
+
+
+def em_px():
+    """
+    The base font's size (base_font, 10 pt) in pixels on the window's screen: QFontInfo(...).pixelSize()
+    ("the pixel size of the matched window system font") of a 100 pt copy, divided by 10, so the
+    integer pixel size does not round the result.  One value for the process: measured on the
+    primary screen at the first call, again on a window's screen when it is shown and when it moves
+    to another screen (QWindow.screenChanged).  A hard-coded size of c pixels at the old fixed 100
+    DPI is c / (1000 / 72) * em_px().
+    """
+    if _EM[0] is None:
+        _EM[0] = _measure_em()
+    return _EM[0]
+
+
+def px_per_pt():
+    """Pixels per point on the window's screen: em_px() / 10."""
+    return em_px() / 10.0
+
+
 def pt2px(pt):
-    """Points to logical pixels at DPI (matplotlib's point: 1/72 inch)."""
-    return float(pt) * DPI / 72.0
+    """Points to logical pixels: pt * px_per_pt() (matplotlib's point: 1/72 inch)."""
+    return float(pt) * px_per_pt()
 
 
 _EPOCH = [0]            # the layout pass (new_measure_pass): a PanelCell's room is measured once per pass (PanelCell._decor)
@@ -380,9 +418,9 @@ _font_cache = {}
 
 
 def qfont(size=10.0, family=None, weight=None, zoom=1.0):
-    """A QFont of `size` points at DPI (cached), times FONT_SCALE and a figure's zoom (Figure.font_zoom)."""
-    px = max(1, int(round(pt2px(font_pt(size)) * FONT_SCALE * float(zoom))))
-    key = (px, family, weight)
+    """A QFont of `size` points (cached on the point size), times FONT_SCALE and a figure's zoom (Figure.font_zoom), never below 10 pt."""
+    pt = max(10.0, font_pt(size) * FONT_SCALE * float(zoom))
+    key = (pt, family, weight)
     f = _font_cache.get(key)
     if f is None:
         if family in ('monospace', 'mono', 'courier'):
@@ -391,7 +429,7 @@ def qfont(size=10.0, family=None, weight=None, zoom=1.0):
             f = QtGui.QFont()
             if family and family not in ('sans-serif', 'serif'):
                 f.setFamily(family)
-        f.setPixelSize(px)
+        f.setPointSizeF(pt)
         if weight in ('bold', 'heavy', 'semibold', 'demibold') or (isinstance(weight, (int, float)) and weight >= 600):
             f.setBold(True)
         _font_cache[key] = f
@@ -1322,7 +1360,7 @@ class _TextItem(pg.TextItem):
     def __init__(self, *args, offset=(0.0, 0.0), **kw):
         self._offset = QtCore.QPointF(float(offset[0]), -float(offset[1]))
         super().__init__(*args, **kw)
-        self.textItem.document().setDocumentMargin(1)
+        self.textItem.document().setDocumentMargin(1 / (1000 / 72) * em_px())
 
     def updateTextPos(self):
         super().updateTextPos()
@@ -1335,23 +1373,25 @@ class _LegendSample(pg.GraphicsWidget):
     def __init__(self, pen=None, symbol=None, size=6, spen=None, sbrush=None, fill=None):
         super().__init__()
         self.pen, self.symbol, self.size, self.spen, self.sbrush, self.fill = pen, symbol, size, spen, sbrush, fill
-        self.setFixedWidth(26)
-        self.setFixedHeight(14)
+        self.setFixedWidth(26 / (1000 / 72) * em_px())
+        self.setFixedHeight(14 / (1000 / 72) * em_px())
 
     def boundingRect(self):
-        return QtCore.QRectF(0, 0, 26, 14)
+        return QtCore.QRectF(0, 0, 26 / (1000 / 72) * em_px(), 14 / (1000 / 72) * em_px())
 
     def paint(self, p, *args):
         p.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing, True)
         if self.fill is not None:
             p.setPen(Qt.PenStyle.NoPen)
             p.setBrush(self.fill)
-            p.drawRect(QtCore.QRectF(3, 2, 20, 10))
+            p.drawRect(QtCore.QRectF(3 / (1000 / 72) * em_px(), 2 / (1000 / 72) * em_px(),
+                                     20 / (1000 / 72) * em_px(), 10 / (1000 / 72) * em_px()))
         if self.pen is not None:
             p.setPen(self.pen)
-            p.drawLine(QtCore.QPointF(1, 7), QtCore.QPointF(25, 7))
+            p.drawLine(QtCore.QPointF(1 / (1000 / 72) * em_px(), 7 / (1000 / 72) * em_px()),
+                       QtCore.QPointF(25 / (1000 / 72) * em_px(), 7 / (1000 / 72) * em_px()))
         if self.symbol is not None:
-            p.translate(13, 7)
+            p.translate(13 / (1000 / 72) * em_px(), 7 / (1000 / 72) * em_px())
             pg.graphicsItems.ScatterPlotItem.drawSymbol(p, self.symbol, self.size,
                                                         self.spen if self.spen is not None else QtGui.QPen(Qt.PenStyle.NoPen),
                                                         self.sbrush if self.sbrush is not None else QtGui.QBrush(Qt.BrushStyle.NoBrush))
@@ -1602,7 +1642,8 @@ class _Axis(pg.AxisItem):
 
     def _font_px(self):
         f = self.style.get('tickFont')
-        return float(f.pixelSize()) if f is not None and f.pixelSize() > 0 else pt2px(10)
+        px = QtGui.QFontInfo(f).pixelSize() if f is not None else 0     # a point-sized font: its matched pixel size (pixelSize() is -1)
+        return float(px) if px > 0 else pt2px(10)
 
     def _mpl_ticks(self, lo, hi, size):
         """matplotlib's MaxNLocator ('auto' bins, steps 1, 2, 2.5, 5, 10): one level of ticks."""
@@ -1816,10 +1857,13 @@ class _Axis(pg.AxisItem):
         b = self._strip(view)
         txt = f"1e{self._sci}"
         if self.orientation in ('left', 'right'):
-            rect = QtCore.QRectF(b.right() - 12 if self.orientation == 'left' else b.left() + 2, b.top() - 15, 90, 14)
+            rect = QtCore.QRectF(b.right() - 12 / (1000 / 72) * em_px() if self.orientation == 'left'
+                                 else b.left() + 2 / (1000 / 72) * em_px(), b.top() - 15 / (1000 / 72) * em_px(),
+                                 90 / (1000 / 72) * em_px(), 14 / (1000 / 72) * em_px())
             flags = Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignBottom
         else:
-            rect = QtCore.QRectF(b.right() - 60, b.bottom() - 14, 75, 14)
+            rect = QtCore.QRectF(b.right() - 60 / (1000 / 72) * em_px(), b.bottom() - 14 / (1000 / 72) * em_px(),
+                                 75 / (1000 / 72) * em_px(), 14 / (1000 / 72) * em_px())
             flags = Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignBottom
         textSpecs = list(textSpecs) + [(rect, flags | Qt.TextFlag.TextDontClip, txt)]
         return axisSpec, tickSpecs, textSpecs
@@ -1877,15 +1921,16 @@ class _Axis(pg.AxisItem):
 
     def boundingRect(self):
         # pyqtgraph's bounding rect on the strip (_strip: the box's extent along the axis, so no mark or
-        # label of the box's edge is cut): widened along the axis for the labels at its ends (15 px
-        # unless hideOverlappingLabels gives another margin), across it for ticks pointing inward, over
-        # the box when the grid is on, and over a power-of-ten label above a vertical axis.
+        # label of the box's edge is cut): widened along the axis for the labels at its ends (15 px at
+        # the old 100 DPI, by em_px, unless hideOverlappingLabels gives another margin), across it for
+        # ticks pointing inward, over the box when the grid is on, and over a power-of-ten label above a
+        # vertical axis.
         view = self.linkedView()
         br = self._strip(view)
         if view is not None and self.grid is not False:
             br = br | self._view_edge(view)
         hide = self.style['hideOverlappingLabels']
-        m = 0 if hide is True else (15 if hide is False else int(hide))
+        m = 0 if hide is True else (15 / (1000 / 72) * em_px() if hide is False else int(hide))
         tl = self.style['tickLength']
         if self.orientation == 'left':
             br = br.adjusted(0, -m, -min(0, tl), m)
@@ -1896,7 +1941,8 @@ class _Axis(pg.AxisItem):
         else:
             br = br.adjusted(-m, min(0, tl), m, 0)
         if getattr(self, '_had_sci', False):
-            br = br.united(QtCore.QRectF(br.left(), br.top() - 16, br.width() + 80, 16))
+            br = br.united(QtCore.QRectF(br.left(), br.top() - 16 / (1000 / 72) * em_px(),
+                                         br.width() + 80 / (1000 / 72) * em_px(), 16 / (1000 / 72) * em_px()))
         return br
 
     def tickValues(self, minVal, maxVal, size):
@@ -2109,9 +2155,9 @@ class Line2D(Artist):
     """
     A curve and/or markers: a pyqtgraph PlotCurveItem for a plain curve, a PlotDataItem with
     markers (the '.' marker at half its size).  get_xdata, get_ydata, set_data, set_color, ...;
-    NaN points break the curve and are not drawn.  A picker (a radius in display pixels, or
-    True for 5) makes contains_px test the distance to the polyline, or to the points when there
-    is no line.
+    NaN points break the curve and are not drawn.  A picker (a radius in pixels at the old 100
+    DPI, converted by em_px where read, or True for 5) makes contains_px test the distance to the
+    polyline, or to the points when there is no line.
     """
 
     def __init__(self, axes, x=None, y=None, color='C0', lw=1.5, ls='-', marker=None, ms=6.0, mec=None, mfc=None,
@@ -2244,7 +2290,8 @@ class Line2D(Artist):
 
     def contains_px(self, x, y):
         """Display-pixel distance test (matplotlib's pick radius = the picker value); the nearest point's index is kept in _hit_index."""
-        tol = float(self._picker) if isinstance(self._picker, (int, float)) and not isinstance(self._picker, bool) else 5.0
+        tol = (float(self._picker) if isinstance(self._picker, (int, float)) and not isinstance(self._picker, bool)
+               else 5.0) / (1000 / 72) * em_px()
         if len(self._x) == 0 or self.axes is None:
             return False
         xy = self.axes.transData.transform(np.column_stack([self._x, self._y]))
@@ -2466,8 +2513,9 @@ class PathCollection(Artist):
         d = np.hypot(xy[:, 0] - x, xy[:, 1] - y)
         d[~np.all(np.isfinite(xy), axis=1)] = np.inf
         n = len(self._xy)
-        r = 0.5 * np.sqrt(np.maximum(np.resize(self._sizes, (n,)), 0.0)) * DPI / 72.0    # marker radii in pixels (pt2px of the diameter)
-        tol = float(self._picker) if isinstance(self._picker, (int, float)) and not isinstance(self._picker, bool) else 0.0
+        r = 0.5 * np.sqrt(np.maximum(np.resize(self._sizes, (n,)), 0.0)) * pt2px(1.0)    # marker radii in pixels (pt2px of the diameter)
+        tol = (float(self._picker) if isinstance(self._picker, (int, float)) and not isinstance(self._picker, bool)
+               else 0.0) / (1000 / 72) * em_px()
         ok = d <= r + tol
         if not ok.any():
             self._hit_index = None
@@ -2479,7 +2527,8 @@ class PathCollection(Artist):
         rows = self._face_rows()
         col = QtGui.QColor.fromRgbF(*rows[0]) if len(rows) else qcolor('C0')
         sz = float(np.ravel(self._sizes)[0]) if len(np.ravel(self._sizes)) else 36.0
-        return _LegendSample(None, _marker_symbol(self._marker) or 'o', min(pt2px(math.sqrt(max(sz, 0.0))), 10.0),
+        return _LegendSample(None, _marker_symbol(self._marker) or 'o',
+                             min(pt2px(math.sqrt(max(sz, 0.0))), 10.0 / (1000 / 72) * em_px()),
                              pg.mkPen(col), pg.mkBrush(col))
 
 
@@ -2542,7 +2591,8 @@ class _RefLine(Artist):
         return self._style['color']
 
     def contains_px(self, x, y):
-        tol = float(self._picker) if isinstance(self._picker, (int, float)) and not isinstance(self._picker, bool) else 5.0
+        tol = (float(self._picker) if isinstance(self._picker, (int, float)) and not isinstance(self._picker, bool)
+               else 5.0) / (1000 / 72) * em_px()
         p = self.axes.transData.transform([[self._value, self._value]])[0]
         horizontal = self._horizontal != bool(getattr(self.axes, '_rotated', False))    # on screen (a rotated axes turns it)
         return abs((y - p[1]) if horizontal else (x - p[0])) <= tol
@@ -3104,7 +3154,8 @@ class LineCollection(Artist):
     def contains_px(self, x, y):
         if self.axes is None or not self._segments:
             return False
-        tol = float(self._picker) if isinstance(self._picker, (int, float)) and not isinstance(self._picker, bool) else 5.0
+        tol = (float(self._picker) if isinstance(self._picker, (int, float)) and not isinstance(self._picker, bool)
+               else 5.0) / (1000 / 72) * em_px()
         best, best_i = np.inf, None
         for i, sg in enumerate(self._segments):
             if len(sg) < 1:
@@ -3272,7 +3323,7 @@ class Text(Artist):
         doc.setDefaultTextOption(opt)
         ti.textItem.setTextWidth(-1)
         if '\n' in self._text and self._ha in ('center', 'right'):
-            ti.textItem.setTextWidth(doc.idealWidth() + 2)
+            ti.textItem.setTextWidth(doc.idealWidth() + 2 / (1000 / 72) * em_px())
         ti.updateTextPos()
 
     def _place(self):
@@ -3397,7 +3448,7 @@ class Annotation(Artist):
         if s:
             off = (0.0, 0.0)
             if xytext is not None and textcoords in ('offset points', 'offset pixels'):
-                k = pt2px(1) if textcoords == 'offset points' else 1.0
+                k = pt2px(1) if textcoords == 'offset points' else 1 / (1000 / 72) * em_px()
                 off = (float(xytext[0]) * k, float(xytext[1]) * k)
                 pos = xy
             elif xytext is not None:
@@ -3667,7 +3718,8 @@ class PanelCell(QtWidgets.QWidget):
     empty, mouse-transparent widget whose rectangle the layout sets.  The objects bound to it (an
     Axes made with cell=..., a figure text made with cell=...) are placed again whenever the cell,
     or any widget holding it, moves or changes size.  `stretch` (horizontal, vertical) says whether
-    the cell takes the room the layout has to spare in that direction; `min_px` is its smallest size.
+    the cell takes the room the layout has to spare in that direction; `min_px` is its smallest size
+    (pixels at the old fixed 100 DPI, converted by em_px where used).
     """
 
     def __init__(self, figure, min_px=(40, 40), stretch=(True, True), inner_w=None):
@@ -3677,16 +3729,17 @@ class PanelCell(QtWidgets.QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
         pol = QtWidgets.QSizePolicy.Policy
-        # inner_w: a narrow panel (a colour bar, a ramp) whose box is inner_w pixels wide at text
-        # zoom 1; the cell is as wide as that box plus its tick axes and label (sizeHint).
+        # inner_w: a narrow panel (a colour bar, a ramp) whose box is inner_w pixels (at the old fixed
+        # 100 DPI, converted by em_px where used) wide at text zoom 1; the cell is as wide as that box
+        # plus its tick axes and label (sizeHint).
         self.inner_w = inner_w
         if inner_w is not None:
             self.setSizePolicy(pol.Fixed, pol.Expanding if stretch[1] else pol.Preferred)
-            self.setMinimumHeight(int(min_px[1]))
+            self.setMinimumHeight(round(min_px[1] / (1000 / 72) * em_px()))
         else:
             self.setSizePolicy(pol.Expanding if stretch[0] else pol.Preferred,
                                pol.Expanding if stretch[1] else pol.Preferred)
-            self.setMinimumSize(int(min_px[0]), int(min_px[1]))
+            self.setMinimumSize(round(min_px[0] / (1000 / 72) * em_px()), round(min_px[1] / (1000 / 72) * em_px()))
         self._bound = []
         self._watched = []
         self._decor_w = 0.0
@@ -3694,12 +3747,13 @@ class PanelCell(QtWidgets.QWidget):
 
     def _want_w(self):
         z = getattr(self.figure, 'font_zoom', 1.0)
-        return int(round(max(self.inner_w * z + self._decor_w, self._title_w + 2.0)))
+        return int(round(max(self.inner_w / (1000 / 72) * em_px() * z + self._decor_w,
+                             self._title_w + 2.0 / (1000 / 72) * em_px())))
 
     def sizeHint(self):
         if self.inner_w is None:
             return super().sizeHint()
-        return QtCore.QSize(self._want_w(), max(self.minimumHeight(), 40))
+        return QtCore.QSize(self._want_w(), max(self.minimumHeight(), round(40 / (1000 / 72) * em_px())))
 
     def minimumSizeHint(self):
         if self.inner_w is None:
@@ -3876,7 +3930,7 @@ class PanelRow(QtWidgets.QLayout):
     def __init__(self, spacing=8):
         super().__init__()
         self._items = []            # [QLayoutItem, stretch]
-        self._sp = int(spacing)
+        self._sp = int(round(spacing / (1000 / 72) * em_px()))     # spacing: pixels at the old fixed 100 DPI
         self.setContentsMargins(0, 0, 0, 0)
 
     # --- QLayout ---
@@ -4092,7 +4146,7 @@ class _Slot(QtWidgets.QWidget):
         super().__init__()
         lay = QtWidgets.QHBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
-        lay.setSpacing(6)
+        lay.setSpacing(round(6 / (1000 / 72) * em_px()))
         self.cell = PanelCell(fig)
         self.cell._slot = self
         lay.addWidget(self.cell, 1)
@@ -4311,7 +4365,7 @@ class Axes:
         top = 0.0
         t = self._title
         if t is not None and t.get_text() and t.item.isVisible():
-            lift = 15.0 if any(getattr(a, '_had_sci', False) for a in [ya] + self._side_axes) else 0.0
+            lift = 15.0 / (1000 / 72) * em_px() if any(getattr(a, '_had_sci', False) for a in [ya] + self._side_axes) else 0.0
             top = float(t.item.boundingRect().height()) + abs(t._offset_px[1]) + lift
         elif ya.isVisible() or self._side_axes:
             top = 0.5 * float(QtGui.QFontMetricsF(qfont(10.0, zoom=self.figure.font_zoom)).height())   # the top tick value's half
@@ -4340,7 +4394,7 @@ class Axes:
                 t = self._title
                 tw = float(t.item.boundingRect().width()) if t is not None and t.get_text() else 0.0
                 cell._note_decor(left + right, tw)
-                bw = cell.inner_w * self.figure.font_zoom
+                bw = cell.inner_w / (1000 / 72) * em_px() * self.figure.font_zoom
                 off = max(0.5 * (cw - (left + bw + right)), 0.0)
                 return (cx + off + left, cy + top, max(bw, 1.0), max(ch - top - bottom, 1.0))
             return (cx + left, cy + top, max(cw - left - right, 1.0), max(ch - top - bottom, 1.0))
@@ -4460,7 +4514,7 @@ class Axes:
             right = ox + ow + sum(a.maximumWidth() for a in other._side_axes if a.isVisible())
             need = right + self._clear_pad + (self.yaxis_item.maximumWidth() if self.yaxis_item.isVisible() else 0)
             if r[0] < need:
-                r = (need, r[1], max(r[2] - (need - r[0]), 10.0), r[3])
+                r = (need, r[1], max(r[2] - (need - r[0]), 10.0 / (1000 / 72) * em_px()), r[3])
         return r
 
     def _refont(self, zoom):
@@ -4503,9 +4557,10 @@ class Axes:
         """
         The y limits raised so that no curve reaches the legend (an upper legend): the visible
         curves' range with 5 % of it below and 2 % above (matplotlib's margins), then the top
-        raised so that the legend's height (plus `pad_px`, at most 0.8 of the panel) lies above the
-        curves.  Marks the axes so that _place and _refont re-run it when the panel's height or the
-        zoom changes.  Nothing happens without a legend or without curves.
+        raised so that the legend's height (plus `pad_px` pixels at the old fixed 100 DPI, converted
+        by em_px; at most 0.8 of the panel) lies above the curves.  Marks the axes so that _place and
+        _refont re-run it when the panel's height or the zoom changes.  Nothing happens without a
+        legend or without curves.
         """
         leg = self._legend
         ys = []
@@ -4522,7 +4577,7 @@ class Axes:
         lo -= 0.05 * span
         hi += 0.02 * span
         x0, y0, w, h = self._px_rect()
-        lh = float(leg.geometry().height()) + 4.0 + pad_px
+        lh = float(leg.geometry().height()) + 4.0 / (1000 / 72) * em_px() + pad_px / (1000 / 72) * em_px()
         f = min(lh / max(h, 1.0), 0.8)
         top = (hi - f * lo) / (1.0 - f)
         self.vb.disableAutoRange(axis=pg.ViewBox.YAxis)
@@ -4610,7 +4665,7 @@ class Axes:
             a.setGeometry(QtCore.QRectF(xr, y0, sw, h))
             xr += sw
         if self._title is not None:
-            lift = 15.0 if any(getattr(a, '_had_sci', False) for a in [self.yaxis_item] + self._side_axes) else 0.0
+            lift = 15.0 / (1000 / 72) * em_px() if any(getattr(a, '_had_sci', False) for a in [self.yaxis_item] + self._side_axes) else 0.0
             base = getattr(self._title, '_base_offset', None)
             if base is None:
                 base = self._title._base_offset = self._title.item._offset.y()
@@ -5441,7 +5496,7 @@ class Axes:
         matplotlib's scatter: a PathCollection of markers at (x, y), `s` their areas in points
         squared (36: the 6-point marker), `c` one colour, one colour per point, or numbers
         coloured through `cmap` and `norm` (vmin / vmax), `edgecolors` 'face', 'none' or a
-        colour, `picker` a pick radius in pixels (True: 5).
+        colour, `picker` a pick radius in pixels at the old 100 DPI, converted by em_px where read (True: 5).
         """
         x = np.asarray(np.ma.filled(np.ma.asarray(x, dtype=np.float64), np.nan), dtype=np.float64).ravel()
         y = np.asarray(np.ma.filled(np.ma.asarray(y, dtype=np.float64), np.nan), dtype=np.float64).ravel()
@@ -5707,11 +5762,12 @@ class Axes:
                                         handles=handles if handles is not None and not args else None,
                                         labels=labels if handles is not None and not args else None, title=title))
         size = font_pt(fontsize, 10.0) * self.figure.font_zoom
-        leg = pg.LegendItem(offset=None, verSpacing=0, horSpacing=4,
-                            labelTextSize=f"{pt2px(size) * FONT_SCALE:.1f}px", colCount=int(ncol), frame=False,
+        leg = pg.LegendItem(offset=None, verSpacing=0, horSpacing=4 / (1000 / 72) * em_px(),
+                            labelTextSize=f"{max(10.0, size * FONT_SCALE):.1f}pt", colCount=int(ncol), frame=False,
                             pen=None if not frameon else pg.mkPen((204, 204, 204)),
                             brush=None if not frameon else pg.mkBrush(255, 255, 255, 204))
-        leg.layout.setContentsMargins(2, 2, 2, 2)
+        leg.layout.setContentsMargins(2 / (1000 / 72) * em_px(), 2 / (1000 / 72) * em_px(),
+                                      2 / (1000 / 72) * em_px(), 2 / (1000 / 72) * em_px())
         leg.setParentItem(self.vb)
         rows_h, widths = [], []
         # The legend's text is a real font at the figure's zoom (an HTML size is scaled differently by
@@ -5720,7 +5776,7 @@ class Axes:
         fnt = qfont(base_pt, zoom=self.figure.font_zoom)
         fm = QtGui.QFontMetricsF(fnt)
         text_w = max((fm.horizontalAdvance(str(l)) for _, l in pairs), default=0.0)
-        avail = self._px_rect()[2] / max(int(ncol), 1) - 26 - 16
+        avail = self._px_rect()[2] / max(int(ncol), 1) - 26 / (1000 / 72) * em_px() - 16 / (1000 / 72) * em_px()
         if text_w > avail > 0:
             fnt = qfont(base_pt, zoom=self.figure.font_zoom * max(0.45, avail / text_w))
             fm = QtGui.QFontMetricsF(fnt)
@@ -5734,9 +5790,9 @@ class Axes:
             tl.item.setFont(tf)
             tl.item.setDefaultTextColor(QtGui.QColor('black'))
             tl.item.setPlainText(str(title))
-            tl.item.document().setDocumentMargin(1)
+            tl.item.document().setDocumentMargin(1 / (1000 / 72) * em_px())
             row_h = int(math.ceil(row_px))
-            title_w = int(math.ceil(QtGui.QFontMetricsF(tf).horizontalAdvance(str(title)))) + 6
+            title_w = int(math.ceil(QtGui.QFontMetricsF(tf).horizontalAdvance(str(title)))) + 6 / (1000 / 72) * em_px()
             tl.setFixedHeight(row_h)
             tl.setFixedWidth(title_w)
             leg.layout.addItem(tl, 0, 0, 1, 2 * max(int(ncol), 1))
@@ -5749,14 +5805,14 @@ class Axes:
             lab.item.setFont(fnt)
             lab.item.setDefaultTextColor(QtGui.QColor('black'))
             lab.item.setPlainText(mathtext(str(l)))
-            lab.item.document().setDocumentMargin(1)
+            lab.item.document().setDocumentMargin(1 / (1000 / 72) * em_px())
             row_h = int(math.ceil(row_px))
-            lab_w = int(math.ceil(fm.horizontalAdvance(str(l)))) + 6
+            lab_w = int(math.ceil(fm.horizontalAdvance(str(l)))) + 6 / (1000 / 72) * em_px()
             lab.setFixedHeight(row_h)                 # fixed rows: the legend never changes its spacing
             lab.setFixedWidth(lab_w)
             sample.setFixedHeight(row_h)
             rows_h.append(row_h)
-            widths.append(lab_w + 26 + 4)
+            widths.append(lab_w + 26 / (1000 / 72) * em_px() + 4 / (1000 / 72) * em_px())
             row = leg.layout.rowCount()
             col = 0
             if leg.columnCount > 1:
@@ -5768,23 +5824,28 @@ class Axes:
         # The legend's size fixed from its rows (pyqtgraph's updateSize re-measures rows that the
         # layout has stretched, so every call made the legend taller and its rows farther apart).
         leg.layout.setVerticalSpacing(0)
-        leg.layout.setContentsMargins(2, 2, 2, 2)
+        leg.layout.setContentsMargins(2 / (1000 / 72) * em_px(), 2 / (1000 / 72) * em_px(),
+                                      2 / (1000 / 72) * em_px(), 2 / (1000 / 72) * em_px())
         ncol = max(int(ncol), 1)
         n_items = len(rows_h) - (1 if title else 0)
         n_rows = int(math.ceil(n_items / ncol)) + (1 if title else 0) if rows_h else 0
-        lw = max((max(widths) if widths else 0) * ncol, title_w) + 4
-        lh = (max(rows_h) if rows_h else 0) * n_rows + 4
+        lw = max((max(widths) if widths else 0) * ncol, title_w) + 4 / (1000 / 72) * em_px()
+        lh = (max(rows_h) if rows_h else 0) * n_rows + 4 / (1000 / 72) * em_px()
         leg.updateSize = lambda: None
         leg.setMinimumSize(lw, lh)
         leg.setMaximumSize(lw, lh)
         leg.setGeometry(QtCore.QRectF(0, 0, lw, lh))
         loc = {'best': 'upper right', 0: 'upper right', 1: 'upper right', 2: 'upper left', 3: 'lower left',
                4: 'lower right'}.get(loc, loc)
-        anchors = {'upper right': ((1, 0), (-4, 4)), 'upper left': ((0, 0), (4, 4)),
-                   'lower left': ((0, 1), (4, -4)), 'lower right': ((1, 1), (-4, -4)),
-                   'center': ((0.5, 0.5), (0, 0)), 'upper center': ((0.5, 0), (0, 4)),
-                   'lower center': ((0.5, 1), (0, -4)), 'center left': ((0, 0.5), (4, 0)),
-                   'center right': ((1, 0.5), (-4, 0)), 'right': ((1, 0.5), (-4, 0))}
+        anchors = {'upper right': ((1, 0), (-4 / (1000 / 72) * em_px(), 4 / (1000 / 72) * em_px())),
+                   'upper left': ((0, 0), (4 / (1000 / 72) * em_px(), 4 / (1000 / 72) * em_px())),
+                   'lower left': ((0, 1), (4 / (1000 / 72) * em_px(), -4 / (1000 / 72) * em_px())),
+                   'lower right': ((1, 1), (-4 / (1000 / 72) * em_px(), -4 / (1000 / 72) * em_px())),
+                   'center': ((0.5, 0.5), (0, 0)), 'upper center': ((0.5, 0), (0, 4 / (1000 / 72) * em_px())),
+                   'lower center': ((0.5, 1), (0, -4 / (1000 / 72) * em_px())),
+                   'center left': ((0, 0.5), (4 / (1000 / 72) * em_px(), 0)),
+                   'center right': ((1, 0.5), (-4 / (1000 / 72) * em_px(), 0)),
+                   'right': ((1, 0.5), (-4 / (1000 / 72) * em_px(), 0))}
         pos, off = anchors.get(loc, anchors['upper right'])
         leg.anchor(itemPos=pos, parentPos=pos, offset=off)
         leg.setZValue(100)
@@ -6258,7 +6319,7 @@ class NavigationToolbar(QtWidgets.QToolBar):
         super().__init__('navigation', parent)
         self.figure = figure
         self.setMovable(False)
-        k = int(round(22 * screen_scale()))
+        k = int(round(22 / (1000 / 72) * em_px()))
         self.setIconSize(QtCore.QSize(k, k))
         st = self.style()
         sp = QtWidgets.QStyle.StandardPixmap
@@ -6282,7 +6343,7 @@ class NavigationToolbar(QtWidgets.QToolBar):
         spacer.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Preferred)
         self.addWidget(spacer)
         self.coords = QtWidgets.QLabel('')
-        self.coords.setMinimumWidth(200)
+        self.coords.setMinimumWidth(round(200 / (1000 / 72) * em_px()))
         self.coords.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         if coordinates:
             self.addWidget(self.coords)
@@ -6399,7 +6460,7 @@ class FigureManager:
         self.info.setReadOnly(True)
         self.info.setLineWrapMode(QtWidgets.QPlainTextEdit.LineWrapMode.NoWrap)
         self.info.setFont(qfont(7.5))
-        self.info.setFixedHeight(int(pt2px(7.5) * FONT_SCALE * 4.2))
+        self.info.setFixedHeight(int(QtGui.QFontMetricsF(self.info.font()).lineSpacing() * 4.2))
         self.dock = QtWidgets.QDockWidget('info', self.window)
         self.dock.setWidget(self.info)
         self.dock.setFeatures(QtWidgets.QDockWidget.DockWidgetFeature.DockWidgetClosable
@@ -6447,6 +6508,19 @@ class FigureManager:
         self.window.raise_()
         self.window.activateWindow()
         self.figure._shown = True
+        # em_px on the window's screen, and again whenever the window moves to another screen.
+        _EM[0] = _measure_em(self.window)
+        handle = self.window.windowHandle()
+        if handle is not None and not getattr(self, '_screen_watched', False):
+            handle.screenChanged.connect(self._screen_changed)
+            self._screen_watched = True
+
+    def _screen_changed(self, screen):
+        """The window moved to another screen (QWindow.screenChanged): em_px measured again, on it."""
+        try:
+            _EM[0] = _measure_em(self.window)
+        except RuntimeError:                      # the window is already gone
+            pass
 
     def _closed(self):
         self.figure._on_close()
@@ -6510,18 +6584,15 @@ class Figure:
         self._toolbars = []
         self._embedded = bool(embed)
         self.number = int(num) if num is not None else (max(_figures) + 1 if _figures else 1)
-        w_px, h_px = float(figsize[0]) * DPI, float(figsize[1]) * DPI
-        # The design size (matplotlib's figsize at DPI; every window declares it as a DESIGN
-        # constant): the text is at FONT_SCALE x its points when the canvas has this size and
-        # grows / shrinks with the canvas (font_zoom = window_zoom(...), ZOOM_MIN to ZOOM_MAX, the
-        # one rule of every window), so it stays readable on any monitor and in a maximized window.
-        # On a high-DPI screen the window opens proportionally larger.
+        w_px, h_px = float(figsize[0]) * 72 * px_per_pt(), float(figsize[1]) * 72 * px_per_pt()
+        # The design size (matplotlib's figsize at 72 * px_per_pt() pixels per inch; every window
+        # declares it as a DESIGN constant): the text is at FONT_SCALE x its points when the canvas
+        # has this size and grows / shrinks with the canvas (font_zoom = window_zoom(...), ZOOM_MIN to
+        # ZOOM_MAX, the one rule of every window), so it stays readable on any monitor and in a
+        # maximized window.  On a high-DPI screen the window opens proportionally larger.
         self._design_px = (w_px, h_px)
         self.font_zoom = 1.0
         self.portrait = False          # the window taller than wide: short labels and stamp titles (set_portrait)
-        if not embed:
-            k = screen_scale()
-            w_px, h_px = w_px * k, h_px * k
         if fill_screen and not embed:
             scr = QtGui.QGuiApplication.primaryScreen()
             if scr is not None:
@@ -6548,7 +6619,7 @@ class Figure:
         self.patch = _FigPatch()
         self.subplotpars = SubplotParams()
         self.transFigure = _Transform('figure', self)
-        self.dpi = DPI
+        self.dpi = 72 * px_per_pt()
         if self._embedded:
             self.manager = _EmbeddedManager(self, self.canvas)
             self._shown = True
@@ -6613,12 +6684,12 @@ class Figure:
 
     def get_size_inches(self):
         W, H = self._canvas_size()
-        return np.array([W / DPI, H / DPI])
+        return np.array([W / (72 * px_per_pt()), H / (72 * px_per_pt())])
 
     def set_size_inches(self, w, h=None, forward=True):
         if h is None:
             w, h = w
-        tw, th = int(round(float(w) * DPI)), int(round(float(h) * DPI))
+        tw, th = int(round(float(w) * 72 * px_per_pt())), int(round(float(h) * 72 * px_per_pt()))
         cw, ch = self._canvas_size()
         self.canvas._size_px = (tw, th)
         win = self.manager.window
@@ -6652,7 +6723,6 @@ class Figure:
             self._apply_zoom(z)
         if self._layout is not None:
             self._fit_controls()
-            self._schedule_fit()
         for ax in self._axes:
             ax._place()
         for t in self._texts:
@@ -6672,7 +6742,7 @@ class Figure:
         self.font_zoom = z
         for tb in self._toolbars:
             try:
-                k = int(round(22 * screen_scale() * z))
+                k = int(round(22 / (1000 / 72) * em_px() * z))
                 tb.setIconSize(QtCore.QSize(k, k))
                 tb.coords.setFont(qfont(9, zoom=z))
             except RuntimeError:
@@ -6692,7 +6762,7 @@ class Figure:
         if hasattr(self.manager, 'info'):
             try:
                 self.manager.info.setFont(qfont(7.5, zoom=z))
-                self.manager.info.setFixedHeight(int(pt2px(7.5) * FONT_SCALE * z * 4.2))
+                self.manager.info.setFixedHeight(int(QtGui.QFontMetricsF(self.manager.info.font()).lineSpacing() * 4.2))
             except RuntimeError:
                 pass
         if self._layout is not None:
@@ -6720,14 +6790,15 @@ class Figure:
         narrow window keep everything without overlap.
         """
         vp = self.canvas.viewport()
-        layout.setContentsMargins(6, 6, 6, 6)
+        layout.setContentsMargins(round(6 / (1000 / 72) * em_px()), round(6 / (1000 / 72) * em_px()),
+                                  round(6 / (1000 / 72) * em_px()), round(6 / (1000 / 72) * em_px()))
         vp.setLayout(layout)
         self._layout = layout
         self._set_control_zoom(self.font_zoom)
         self._fit_controls()
 
     def cell(self, min_px=(40, 40), stretch=(True, True), inner_w=None):
-        """A new PanelCell of this figure for the window's layout (an axes or a text goes in it with cell=...); inner_w for a narrow panel (a colour bar)."""
+        """A new PanelCell of this figure for the window's layout (an axes or a text goes in it with cell=...); inner_w for a narrow panel (a colour bar); min_px and inner_w in pixels at the old fixed 100 DPI (PanelCell converts them)."""
         return PanelCell(self, min_px=min_px, stretch=stretch, inner_w=inner_w)
 
     def set_title_cell(self, cell):
@@ -6919,7 +6990,7 @@ class Figure:
                 elif nat < H - 2:
                     dh = nat - H
                 elif nat > H + 2:
-                    lo, hi = float(max(lay.minimumSize().width(), 50)), float(W)
+                    lo, hi = float(max(lay.minimumSize().width(), 50 / (1000 / 72) * em_px())), float(W)
                     for _ in range(40):
                         mid = 0.5 * (lo + hi)
                         if lay.heightForWidth(int(mid)) <= H:
@@ -7058,7 +7129,7 @@ class Figure:
         """The column of PanelRows of the automatic grid (rule 11: every row as tall as its shaped panels ask)."""
         lay = QtWidgets.QVBoxLayout()
         lay.setContentsMargins(0, 0, 0, 0)
-        lay.setSpacing(10)
+        lay.setSpacing(round(10 / (1000 / 72) * em_px()))
         return lay
 
     def _auto_row(self, r, gs):
@@ -7078,8 +7149,8 @@ class Figure:
         auto = self._auto
         if auto['grid'] is None:
             grid = QtWidgets.QGridLayout()
-            grid.setHorizontalSpacing(12)
-            grid.setVerticalSpacing(10)
+            grid.setHorizontalSpacing(round(12 / (1000 / 72) * em_px()))
+            grid.setVerticalSpacing(round(10 / (1000 / 72) * em_px()))
             auto['rows_lay'].addLayout(grid, 1)
             auto['grid'] = grid
         return auto['grid']
@@ -7401,7 +7472,7 @@ class Figure:
         if how == 'csv':
             return export_csv(self, path)
         if how == 'publication':
-            from qtgui import mplexport
+            from . import mplexport
             if mplexport.available():
                 return mplexport.export(self, path, dpi=dpi or 300, facecolor=kw.get('facecolor'),
                                         transparent=kw.get('transparent', False))
@@ -7581,7 +7652,7 @@ _INTERACTIVE = [False]      # matplotlib's interactive mode (ion / ioff): show()
 
 
 def _app():
-    """The QApplication, made on the first call (pg.mkQApp) with its default font scaled by FONT_SCALE."""
+    """The QApplication, made on the first call (pg.mkQApp) with its default font scaled by FONT_SCALE, never below 10 pt."""
     app = QtWidgets.QApplication.instance()
     if app is None:
         # OpenCV's Linux wheels point Qt at their own (Qt5) platform plugins when cv2 is imported
@@ -7592,7 +7663,7 @@ def _app():
         app = pg.mkQApp('VASP_for_SPM')
         f = app.font()
         if f.pointSizeF() > 0:
-            f.setPointSizeF(f.pointSizeF() * FONT_SCALE)
+            f.setPointSizeF(max(10.0, f.pointSizeF() * FONT_SCALE))
             app.setFont(f)
     return app
 
@@ -7692,7 +7763,6 @@ def show(block=None):
             f.manager.show()
             f._relayout()
             app.processEvents()
-            f.fit_window()                 # the window sized to its panels (rule 11)
     if block is False or (block is None and _INTERACTIVE[0]):
         # block=False, or matplotlib's interactive mode (ion): the windows are shown and show returns.
         app.processEvents()

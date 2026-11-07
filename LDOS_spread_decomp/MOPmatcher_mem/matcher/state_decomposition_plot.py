@@ -107,17 +107,9 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
-# The shared Qt layer (qtgui at the repository root): found by walking up from this file.
-import os as _os, sys as _sys
-_root = _os.path.dirname(_os.path.abspath(__file__))
-while not _os.path.isdir(_os.path.join(_root, 'qtgui')) and _os.path.dirname(_root) != _root:
-    _root = _os.path.dirname(_root)
-if _root not in _sys.path:
-    _sys.path.insert(0, _root)
-from qtgui import qtplot as plt
-from qtgui import controls, widgets
-
 if __name__ != "__main__":
+    from .qtgui import qtplot as plt
+    from .qtgui import controls, widgets
     from .vacupot_plotter import RectAEPAWColorPlotter, PlotConfig
     from .kramers import pair_entities
 
@@ -874,7 +866,7 @@ def plot_state_decomposition(
         # units, derived per-axis.
         inv = ax.transData.inverted()
         p0 = inv.transform([[0.0, 0.0]])[0]
-        p1 = inv.transform([[0.0, 5.0]])[0]
+        p1 = inv.transform([[0.0, 5.0 / (1000 / 72) * plt.em_px()]])[0]
         y_tol = abs(p1[1] - p0[1])
 
         best = None
@@ -928,6 +920,8 @@ if __name__ == "__main__":
     _pkg = types.ModuleType("matcher")
     _pkg.__path__ = [_pkg_dir]
     sys.modules.setdefault("matcher", _pkg)
+    from matcher.qtgui import qtplot as plt
+    from matcher.qtgui import controls, widgets
     from matcher.vacupot_plotter import RectAEPAWColorPlotter, PlotConfig
     from matcher.kramers import pair_entities
 

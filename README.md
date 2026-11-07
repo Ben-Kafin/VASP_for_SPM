@@ -4,9 +4,12 @@ VASP post-processing codes for scanning probe work (STM/STS on molecule/metal sy
 as a suite of independent packages. Each top-level folder is its own package with its own README:
 run a package's scripts from inside that folder (or with that folder on `sys.path`). Nothing in one
 package imports another, with two exceptions: the MO to LDOS decomposition uses the matcher and the
-simulator through fixed sibling paths (see `LDOS_spread_decomp/README.md`), and every interactive
-window draws through the shared Qt layer `qtgui/` at the root of the repository, which each window
-finds by walking up from its own file (see [The interactive windows](#the-interactive-windows)).
+simulator through fixed sibling paths (see `LDOS_spread_decomp/README.md`), and the interactive
+windows of the other packages draw through the shared Qt layer `qtgui/` at the root of the
+repository, which each window finds by walking up from its own file; `stm_from_dft_opt` and
+`MOPmatcher_mem` carry their own copies of the layer inside their packages (`stm_from_dft/qtgui/`,
+`matcher/qtgui/`, imported with no folder walking), and `mo_ldos_decomp` uses the simulator's copy
+(see [The interactive windows](#the-interactive-windows)).
 
 | Package | Purpose |
 |---|---|
@@ -21,8 +24,8 @@ finds by walking up from its own file (see [The interactive windows](#the-intera
 | `POSCAR_tools` | POSCAR creation and manipulation (layers, molecules from xyz, dimers, pyramids and tips, subsets, selective dynamics, supercells, unit-cell reshaping) |
 | `convergence` | relaxation monitoring from OUTCAR (forces, convergence plot, lowest-force structure) |
 | `LOCPOT_tools` | electric field from LOCPOT as volumetric files |
-| `qtgui` | the shared Qt layer of every interactive window: `qtplot` (figures, axes, artists, events, the toolbar, the information panel, the automatic layout, the publication export), `controls` (the one control set), `widgets` (the control table, the hover labels), `mplexport` |
-| `checks` | the offscreen render-and-measure checks of the windows (`render_windows.py` and one `check_*.py` per window family) |
+| `qtgui` | the shared Qt layer of the interactive windows of the other packages (`stm_from_dft_opt` and `MOPmatcher_mem` carry their own copies, `stm_from_dft/qtgui/` and `matcher/qtgui/`; `mo_ldos_decomp` uses the simulator's): `qtplot` (figures, axes, artists, events, the toolbar, the information panel, the automatic layout, the publication export), `controls` (the one control set), `widgets` (the control table, the hover labels), `mplexport` |
+| `checks` | the offscreen render-and-measure checks of the fatband plot, the forces viewer and the two-system slice (`render_windows.py`, the measuring helper, and `check_misc_windows.py`) |
 
 ## Dependencies
 
@@ -34,16 +37,17 @@ Save button offers (PDF, EPS, SVG, PNG, TIFF) and draws the 3D panel of `converg
 the one panel the layer has no counterpart for. In addition: pymatgen (`dIdV_tip_sample`,
 `LOCPOT_tools`, `WAVECAR_tools`, `MOPmatcher_mem`, `stm_from_dft_opt`), cupy with a CUDA GPU
 (`stm_from_dft_opt`, `mo_ldos_decomp`, `PROCAR_tools/procar_spin.py`), h5py (`MOPmatcher_mem`,
-`mo_ldos_decomp`), pySBT (`MOPmatcher_mem`, from github.com/QijingZheng/pySBT), pytest
-(`mo_ldos_decomp/mo_ldos_projection/tests`). VASPKIT output (BAND.dat, KLABELS) is read by the
-band-structure plotters.
+`mo_ldos_decomp`), pySBT (`MOPmatcher_mem`, from github.com/QijingZheng/pySBT). VASPKIT output
+(BAND.dat, KLABELS) is read by the band-structure plotters.
 
 ## The interactive windows
 
 Every window that has controls or answers the mouse (the STM simulator and its decomposition
 windows, the matcher's spread and decomposition plots, the DOS plotter, the fatband plot, the
 forces viewer, the two-system slice) is a Qt window drawn by PySide6 and pyqtgraph through
-`qtgui/`, converted from the matplotlib-widget figures by the rules of the guide "From a
+`qtgui/` (the root layer, or a package's own copy: `stm_from_dft/qtgui/` for the simulator,
+the DOS plotter and the decomposition windows, `matcher/qtgui/` for the matcher's plots),
+converted from the matplotlib-widget figures by the rules of the guide "From a
 matplotlib-wired GUI to a real GUI" (the sm4_Browser conversion). The rules, as they show in the
 windows:
 
@@ -94,16 +98,15 @@ windows:
   drawing, the events and the controls are Qt.
 
 Running a window's module as a script works as before (`python run_DFT_STM.py`, `python
-Band_structure_plot.py`, ...); the layer is found from the window's own location, so the
-repository's folders must stay together. The checks under `checks/` open every window offscreen
-on synthetic inputs, resize it to its design size, half, double and taller than wide, and measure
-that no text is cut, no controls overlap, the labels follow the rules, no row leaves an empty
-band and a window of spatial panels has sized itself to them (`QT_QPA_PLATFORM=offscreen
-python checks/check_simulator.py`, `check_decomp.py`, `check_matcher_plots.py`,
-`check_misc_windows.py`). `checks/sim_synthetic.py` gives the simulator synthetic processed data
-ready to plot (a synthetic structure, DOS, LDOS and tip heights; no VASP inputs, no physics), and
-`python -m checks.render_sim_sizing <dir>` renders its four views at the design size and in a wide
-and a tall window with the curve panels' and the maps' sizes (rule 11's sizing).
+Band_structure_plot.py`, ...); the root layer is found from the window's own location (the
+windows of `stm_from_dft_opt` and `MOPmatcher_mem` import their packages' own copies, and those of
+`mo_ldos_decomp` the simulator's, with no folder walking), so the repository's folders must stay
+together. The checks under `checks/` open the fatband plot, the forces viewer and the two-system
+slice offscreen on synthetic inputs, resize each to its design size, half, double and taller than
+wide, and measure that no text is cut, no controls overlap, the labels follow the rules, no row
+leaves an empty band and a window of spatial panels has sized itself to them
+(`QT_QPA_PLATFORM=offscreen python checks/check_misc_windows.py`, with the measuring helper
+`checks/render_windows.py`).
 
 ## Third-party code
 

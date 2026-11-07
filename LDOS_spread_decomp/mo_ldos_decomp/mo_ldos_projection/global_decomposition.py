@@ -51,15 +51,6 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import h5py
 
-# The shared Qt layer (qtgui at the repository root): found by walking up from this file.
-import os as _os, sys as _sys
-_root = _os.path.dirname(_os.path.abspath(__file__))
-while not _os.path.isdir(_os.path.join(_root, 'qtgui')) and _os.path.dirname(_root) != _root:
-    _root = _os.path.dirname(_root)
-if _root not in _sys.path:
-    _sys.path.insert(0, _root)
-from qtgui import qtplot as plt, controls
-
 if __name__ != "__main__":
     from ._imports import (
         RectAEPAWColorPlotter,
@@ -68,7 +59,10 @@ if __name__ != "__main__":
         _curve_grid,
         pair_entities,
         homo_entity_offsets,
+        resolve_qt,
     )
+    # The shared Qt layer: the simulator's qtgui copy (_imports.resolve_qt).
+    plt, controls, widgets, mplexport = resolve_qt()
 
 # σ box range / default (eV), VASP SIGMA convention.
 SIGMA_MIN = 0.01
@@ -552,7 +546,8 @@ if __name__ == "__main__":
     from mo_ldos_projection.global_decomposition import (   # noqa: F811
         plot_global_decomposition,
     )
-    from mo_ldos_projection._imports import PlotConfig      # noqa: F811
+    from mo_ldos_projection._imports import PlotConfig, resolve_qt      # noqa: F811
+    plt, controls, widgets, mplexport = resolve_qt()
 
     # ---- Matcher run directory (full_dir) ----
     output_dir = r"dir/output"

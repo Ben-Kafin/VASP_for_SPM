@@ -83,19 +83,14 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
-# The shared Qt layer (qtgui at the repository root): found by walking up from this file.
-import os as _os, sys as _sys
-_root = _os.path.dirname(_os.path.abspath(__file__))
-while not _os.path.isdir(_os.path.join(_root, 'qtgui')) and _os.path.dirname(_root) != _root:
-    _root = _os.path.dirname(_root)
-if _root not in _sys.path:
-    _sys.path.insert(0, _root)
-from qtgui import qtplot as plt, controls
-from qtgui.qtplot import ScalarMappable, LinearSegmentedColormap, Normalize
-
 if __name__ != "__main__":
-    from ._imports import PlotConfig, _gauss_sum
+    from ._imports import PlotConfig, _gauss_sum, resolve_qt
     from .decomp_window import _offset_name, load_static_mo_data
+    # The shared Qt layer: the simulator's qtgui copy (_imports.resolve_qt).
+    plt, controls, widgets, mplexport = resolve_qt()
+    ScalarMappable = plt.ScalarMappable
+    LinearSegmentedColormap = plt.LinearSegmentedColormap
+    Normalize = plt.Normalize
 
 
 class TopoDecompWindow:

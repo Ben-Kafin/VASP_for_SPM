@@ -17,10 +17,12 @@ markers, line scans, path scans and energy maps.
 
 ## The window
 
-The window is a Qt window (PySide6 + pyqtgraph) drawn with the shared `qtgui` layer at the
-repository root: its panels and controls sit in one automatic layout (nothing is placed by hand,
-nothing overlaps at any window size, the window never scrolls), every text follows the window's
-size, and a panel's title shows its short name with the details (bias, height, the marker) in the
+The window is a Qt window (PySide6 + pyqtgraph) drawn with the package's own copy of the `qtgui`
+layer, `stm_from_dft/qtgui/` (imported from the package, no folder walking; the MO to LDOS
+decomposition windows use it too): its panels and controls sit in one automatic layout (nothing is
+placed by hand, nothing overlaps at any window size, the window never scrolls), every text follows
+the window's size and is never below 10 pt, and a panel's title shows its short name with the
+details (bias, height, the marker) in the
 information panel docked at the bottom. The panels are arranged by one rule (the guide's rule 11):
 every plotted panel is a first-class citizen, the plots fill the window, spatial panels keep their
 ratio, nothing plotted is shrunk to make room, and blank space is what is minimized. The shaped
@@ -29,8 +31,12 @@ path nodes are dragged, with its boxes above), the heatmap row of Line and Path 
 it), the Global Topo and Map Topo pair and the block of energy maps of Map (the maps wrap into the
 rows that make them largest), and the curve panels (Tip Height and Partitioned LDOS, side by side
 or stacked by their room) are placed by the arrangement that scores best, the smallest group's size
-against its size alone less the blank fraction, chosen again on every view change, rebuild, crop
-and resize; the window trims the blank strips at its edges. The Topo h box, Crop and Uncrop sit
+against its size alone less the blank fraction, chosen again only when a view's panels are built or
+their number changes (the drill-down level, the per-heatmap colour bars), when a crop changes a
+panel's shape and when the window is resized (maximizing included); the window is never trimmed to
+its panels, so a maximized window stays full screen. The line ends, the path nodes and the Single
+Point and Map markers recompute on release: the tip heights, the LDOS and the spectra a drag
+changes are computed once, when the button is let go. The Topo h box, Crop and Uncrop sit
 above the Global Topo, the LDOS h box above the panel its height belongs to (the Line view's Topo
 panel, the Path view's tip-height stripe, the Map Topo). The Global Topo can be cropped as the
 sm4_Browser Line window crops its heatmap: two draggable cursors per axis start at the full extent
@@ -78,14 +84,16 @@ left column through `Interactive_STM_Simulator.add_control_box`.
 Inputs: DOSCAR, LOCPOT, POSCAR or CONTCAR (and INCAR for the spin-mode check). Outputs: figures and
 the `global_topo_*` / `ldos_topo_*` `.npy` caches in the run directory.
 
-Dependencies: numpy, scipy, cupy (CUDA GPU), pymatgen, PySide6 and pyqtgraph (the shared `qtgui`
-layer at the repository root), matplotlib (the publication files written by the toolbar's Save
-button). `checks/check_simulator.py` at the repository root opens the window offscreen on synthetic
-inputs (numpy stand-ins for cupy) and measures its layout at several sizes.
+Dependencies: numpy, scipy, cupy (CUDA GPU), pymatgen, PySide6 and pyqtgraph (the package's own
+`qtgui` copy, `stm_from_dft/qtgui/`), matplotlib (the publication files written by the toolbar's
+Save button).
 
-The window sizes its panels by rule 11 of `matplotlib_to_real_gui.md`: the topographies and the
-heatmaps are sized first and fill the window (a topography never more than twice a heatmap); the
-curve panels (the Tip Height profile and the Partitioned LDOS) take the room those leave, never less
+The window sizes its panels by rule 11 of `matplotlib_to_real_gui.md`, but is never trimmed to
+them: the topographies and the heatmaps are sized first and fill the window (a topography never
+more than twice a heatmap; the Line view's Topo panel is 2:3, width to height, L/3 either side of
+the line by its length L; the Line and Path heatmaps are sized as squares, then fill their row's
+whole slot, stretched in x or y, never taking room from another panel); the curve panels (the Tip
+Height profile and the Partitioned LDOS) take the room those leave, never less
 than a readable size; in Map the spectrum is one cell of the map block, a map's size, in the free
 slot of the last row; and in Single Point the spectrum stands beside the placement topo as its
 equal. The panels drawn in the unit cell's frame (the Global Topo, the Map

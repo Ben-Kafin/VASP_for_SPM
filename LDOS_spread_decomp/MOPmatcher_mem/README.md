@@ -20,9 +20,10 @@ under SOC, Kramers pairs are combined everywhere a weight is shown.
 
 ## The plot windows
 
-Every plot of the package is a Qt window (PySide6 + pyqtgraph) drawn with the shared `qtgui`
-layer at the repository root; each module finds the layer by walking up from its own file. The
-rules are the layer's: the panels fill an automatic grid of cells and the controls are real
+Every plot of the package is a Qt window (PySide6 + pyqtgraph) drawn with the package's own copy
+of the `qtgui` layer, `matcher/qtgui/`, which each module imports from its package (no folder
+walking).
+The rules are the layer's: the panels fill an automatic grid of cells and the controls are real
 widgets in a strip under them (nothing is placed by hand, nothing overlaps at any window size, the
 window never scrolls, a row of panels is as tall as its spatial panels ask and a window of spatial
 panels sizes itself to them); every text scales with the window's size; a panel's title shows its short
@@ -51,9 +52,6 @@ from the loaded data (nothing is recomputed by it); σ recomputes the curves in 
 The energy range of a plot without an `energy_range` is the one matplotlib's autoscale gave the
 old figures: every stick and reference line (the Fermi level at 0, the local Fermis, the vacuum)
 with a 5 % margin at each end.
-
-`checks/check_matcher_plots.py` at the repository root opens every window offscreen on a
-synthetic matcher output, scripts its interactions and measures its layout at several sizes.
 
 ## Package `matcher/`
 
@@ -84,5 +82,5 @@ the figures into the full-system directory (or the configured `output_path`).
 
 `directories.txt` is a notes file of directory sets used for past runs; no code reads it.
 
-Dependencies: numpy, scipy, h5py, pymatgen, pySBT, PySide6 and pyqtgraph (the shared `qtgui`
-layer at the repository root), matplotlib (the publication files written by the Save button).
+Dependencies: numpy, scipy, h5py, pymatgen, pySBT, PySide6 and pyqtgraph (the package's own
+`qtgui` copy, `matcher/qtgui/`), matplotlib (the publication files written by the Save button).

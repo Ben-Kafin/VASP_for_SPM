@@ -11,9 +11,7 @@ of Chen's book used by simulator.py; they are not imported here.
 Author: Benjamin Kafin
 """
 
-from .doscar_parser import SpinAwareDosParser, SpinMode
-from .locpot_manager import LocpotManager
-from .simulator import Unified_STM_Simulator, Interactive_STM_Simulator
+import importlib
 
 __all__ = [
     "SpinAwareDosParser",
@@ -22,3 +20,23 @@ __all__ = [
     "Unified_STM_Simulator",
     "Interactive_STM_Simulator",
 ]
+
+# Each exported name and the submodule that defines it, imported on first access (PEP 562 module
+# __getattr__): importing the package, or its qtgui copy (stm_from_dft.qtgui), does not import
+# simulator.py (and so not CuPy).
+_SUBMODULE_OF = {
+    "SpinAwareDosParser": "doscar_parser",
+    "SpinMode": "doscar_parser",
+    "LocpotManager": "locpot_manager",
+    "Unified_STM_Simulator": "simulator",
+    "Interactive_STM_Simulator": "simulator",
+}
+
+
+def __getattr__(name):
+    submodule = _SUBMODULE_OF.get(name)
+    if submodule is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    value = getattr(importlib.import_module(f".{submodule}", __name__), name)
+    globals()[name] = value
+    return value

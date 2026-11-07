@@ -105,3 +105,32 @@ def resolve_stm():
         from stm_from_dft import simulator as _simulator
         from stm_from_dft import doscar_parser as _doscar_parser
         return _simulator, _doscar_parser
+
+
+def resolve_qt():
+    """
+    Return the (qtplot, controls, widgets, mplexport) modules of the
+    simulator's qtgui copy (stm_from_dft/qtgui), the Qt layer every window
+    of this package draws with. Found the same way resolve_stm() finds the
+    simulator: the vendored copy (mo_ldos_projection/stm/qtgui) first, else
+    stm_from_dft.qtgui with stm_from_dft_opt/ two levels up on sys.path.
+    simulator.py is not imported (stm_from_dft/__init__.py imports its
+    submodules only on first access), so neither cupy nor a CUDA device
+    comes with it.
+    """
+    try:
+        from .stm.qtgui import qtplot as _qtplot
+        from .stm.qtgui import controls as _controls
+        from .stm.qtgui import widgets as _widgets
+        from .stm.qtgui import mplexport as _mplexport
+        return _qtplot, _controls, _widgets, _mplexport
+    except ImportError:
+        _root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        _stm_dir = os.path.join(_root, "stm_from_dft_opt")
+        if os.path.isdir(_stm_dir) and _stm_dir not in sys.path:
+            sys.path.insert(0, _stm_dir)
+        from stm_from_dft.qtgui import qtplot as _qtplot
+        from stm_from_dft.qtgui import controls as _controls
+        from stm_from_dft.qtgui import widgets as _widgets
+        from stm_from_dft.qtgui import mplexport as _mplexport
+        return _qtplot, _controls, _widgets, _mplexport

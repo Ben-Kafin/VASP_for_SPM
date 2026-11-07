@@ -65,32 +65,22 @@ window) and attaches new boxes to it.
 """
 from __future__ import annotations
 
-import os as _os
-import sys as _sys
-
-# The shared Qt layer (qtgui at the repository root): found by walking up from this file.
-_root = _os.path.dirname(_os.path.abspath(__file__))
-while not _os.path.isdir(_os.path.join(_root, 'qtgui')) and _os.path.dirname(_root) != _root:
-    _root = _os.path.dirname(_root)
-if _root not in _sys.path:
-    _sys.path.insert(0, _root)
-
 import os
 from typing import Any, Dict, Optional
 
 import numpy as np
 from scipy.integrate import simpson
 
-from qtgui import qtplot as plt
-from qtgui import controls
-from qtgui.qtplot import QtCore
-
 if __name__ != "__main__":
-    from ._imports import PlotConfig, resolve_stm
+    from ._imports import PlotConfig, resolve_stm, resolve_qt
     from .procar_dos import parse_procar
     from .synthetic_doscar import read_doscar_header, make_sigma_workdir
     from .decomp_window import DecompWindow, MO_AREA_NOISE_THRESHOLD
     from .topo_decomp_window import TopoDecompWindow
+    # The shared Qt layer: the simulator's qtgui copy (_imports.resolve_qt), the one the
+    # simulator's window is built with (the wrapper's controls go into that window).
+    plt, controls, widgets, mplexport = resolve_qt()
+    QtCore = plt.QtCore
 
 SIGMA_MIN = 0.01
 SIGMA_MAX = 1.0
@@ -204,7 +194,7 @@ class StmDecompSession:
         pre = self._pending_prerun_state
         if pre:
             for attr in ("mode", "normalize", "show_mag", "show_atoms",
-                         "show_unit_cell", "t2_clamp", "display_cells",
+                         "show_unit_cell", "display_cells",
                          "ldos_gamma", "active_marker_idx", "plot_level",
                          "cached_nepts"):
                 if attr in pre:
@@ -270,7 +260,6 @@ class StmDecompSession:
         state["show_mag"] = sim.show_mag
         state["show_atoms"] = sim.show_atoms
         state["show_unit_cell"] = sim.show_unit_cell
-        state["t2_clamp"] = sim.t2_clamp
         state["display_cells"] = int(sim.s_cell.val)
         state["ldos_gamma"] = float(sim.s_ldos_gamma.value)
         state["active_marker_idx"] = sim.active_marker_idx
@@ -444,11 +433,10 @@ class StmDecompSession:
                          np.asarray(sim.global_z_map,
                                     dtype=np.float64)[:, None]])
         # topo_only=True: the combined total-ρ curve per point, exactly
-        # what the constant-current condition integrates. Decay is off
-        # (guarded above), so clamp_occupied is moot.
+        # what the constant-current condition integrates.
         ld_gpu, _, eg_gpu = sim._calculate_ldos_at_points_gpu(
             pts, t_emin, t_emax, use_energy_decay=False,
-            preserve_orbitals=False, topo_only=True, clamp_occupied=False)
+            preserve_orbitals=False, topo_only=True)
         ld = np.asarray(ld_gpu.get(), dtype=np.float64)
         eg = np.asarray(eg_gpu.get(), dtype=np.float64)
 
