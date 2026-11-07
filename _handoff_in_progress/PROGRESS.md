@@ -37,6 +37,11 @@ Branch: `claude/jolly-babbage-ppmbdj`. Base of part 1's work: b051547.
    functions, simulator.py's calls, the legend panel per view, the sm4_browser functions brought into qtgui)
    and wait for approval before any code. Source for section 6: Ben-Kafin/sm4_browser at eb9bb6279e70
    (read-only clone at /home/user/ben-kafin/sm4_browser; HEAD is that commit).
+9. Part 3 rule 2 is dropped (owner, 2026-11-07): "you have my approval on part 3" / "I don't care about getting your
+   approval as the plan says, that was the last thing I was trying to edit before that conversation compacted".
+   No design report is waited on before code. Rules 1 (stop and report where the code does not match the plan or
+   a step needs a change the plan does not name), 3, 4, 5 and 7 stand. The pre-flight's mapping serves as the
+   implementing agents' brief; its open questions go to the owner in one batch, and only the work they block waits.
 
 ## Conventions given to the implementing agents (part 1)
 
@@ -69,9 +74,10 @@ Branch: `claude/jolly-babbage-ppmbdj`. Base of part 1's work: b051547.
 - [ ] Part 2: review, py_compile, commit, per-file change list
 - [x] Part 3 handoff received: `handoff_part3_spectrum_decomp.md` (the decomp, the legend panel, Line/Path marker
       order and colours, sm4_browser's info panel and saves in every qtgui window); owner's ruling 8 on its info panel
-- [~] Part 3 pre-flight (rule 2, read-only): workflow wf_e2476f62-5f5; its report goes to `PART3_PREFLIGHT.md` for the
-      owner's approval. No part 3 code before that approval.
-- [ ] Part 3 implementation (after part 2 is finished and the pre-flight is approved)
+- [~] Part 3 pre-flight (read-only mapping): workflow wf_e2476f62-5f5; its mapping goes to `PART3_PREFLIGHT.md` as the
+      implementation brief, its rule-1 questions to the owner (ruling 9: no approval of the design is waited on)
+- [ ] Part 3 implementation: section 6 (qtgui) and ldos_decomp.py may start once the mapping is back; simulator.py
+      edits wait until part 2's workflow has finished (one workflow edits simulator.py at a time)
 - [ ] The later views-layout handoff: its decisions so far are in `PART3_simulator_views_layout_decisions.md`
       (not part of parts 1 to 3; nothing done for it yet)
 - [ ] Delete this folder in the final commit
