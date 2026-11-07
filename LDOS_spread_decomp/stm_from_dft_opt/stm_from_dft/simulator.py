@@ -733,7 +733,7 @@ class Unified_STM_Simulator:
 
     def _calculate_ldos_at_points_gpu(self, tip_positions, emin, emax,
                                       use_energy_decay=False, preserve_orbitals=False,
-                                      topo_only=False, v_bias=None, with_current=False, samples=None):
+                                      topo_only=False, v_bias=None, with_current=False, samples=None, progress=''):
         """
         Machinery: the LDOS at the tip positions on the displayed DOSCAR samples of the window [emin, emax]
         (_display_indices: each end snapped to a sample by _snap; an end of exactly 0.0 is 0 V and adds no
@@ -767,6 +767,10 @@ class Unified_STM_Simulator:
           out to the farthest requested sample on each side, integrated by feenstra.current_from_ldos
           (_current_decay_off).  Without with_current the three elements above are returned (sim_wrapper and
           the topography callers).
+        With v_bias None and topo_only False (the LDOS, after the tip heights converged) the console shows one
+        line per channel, 'x/n spectra calculated' (n the tip points), updated after each launch of tip points
+        (Decay on) or once (Decay off), led by `progress` (what is computed) and the channel; the topography
+        calls print nothing here.
         """
         if samples is None:
             idx_np = self._display_indices(emin, emax)
@@ -777,6 +781,19 @@ class Unified_STM_Simulator:
         energy_indices = cp.asarray(idx_np)
         calc_energies_gpu = cp.asarray(self.energies[idx_np])
         num_pts, num_e = tip_positions.shape[0], len(idx_np)
+        show = v_bias is None and not topo_only          # the LDOS itself (after the tip heights converged): its console line
+
+        def _progress(done, label):
+            """Machinery: the LDOS's console line, 'x/n spectra calculated' (n the tip points, x those finished),
+            rewritten in place (a carriage return) and ended with a newline at n.  The GPU is waited for first,
+            since CuPy runs GPU work asynchronously to Python, so x counts finished spectra."""
+            if not show:
+                return
+            cp.cuda.get_current_stream().synchronize()
+            lead = f"{progress}, " if progress else ''
+            print(f"\r{lead}{label}{done}/{num_pts} spectra calculated", end='\n' if done >= num_pts else '',
+                  flush=True)
+
         tip_pos_gpu = cp.asarray(tip_positions, dtype=cp.float32)
         frac_coords = cp.dot(tip_pos_gpu, self.inv_lv_gpu)
 
@@ -831,7 +848,7 @@ class Unified_STM_Simulator:
             i_span = feenstra.current_from_ldos(ld_span, self.k0 - c_lo, self.e_step32, self.e032)
             return i_span[:, cp.asarray(idx_np - c_lo)]
 
-        def _compute_channel(pot, dos_gpu, dos_collapsed, want_cur=False):
+        def _compute_channel(pot, dos_gpu, dos_collapsed, want_cur=False, label=''):
             phi_local = cp_ndimage.map_coordinates(pot, grid_indices, order=1, mode='wrap') - self.ef
             phi_row = phi_local[None, :]
             cur = None                              # the channel's current (want_cur), (num_pts, num_e)
@@ -860,6 +877,7 @@ class Unified_STM_Simulator:
                         tot[p0:p0 + n_p] = part.sum(axis=(2, 3))
                         if want_cur:
                             tot_c[p0:p0 + n_p] = part_cur.sum(axis=2)
+                        _progress(p0 + n_p, label)
                     output_ldos = tot if in_order else tot[:, cp.asarray(u_inv)]
                     if want_cur:
                         cur = tot_c if in_order else tot_c[:, cp.asarray(u_inv)]
@@ -868,6 +886,7 @@ class Unified_STM_Simulator:
                     output_ldos = cp.dot(sf.T, dos_active)
                     if want_cur:
                         cur = _current_decay_off(sf.T, dos_periodic)
+                    _progress(num_pts, label)
             else:
                 output_ldos = cp.zeros((num_pts, num_e, self.num_total_atoms, dos_gpu.shape[2]), dtype=cp.float32)
                 if use_energy_decay and not sweep:
@@ -887,6 +906,7 @@ class Unified_STM_Simulator:
                     for p0 in range(0, num_pts, pts_per_launch):
                         n_p = min(pts_per_launch, num_pts - p0)
                         _sweep(phi_c, dos3, p0, n_p, out[p0:p0 + n_p], None if cur_u is None else cur_u[p0:p0 + n_p])
+                        _progress(p0 + n_p, label)
                     if not in_order:
                         output_ldos = out[:, cp.asarray(u_inv)]
                     if want_cur:
@@ -897,6 +917,7 @@ class Unified_STM_Simulator:
                     output_ldos = w_atom.T[:, None, :, None] * dos_gpu[:, energy_indices, :].transpose(1, 0, 2)[None, :, :, :]
                     if want_cur:
                         cur = _current_decay_off(w_atom.T, dos_collapsed)
+                    _progress(num_pts, label)
             return output_ldos, cur
 
         # All modes use total potential for the barrier
@@ -916,12 +937,15 @@ class Unified_STM_Simulator:
 
         if self.spin_mode == SpinMode.COLLINEAR_POL:
             # Collinear polarized: two channels (up, down), both against total barrier
-            ld_1, cur_1 = _compute_channel(barrier_pot, self.dos_up_gpu, self.dos_up_collapsed, with_current)
-            ld_2, cur_2 = _compute_channel(barrier_pot, self.dos_dn_gpu, self.dos_dn_collapsed, with_current)
+            ld_1, cur_1 = _compute_channel(barrier_pot, self.dos_up_gpu, self.dos_up_collapsed, with_current,
+                                           label='spin up: ')
+            ld_2, cur_2 = _compute_channel(barrier_pot, self.dos_dn_gpu, self.dos_dn_collapsed, with_current,
+                                           label='spin down: ')
         elif self.spin_mode == SpinMode.NCL_SOC:
             # NCL: channel 1 = total DOS, channel 2 = |m| DOS (the |m| channel computes no current)
-            ld_1, cur_1 = _compute_channel(barrier_pot, self.dos_up_gpu, self.dos_up_collapsed, with_current)
-            ld_2, cur_2 = _compute_channel(barrier_pot, self.dos_dn_gpu, self.dos_dn_collapsed)
+            ld_1, cur_1 = _compute_channel(barrier_pot, self.dos_up_gpu, self.dos_up_collapsed, with_current,
+                                           label='total: ')
+            ld_2, cur_2 = _compute_channel(barrier_pot, self.dos_dn_gpu, self.dos_dn_collapsed, label='|m|: ')
         else:
             # Unpolarized: single channel
             ld_1, cur_1 = _compute_channel(barrier_pot, self.dos_up_gpu, self.dos_up_collapsed, with_current)
@@ -3151,7 +3175,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
             grid_z = cp.hstack([self.grid_xy_gpu, cp.asarray(self.current_z_map, dtype=cp.float32)[:, None]])
             ld_up, ld_dn, _, cur = self._calculate_ldos_at_points_gpu(
                 grid_z, None, None, use_energy_decay=self.use_decay, preserve_orbitals=True, with_current=True,
-                samples=self.map_e_idx)
+                samples=self.map_e_idx, progress='Map energy maps')
             self.map_ld_up = cp.asnumpy(ld_up)
             self.map_ld_dn = cp.asnumpy(ld_dn) if ld_dn is not None else None
             self.map_ld_up_gpu, self.map_ld_dn_gpu = ld_up, ld_dn
@@ -3194,7 +3218,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
                     np.hstack([p_xy, z_view[:, None]]),
                     None, None,
                     use_energy_decay=self.use_decay, preserve_orbitals=True, with_current=True,
-                    samples=l_idx)
+                    samples=l_idx, progress=f"{self.mode} points")
                 # The current from the same pass, stored with its samples' GPU energies e0 + (i - k0) step.
                 self.cached_current = cur
                 self.cached_current_E = cp.asarray((l_idx - self.k0).astype(np.float32)) * self.e_step32 + self.e032
@@ -3231,7 +3255,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
             s_up, s_dn, _, s_cur = self._calculate_ldos_at_points_gpu(
                 pt_gpu, None, None,
                 use_energy_decay=self.use_decay, preserve_orbitals=True, with_current=True,
-                samples=spec_idx)
+                samples=spec_idx, progress='marker spectra')
 
             spec_ldos = self._combine_ldos_display(s_up, s_dn, self.show_mag)
             if self.mode == 'Map':
@@ -4387,7 +4411,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
                 grid_z = cp.hstack([self.grid_xy_gpu, cp.asarray(self.map_z, dtype=cp.float32)[:, None]])
                 t_up, t_dn, _, t_cur = self._calculate_ldos_at_points_gpu(
                     grid_z, None, None, use_energy_decay=self.map_d_ldos == 'decay_tilt', preserve_orbitals=True,
-                    with_current=True, samples=[e_idx])
+                    with_current=True, samples=[e_idx], progress='dragged map')
             finally:
                 if kept_broad:
                     self.extra_broadening = window_broad

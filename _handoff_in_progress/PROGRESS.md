@@ -148,8 +148,11 @@ Branch: `claude/jolly-babbage-ppmbdj`. Base of part 1's work: b051547.
 - [x] Last workflow: wf_2b54edf1-9c3 (base 2083aa3): N1-N4 and FINAL_OPEN.md's settled list; reviewed, fixed; py_compile
       10 files pass; matcher qtgui = package copy; changes `LAST_CHANGES.md`
 - [x] Final workflow (wf_3409e76f-c47) and the close-out of F4's consequences (wf_4d7d5173-05b); changes `FINAL_CHANGES.md`
-- [~] G1 (b) (owner, 2026-11-07): Line and Path each keep their own tip heights with their own key; a return recomputes
-      nothing it already has (workflow g1-tip-heights)
+- [x] G1 (b) (owner, 2026-11-07): Line and Path each keep their own tip heights with their own key; a return recomputes
+      nothing it already has (wf_2b4ad3e8-791; in commit bcb83be; two reviews, no findings)
+- [x] The LDOS's console line (owner, 2026-11-07): after the tip convergence's own lines (unchanged), each LDOS
+      calculation prints 'what, channel: x/n spectra calculated', x the tip points finished, updated per GPU launch
+      (Decay on) or once (Decay off), the GPU waited for before each print
 - [ ] Final checks, this folder deleted, main fast-forwarded (owner's OK)
 - [x] (was) Part 3 implementation, with the response document's sections 2-4 (every qtgui copy, the root included) and 6
       (the colour-map sets): simulator.py and mo_ldos_projection edits wait until part 2's workflow has finished
