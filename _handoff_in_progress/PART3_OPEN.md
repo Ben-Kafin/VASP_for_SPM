@@ -101,3 +101,29 @@ R: (a). Until answered: left as it is.
 
 R: update each in the same terms, changing only the stale words, `__init__.py`'s line included as an exception to
 ruling 1. Until answered: unchanged.
+
+## From the addendum (Map shading and contour)
+
+**K10. The shaded energy maps need qtplot's pcolormesh to take colours (the addendum, "Drawing").** The addendum:
+"qtgui's quad item already takes one RGBA colour per quad in data units (what pcolormesh uses), so the slanted cell grid
+is drawn as it is". The quad item (`QuadItem`) does, but qtplot's `pcolormesh` artist (`QuadMesh`) takes only scalar
+values, which it colours through its norm and colour map (`QuadMesh._paint`), and mplexport rebuilds it the same way
+(`m.pcolormesh(a._X, a._Y, a._C, cmap=..., norm=...)`). So the shaded colours cannot reach the screen or the saves
+without a qtgui change. matplotlib's own `pcolormesh` takes an (M, N, 3) or (M, N, 4) RGB(A) array as C
+(https://matplotlib.org/stable/api/_as_gen/matplotlib.axes.Axes.pcolormesh.html).
+- (a) qtplot's `QuadMesh` (and `Axes.pcolormesh`) also take an (M, N, 4) RGBA C, as matplotlib's do, painted as given;
+  mplexport passes it on to matplotlib's `pcolormesh`. The two package qtgui copies only (the root has no user of it).
+- (b) The simulator draws a raw `QuadItem` itself: not an artist of the figure, so the vector saves would miss the
+  shading (against "every save shows it").
+
+R: (a). Until answered: the module is written; the energy maps' drawing waits.
+
+**K11. The light's direction when the maps are turned.** "Azimuth 45° (0 upwards, increasing clockwise, so the light
+comes from the upper right)". The energy maps are turned 90° with the other unit-cell panels when the cell is drawn
+turned (`Axes.set_rotated`, `_choose_orientation`).
+- (a) The light comes from the upper right as the map is shown: when the maps are turned, the light turns with them
+  (the shading looks the same way round on screen whatever the cell's turn).
+- (b) The light is fixed in the cell's x, y: on a turned map it comes from another corner of the screen.
+
+R: (a), the way relief.m sees an image (in its rows and columns as shown). Until answered: the module takes the turn as
+a parameter and the simulator integration waits.
