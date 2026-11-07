@@ -37,9 +37,8 @@ numerics come with it, or its weight and one-walk design run under the package's
   requested V), the snapped V_b, the same topography path as the exact option (frozen bias at V_b, integrated from 0 V).
 - **From the owner's file:** phi is the local barrier per tip point (phi_local, as the exact option); no guard on phi
   (the file has none).
-- **The control:** an indented row under Decay in the toggle list ('linearized'), off by default = exact (today's
-  behaviour); run_interactive keyword `decay_linearized=False`; ignored while Decay is off (flipping it then changes
-  no model, so nothing is recomputed); the info panel lists it with the other toggles.
+- **The control:** see the Names section (two rows, 'exact' and 'linearized', one always on); ignored while Decay is
+  off (a change then changes no model, so nothing is recomputed).
 - **The exact option:** untouched (its weight, kernel, topography, caches 'decay_tilt').
 - **Everywhere the model is compared or passed:** a third name through `_effective_decay_model`; `_on_ui_change`
   compares models (not the Decay bool); `_on_rel` passes Map's kept model; the topography and LDOS calls pass the model.
@@ -59,6 +58,10 @@ The exact option's computation is unchanged; only its names change.
 - Kernels: `_CHEN_SWEEP_SRC` / `chen_sweep` / `_chen_sweep_kernel` (and its build cache) -> `_EXACT_SWEEP_SRC` /
   `exact_sweep` / `_exact_sweep_kernel`, its CUDA device function `tilt_weight` -> `exact_weight`; new
   `_LINEARIZED_SWEEP_SRC` / `linearized_sweep` / `_linearized_sweep_kernel`.
-- The control: the indented row 'linearized' under Decay (off = exact); run_interactive keyword `decay_linearized`.
+- The control (owner, 2026-11-07: "when exact or linearized toggles are clicked, the other should automatically un
+  toggle"): two indented rows under Decay, 'exact' and 'linearized'. Clicking one turns it on and the other off.
+  Claude's reading, recorded as such: exactly one of the two is always on (clicking the one already on leaves it on),
+  'exact' at start; the choice is kept while Decay is off and ignored then; run_interactive keyword
+  `decay_linearized=False` (True starts on 'linearized'); the info panel lists both rows.
 - Every reference outside simulator.py (stm_from_dft/__init__.py, quadrature.py, the stm README, sim_wrapper if any)
   follows; nothing in wrong_decays/ is written (ruling 4).
