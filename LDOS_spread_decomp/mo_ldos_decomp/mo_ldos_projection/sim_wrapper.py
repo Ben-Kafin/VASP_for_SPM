@@ -212,15 +212,28 @@ class StmDecompSession:
         markers = []
         colors = []
         if sim.mode in ("Single Point", "Map"):
-            if sim.cached_spec_ldos is None:
+            # The view's own marker spectra and their own energies, which
+            # the simulator keeps with them: in Map, Map's own (map_spec_ldos,
+            # map_eg); in Single Point, Single Point's (cached_spec_ldos,
+            # cached_spec_eg).
+            if sim.mode == "Map":
+                spec, spec_eg = sim.map_spec_ldos, sim.map_eg
+            else:
+                spec, spec_eg = sim.cached_spec_ldos, sim.cached_spec_eg
+            if spec is None:
                 print("[WRAPPER] no per-marker spectra cached — press RUN "
                       "first (nothing was sent).")
                 return None
-            # The marker spectra's own energies, which the simulator keeps
-            # with them (cached_spec_eg).
-            eg = np.asarray(sim.cached_spec_eg, dtype=np.float64)
+            # One spectrum for every marker, as the simulator's RUN-off
+            # redraw asks (_has_last_run): a marker added since the view's
+            # spectra were computed has none, so nothing is sent.
+            if len(spec) < len(sim.marker_coords):
+                print("[WRAPPER] the per-marker spectra are not computed for "
+                      "every marker — press RUN first (nothing was sent).")
+                return None
+            eg = np.asarray(spec_eg, dtype=np.float64)
             for i, pt in enumerate(sim.marker_coords):
-                c_ldos = sim.cached_spec_ldos[i].copy()
+                c_ldos = spec[i].copy()
                 t_y = np.sum(c_ldos, axis=(1, 2))
                 if sim.normalize:
                     t_y = t_y / (simpson(t_y, x=eg) + 1e-15)
@@ -236,6 +249,8 @@ class StmDecompSession:
                 print("[WRAPPER] no line LDOS cached — press RUN first "
                       "(nothing was sent).")
                 return None
+            # The line LDOS's own energies, which the simulator keeps with
+            # it (cached_eg, written only with cached_ld_*).
             eg = np.asarray(sim.cached_eg, dtype=np.float64)
             f_raw = sim._combine_ldos_display(
                 sim.cached_ld_up.copy(),

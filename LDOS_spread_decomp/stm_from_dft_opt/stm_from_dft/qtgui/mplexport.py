@@ -327,11 +327,12 @@ def _line_kw(st, label, zorder):
 
 def _turned(art, swap, m):
     """`art` (an artist, a contour set or None) drawn through `swap` (a rotated axes; None: as it is): its transform composed with the data transform (a scatter's offsets); returns `art`."""
+    from matplotlib.collections import PathCollection
     if art is None or swap is None:
         return art
     parts = getattr(art, 'collections', None) if not hasattr(art, 'set_transform') else None
     for c in (parts if parts is not None else [art]):
-        if hasattr(c, 'set_offset_transform') and hasattr(c, 'get_offsets'):
+        if parts is None and isinstance(c, PathCollection):   # a scatter: its markers placed at its offsets
             c.set_offset_transform(swap + m.transData)
         else:
             c.set_transform(swap + m.transData)

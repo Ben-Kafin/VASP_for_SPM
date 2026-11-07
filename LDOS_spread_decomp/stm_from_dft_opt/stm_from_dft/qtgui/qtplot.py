@@ -4173,7 +4173,11 @@ class PanelRow(QtWidgets.QLayout):
         return max(h, floor)
 
     def _fit_height(self, W):
-        """The largest height at which the shaped items' widths plus the free items' minimum widths fit W."""
+        """The largest height at which the shaped items' widths plus the free items' minimum widths fit W (_fit_height_now), worked out once per width and layout pass (pass_cached): the arrangement asks it many times in one pass."""
+        return pass_cached(self, ('fit_height', W), lambda: self._fit_height_now(W))
+
+    def _fit_height_now(self, W):
+        """_fit_height's bisection at width W: the largest height at which the shaped items' widths plus the free items' minimum widths fit W."""
         items, fixed, shaped, free, avail = self._parts(W)
         room = avail - sum(self._min_w(it) for it, _ in free)
         lo, hi = 1.0, 1.0e6

@@ -4,11 +4,12 @@ Attributes features of simulated STM LDOS spectra and topographies to the origin
 molecular orbitals, using MOPMatcher's PAW-correct full-wavefunction overlaps (no atom/orbital PDOS
 partitioning). Package `mo_ldos_projection/` plus the run scripts next to it.
 
-The package reaches the matcher and the simulator through `mo_ldos_projection/_imports.py`, which
-expects `../MOPmatcher_mem/` and `../stm_from_dft_opt/` next to this folder (two levels above the
+The package reaches the matcher through `mo_ldos_projection/_imports.py` and the simulator through
+`mo_ldos_projection/_resolve.py` (its resolvers re-exported by `_imports.py`), which expect
+`../MOPmatcher_mem/` and `../stm_from_dft_opt/` next to this folder (two levels above the
 package). Keep the three folders side by side. The windows draw with the simulator's copy of the
 Qt layer `qtgui` (`stm_from_dft/qtgui/` in `../stm_from_dft_opt/`; PySide6 + pyqtgraph), which
-`_imports.py` finds as it finds the simulator (`resolve_qt()`, no folder walking), see
+`_resolve.py` finds as it finds the simulator (`resolve_qt()`, no folder walking), see
 [The windows](#the-windows).
 
 ## Run scripts (edit the settings at the top of each `__main__` block)
@@ -28,7 +29,7 @@ Qt layer `qtgui` (`stm_from_dft/qtgui/` in `../stm_from_dft_opt/`; PySide6 + pyq
 | `sim_wrapper.py` | launcher around the simulator: the σ box (`controls.SigmaBox`) and the "Send to decomp" box (`topo`, `ldos`) in the simulator window's layout |
 | `decomp_window.py` | `DecompWindow`: the per-marker LDOS + MO decomposition window (one block of panels per marker, rebuilt on every toggle). Controls under the panels: the layout toggles `Vertical`, `Horizontal`, `Amplitude`; the `area ≥` box (the MO area threshold; Enter or leaving the box applies it, a non-number is put back); the `Metal curve` toggle; `Save data` (`decomp_window_data.txt` in the run directory). Hover labels on every panel (see below) |
 | `topo_decomp_window.py` | `TopoDecompWindow`: the offsets × components grid of single-colour alpha-ramp maps, one colour bar beside every drawn map, the `Amplitude` and `Norm` toggles and `Save data` (`topo_decomp_data.txt`) under the grid; the figure background is transparent in the PDF, EPS and editable SVG exports |
-| `_imports.py` | import resolution of the matcher and simulator packages and the simulator's `qtgui` copy (`resolve_qt()`) |
+| `_imports.py` | import resolution of the matcher package; it re-exports `_resolve.py`'s resolvers of the simulator package and the simulator's `qtgui` copy (`resolve_qt()`) |
 | `_resolve.py` | the import resolution of the simulator package `stm_from_dft`, without the matcher (machinery, no physics): `resolve_stm()` (the simulator and its `doscar_parser`), `resolve_doscar_parser()` and `resolve_qt()` (the simulator's `qtgui` copy), each importing only when called, the vendored copy `mo_ldos_projection/stm` first, else `stm_from_dft` from `../stm_from_dft_opt/`; so a script that needs only the Qt layer (`run_wfn_plane_slice.py`) does not load the matcher. `_imports.py` imports the matcher and re-exports the three resolvers |
 
 ## The windows

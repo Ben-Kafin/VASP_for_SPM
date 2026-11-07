@@ -115,3 +115,23 @@ R: (b).
 - **K9's rule:** the mo_ldos_decomp README's intro and `_imports.py` row (the resolvers are `_resolve.py`'s, re-exported
   by `_imports.py`); convergence/README.md's save sentence (as forces.py's); `_choose_orientation`'s "the shaded energy
   maps" becomes "the Relief-shaded energy maps".
+
+## After the final pass (wf_3409e76f-c47): settled under F4 (a) and the rules already given
+
+The reviews of F4 (a) found four consequences. Each is settled by F4 (a) ("Map exactly as last plotted"; "every
+record keeps its own"), O2's drag rule, or the decomposition's existing rule; they go into one more short pass.
+- **The decomposition's Decay-off rule:** Map's kept spectra are no longer dropped by a Decay or broadening change, so
+  sim_wrapper's guard (it reads only the Decay toggle) would send decay-on spectra after a toggle made while stopped.
+  Map's records also keep the decay model and the broadening they were computed with, and the send is refused, as
+  before, when they differ from the window's.
+- **The energy-marker drag (O2: "with the same call and the same tip heights (the LDOS topo) as the full Map
+  computation"):** the release computes the dragged map at Map's kept heights (`map_z`) under Map's kept model, clipped
+  and snapped to Map's kept window, not at the shared `current_z_map`.
+- **The Map Topo (F4: "Map exactly as last plotted"):** drawn from Map's kept heights, its title from the bias and LDOS
+  h Map's maps were computed at, which Map keeps beside `map_z`.
+- **Line / Path sends:** the line data keep the view that computed them, and a send from the other view (Line's data
+  with Path's markers) is refused, as the simulator's own RUN-off redraw already requires.
+- **Kept:** sim_wrapper's new refusal when a marker has no spectrum (the older IndexError); `cached_spec_window` stays
+  though unread; the fill-row cache keyed by width per layout pass; FlipBox's class docstring.
+- **K9's rule:** the stm README's "side by side or stacked by their room" (Line now always side by side); the wrapper
+  README (`LDOS_spread_decomp/README.md`) lines 11-12 (`_resolve.py` finds `stm_from_dft_opt/`).
