@@ -2354,14 +2354,12 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
             if global_vmax == 0:
                 global_vmax = 1e-15
 
-            num_p = max(1, len(partitions))
             # The row is built only when its panel count changes (the partitions of the level, the
             # per-heatmap colour bars); otherwise its panels take the new data in place.
             built = (len(processed_partitions), self.show_dcmp_norm) != self._row_key
             if built:
                 self._build_heat_row(len(processed_partitions))
-            self._fill_heat_row(processed_partitions, num_p, global_vmax, global_vmin, p_dist, p_len,
-                                use_diverging, has_mag)
+            self._fill_heat_row(processed_partitions, global_vmax, global_vmin, p_dist, p_len, use_diverging, has_mag)
             quantity = "(dI/dV)/(I/V)" if self.feenstra else "LDOS"
             self._cluster_label.set_text(f"{quantity}: {self.active_element}" if self.plot_level >= 3 else quantity)
             if built:
@@ -2586,55 +2584,107 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
             self.ax_spec.set_ylim(0, max(active_maxes) * 1.1)
 
         p_dist_val = p_dist[active_idx] if self.mode in ('Line', 'Path') else f"[{self.marker_coords[active_idx][0]:.1f}, {self.marker_coords[active_idx][1]:.1f}]"
-        self.ax_spec.set(title=f"Partitioned LDOS: marker {self.active_marker_idx} at {p_dist_val} Å", xlabel="Energy (eV)")
-        if self.feenstra:
-            self.ax_spec.set_ylabel("(dI/dV)/(I/V)")
+        title = f"Partitioned LDOS: marker {self.active_marker_idx} at {p_dist_val} Å"
+        if build:
+            self.ax_spec.set(title=title, xlabel="Energy (eV)")
+            if self.feenstra:
+                self.ax_spec.set_ylabel("(dI/dV)/(I/V)")
+        elif title != self._spec_title:
+            self.ax_spec.set_title(title)
+        self._spec_title = title
         # (The spectrum no longer keeps a square box in Line / Path: a curve panel fills the room the
         # arrangement gives it, so no blank is left around it; rule 11.)
 
         if self.mode == 'Map':
-            if not hasattr(self, 'map_e_targets') or len(self.map_e_targets) != nepts or full_refresh:
-                self.map_e_targets = np.linspace(self.s_emin.val, self.s_emax.val, nepts)
-            for i, e_val in enumerate(self.map_e_targets):
-                self.ax_spec.axvline(x=e_val, color='black', linestyle='-', lw=2, picker=5, label=f'emarker_{i}')
-
-        if self.mode in ('Line', 'Path'):
-            self._clear_cluster()
-            self.ax_prof.clear()
-
-            processed_partitions = []
-            global_vmax = 0.0
-            global_vmin = np.inf
-
-            if self.normalize and f_ldos_raw is not None:
-                total_ldos_line = np.sum(f_ldos_raw, axis=(2, 3))
-                norm_denom_line = simpson(total_ldos_line, x=self.cached_eg, axis=1)[:, None] + 1e-15
+            # The energy markers: drawn with the curves, else moved to their energies (map_e_targets).
+            if build:
+                for i, e_val in enumerate(self.map_e_targets):
+                    self._spec_emarkers.append(self.ax_spec.axvline(x=e_val, color='black', linestyle='-', lw=2, picker=5, label=f'emarker_{i}'))
             else:
-                norm_denom_line = 1.0
+                for line, e_val in zip(self._spec_emarkers, self.map_e_targets):
+                    line.set_xdata([e_val, e_val])
+        self._spec_key = key
 
-            for p_label, p_data in partitions:
-                t_data = p_data.copy()
-                if self.normalize:
-                    t_data /= norm_denom_line
-                processed_partitions.append((p_label, t_data))
-                v_max = np.max(np.abs(t_data))
-                if v_max > global_vmax:
-                    global_vmax = v_max
-                global_vmin = min(global_vmin, float(np.min(t_data)))
-            if global_vmax == 0:
-                global_vmax = 1e-15
+    def _build_heat_row(self, n_heat):
+        """
+        The Line / Path heatmap row built anew, only when its panel count changes (n_heat, the
+        partitions of the level, or the per-heatmap colour bars): the old panels removed
+        (_clear_cluster), then the cluster's row, left to right (a PanelRow: its shaped panels
+        share one height; rule 11): the 'Topo' panel with the LDOS h box above it (Line only),
+        the tip-height stripe (with the LDOS h box above it in Path), one heatmap per partition
+        with a colour bar after each (show_dcmp_norm) or after the last.  The panels' fixed parts
+        (box aspects, anchors, axis labels, ticks) are set here and their data by _fill_heat_row;
+        the Tip Height profile is cleared with the row (_fill_heat_row draws its curve and the
+        marker lines again).  _update_all then fills the row and calls _rearrange().
+        """
+        self._clear_cluster()
+        self.ax_prof.clear()
+        num_p = max(1, n_heat)
+        row = self._cluster_row
+        if self.mode == 'Line':
+            # Line Topo panel (the unwrapped 'Topo' corridor) — Line mode only; the LDOS h box above it.
+            self.ax_line_topo = self._panel_with_box(row, self._box_ldos_h, stretch=10)
+            self.line_decomp_axes.append(self.ax_line_topo)
+            self.ax_line_topo.set_box_aspect(1.5)
+            self.ax_line_topo.set_xlabel("Perp. (Å)", fontsize=10)
+            self.ax_line_topo.set_ylabel("Position (Å)", fontsize=10)
+            self.ax_line_topo.set_title("Topo", fontsize=10)
+        else:
+            self.ax_line_topo = None
 
-            num_p = max(1, len(partitions))
-            # The cluster's row, left to right (a PanelRow: its shaped panels share one height; rule
-            # 11): the 'Topo' panel with the LDOS h box above it (Line only), the tip-height stripe
-            # (with the LDOS h box above it in Path), one heatmap per partition with a colour bar
-            # after each (show_dcmp_norm) or after the last.
-            row = self._cluster_row
-            if self.mode == 'Line':
-                # Line Topo panel (the unwrapped 'Topo' corridor) — Line mode only; the LDOS h box above it.
-                self.ax_line_topo = self._panel_with_box(row, self._box_ldos_h, stretch=10)
-                self.line_decomp_axes.append(self.ax_line_topo)
+        # Topo stripe: a narrow cell as wide as its 40-point stroke and its tick axis; in Path the LDOS h box above it.
+        if self.mode == 'Path':
+            self.ax_stripe = self._panel_with_box(row, self._box_ldos_h, inner_w=58 / (1000 / 72) * plt.em_px())
+        else:
+            self.ax_stripe = self._panel(row, inner_w=58 / (1000 / 72) * plt.em_px())
+        self.line_decomp_axes.append(self.ax_stripe)
+        self.ax_stripe.set_xticks([])
+        self.ax_prof.set(ylabel="Height (Å)", title="Tip Height", xlabel="Dist (Å)")
 
+        for p_idx in range(n_heat):
+            ax_l = self._panel(row, stretch=10)
+            self.line_decomp_axes.append(ax_l)
+            cax_l = None
+            if self.show_dcmp_norm or p_idx == num_p - 1:
+                cax_l = self._panel(row, inner_w=15 / (1000 / 72) * plt.em_px())
+                self.line_decomp_axes.append(cax_l)
+            ax_l.set_box_aspect(1)
+            ax_l.set_anchor('W')
+            ax_l.set_yticks([])
+            if cax_l is not None:
+                cax_l.set_anchor('W')
+            self._heat_axes.append(ax_l)
+            self._heat_caxes.append(cax_l)
+        n = len(self._heat_axes)
+        self._heat_meshes, self._heat_grids, self._heat_cmaps = [None] * n, [None] * n, [None] * n
+        self._heat_cbars, self._heat_titles = [None] * n, [None] * n
+
+        # The cluster's row shares one height (the row rule, Figure.align_row): the stripe and the
+        # colour bars follow the heatmaps' box aspect at any window size.
+        self.fig.align_row(*self.line_decomp_axes)
+        self._row_key = (n_heat, self.show_dcmp_norm)
+
+    def _fill_heat_row(self, processed_partitions, global_vmax, global_vmin, p_dist, p_len, use_diverging, has_mag):
+        """
+        The Line / Path panels given the state's data in place (no panel made or removed): the
+        Line Topo drawn again when its line, the Cells count, the atoms or the heights changed
+        (its contour, atoms, line, ends and limits; the marker scatters stay), the stripe's
+        segments, colours and limits (LineCollection.set_segments / set_norm / set_array), the
+        Tip Height profile's curve (Line2D.set_data), each heatmap's values and colour scale
+        (QuadMesh.set_array / set_cmap / set_norm; its colour bar follows the mesh's norm; a new
+        mesh in the same axes only when its grid, the energies or the distances, changed), the
+        heatmaps' titles, and the markers' counterparts (made anew when their count changed,
+        then placed: _place_line_markers).  processed_partitions, global_vmax and global_vmin
+        as _update_all computes them.
+        """
+        if self.ax_line_topo is not None:
+            topo_key = (tuple(np.asarray(self.p1, dtype=float)), tuple(np.asarray(self.p2, dtype=float)),
+                        max(int(self.s_cell.val), 1) + 1, bool(self.show_atoms))
+            if (topo_key != self._line_topo_key or self._line_topo_z is None
+                    or not np.array_equal(self._line_topo_z, self.global_z_map)):
+                for art in self._line_topo_arts:
+                    art.remove()
+                arts = []
                 v_line = self.p2 - self.p1
                 v_hat = v_line / p_len
                 v_perp = np.array([-v_hat[1], v_hat[0]])
@@ -2656,7 +2706,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
                         all_ry.append(rot_y[mask])
                         all_z.append(self.global_z_map[mask])
                 all_rx, all_ry, all_z = np.concatenate(all_rx), np.concatenate(all_ry), np.concatenate(all_z)
-                self.ax_line_topo.tricontourf(all_rx, all_ry, all_z, levels=60, cmap=self.cmap_topo, zorder=1)
+                arts.append(self.ax_line_topo.tricontourf(all_rx, all_ry, all_z, levels=60, cmap=self.cmap_topo, zorder=1))
 
                 if self.show_atoms:
                     tr = np.repeat(self.atomtypes, self.atomnums)
@@ -2674,56 +2724,55 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
                                 a_rx_all.append(a_rx[vis])
                                 a_ry_all.append(a_ry[vis])
                         if a_rx_all:
-                            self.ax_line_topo.scatter(np.concatenate(a_rx_all), np.concatenate(a_ry_all), s=10, color=plt.cm.tab10(t_idx / 10), alpha=0.3, zorder=2)
+                            arts.append(self.ax_line_topo.scatter(np.concatenate(a_rx_all), np.concatenate(a_ry_all), s=10, color=plt.cm.tab10(t_idx / 10), alpha=0.3, zorder=2))
 
-                self.ax_line_topo.plot([0, 0], [0, p_len], color='red', ls='--', lw=2.0, zorder=6)
-                self.ax_line_topo.scatter([0], [0], c='white', edgecolors='red', s=60, zorder=8)
-                self.ax_line_topo.scatter([0], [p_len], c='white', edgecolors='red', s=60, zorder=8)
-
-                for i, r in enumerate(self.marker_ratios):
-                    color = self.m_colors[i % len(self.m_colors)]
-                    self.ax_line_topo.scatter([0], [r * p_len], c=color, edgecolors='black', s=80, zorder=10)
+                arts += self.ax_line_topo.plot([0, 0], [0, p_len], color='red', ls='--', lw=2.0, zorder=6)
+                arts.append(self.ax_line_topo.scatter([0], [0], c='white', edgecolors='red', s=60, zorder=8))
+                arts.append(self.ax_line_topo.scatter([0], [p_len], c='white', edgecolors='red', s=60, zorder=8))
 
                 self.ax_line_topo.set_xlim(-half_w, half_w)
                 self.ax_line_topo.set_ylim(0, p_len)
-                self.ax_line_topo.set_box_aspect(1.5)
-                self.ax_line_topo.set_xlabel("Perp. (Å)", fontsize=10)
-                self.ax_line_topo.set_ylabel("Position (Å)", fontsize=10)
-                self.ax_line_topo.set_title("Topo", fontsize=10)
-            else:
-                self.ax_line_topo = None
+                self._line_topo_arts = arts
+                self._line_topo_key = topo_key
+                self._line_topo_z = np.array(self.global_z_map, copy=True)
 
-            # Topo stripe: a narrow cell as wide as its 40-point stroke and its tick axis; in Path the LDOS h box above it.
-            if self.mode == 'Path':
-                self.ax_stripe = self._panel_with_box(row, self._box_ldos_h, inner_w=58 / (1000 / 72) * plt.em_px())
-            else:
-                self.ax_stripe = self._panel(row, inner_w=58 / (1000 / 72) * plt.em_px())
-            self.line_decomp_axes.append(self.ax_stripe)
-            lc = plt.LineCollection(
-                np.array([np.array([np.zeros_like(p_dist), p_dist]).T[:-1],
-                          np.array([np.zeros_like(p_dist), p_dist]).T[1:]]).transpose(1, 0, 2),
-                cmap=self.cmap_topo,
-                norm=plt.Normalize(self.current_z_line.min(), self.current_z_line.max()), linewidth=40)
+        # The stripe: its segments, colours and limits in place.
+        segs = np.array([np.array([np.zeros_like(p_dist), p_dist]).T[:-1],
+                         np.array([np.zeros_like(p_dist), p_dist]).T[1:]]).transpose(1, 0, 2)
+        z_norm = plt.Normalize(self.current_z_line.min(), self.current_z_line.max())
+        if self._stripe_lc is None:
+            lc = plt.LineCollection(segs, cmap=self.cmap_topo, norm=z_norm, linewidth=40)
             lc.set_array(self.current_z_line[:-1])
             self.ax_stripe.add_collection(lc)
+            self._stripe_lc = lc
+        else:
+            self._stripe_lc.set_segments(segs)
+            self._stripe_lc.set_norm(z_norm)
+            self._stripe_lc.set_array(self.current_z_line[:-1])
+        if self._stripe_len != p_len:
             self.ax_stripe.set(xlim=(-0.1, 0.1), ylim=(0, p_len))
-            self.ax_stripe.set_xticks([])
-            self.ax_prof.plot(p_dist, self.current_z_line, 'k-', lw=1.5)
-            self.ax_prof.set(ylabel="Height (Å)", title="Tip Height", xlabel="Dist (Å)")
+            self._stripe_len = p_len
+        # The Tip Height profile's curve.
+        if self._prof_line is None:
+            self._prof_line, = self.ax_prof.plot(p_dist, self.current_z_line, 'k-', lw=1.5)
+        else:
+            self._prof_line.set_data(p_dist, self.current_z_line)
 
-            for p_idx, (p_label, t_data) in enumerate(processed_partitions):
-                ax_l = self._panel(row, stretch=10)
-                self.line_decomp_axes.append(ax_l)
-                cax_l = None
-                if self.show_dcmp_norm or p_idx == num_p - 1:
-                    cax_l = self._panel(row, inner_w=15 / (1000 / 72) * plt.em_px())
-                    self.line_decomp_axes.append(cax_l)
+        for p_idx, (p_label, t_data) in enumerate(processed_partitions):
+            ax_l, cax_l = self._heat_axes[p_idx], self._heat_caxes[p_idx]
 
-                v_max = np.max(np.abs(t_data)) if self.show_dcmp_norm else global_vmax
-                if v_max == 0:
-                    v_max = 1e-15
-                v_min = np.min(t_data) if self.show_dcmp_norm else global_vmin
+            v_max = np.max(np.abs(t_data)) if self.show_dcmp_norm else global_vmax
+            if v_max == 0:
+                v_max = 1e-15
+            v_min = np.min(t_data) if self.show_dcmp_norm else global_vmin
 
+            cmap = 'bwr' if use_diverging else ('hot' if (self.show_mag and has_mag) else 'nipy_spectral')
+            mesh, grid = self._heat_meshes[p_idx], self._heat_grids[p_idx]
+            new_mesh = (mesh is None or not np.array_equal(grid[0], self.cached_eg) or not np.array_equal(grid[1], p_dist))
+            if new_mesh:
+                # A new grid (the energies or the distances): a new mesh in the same axes.
+                if mesh is not None:
+                    mesh.remove()
                 if use_diverging:
                     mesh = ax_l.pcolormesh(self.cached_eg, p_dist, t_data, cmap='bwr', shading='auto', vmin=v_min, vmax=v_max)
                 elif self.show_mag and has_mag:
@@ -2731,143 +2780,233 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
                     mesh = ax_l.pcolormesh(self.cached_eg, p_dist, t_data, cmap='hot', shading='auto', norm=plt.PowerNorm(self.ldos_gamma, vmin=v_min, vmax=v_max))
                 else:
                     mesh = ax_l.pcolormesh(self.cached_eg, p_dist, t_data, cmap='nipy_spectral', shading='auto', norm=plt.PowerNorm(self.ldos_gamma, vmin=v_min, vmax=v_max))
+                self._heat_meshes[p_idx] = mesh
+                self._heat_grids[p_idx] = (np.array(self.cached_eg, copy=True), np.array(p_dist, copy=True))
+            else:
+                # The same grid: the values and the colour scale of the same three branches set in place.
+                norm_l = plt.Normalize(v_min, v_max) if use_diverging else plt.PowerNorm(self.ldos_gamma, vmin=v_min, vmax=v_max)
+                if cmap != self._heat_cmaps[p_idx]:
+                    mesh.set_cmap(cmap)
+                mesh.set_array(t_data)
+                mesh.set_norm(norm_l)
+            self._heat_cmaps[p_idx] = cmap
 
-                ax_l.set_box_aspect(1)
-                ax_l.set_anchor('W')
+            # The panel's short title is the partition itself (the cluster's label row says
+            # 'LDOS' and, at the atom levels, the element).
+            title = p_label.split()[-1] if self.plot_level >= 3 else p_label
+            if title != self._heat_titles[p_idx]:
+                ax_l.set_title(title, fontsize=10)
+                self._heat_titles[p_idx] = title
 
-                # The panel's short title is the partition itself (the cluster's label row says
-                # 'LDOS' and, at the atom levels, the element).
-                if self.plot_level >= 3:
-                    ax_l.set_title(p_label.split()[-1], fontsize=10)
-                else:
-                    ax_l.set_title(p_label, fontsize=10)
-                ax_l.set_yticks([])
-
-                if cax_l is not None:
+            if cax_l is not None:
+                exp = int(np.floor(np.log10(v_max)))
+                bar = self._heat_cbars[p_idx]
+                if new_mesh or bar is None:
                     cb = self.fig.colorbar(mesh, cax=cax_l)
-                    exp = int(np.floor(np.log10(v_max)))
                     cb.ax.yaxis.set_major_formatter(plt.ticker.FuncFormatter(lambda x, pos, e=exp: f"{x / (10 ** e):.1f}"))
                     cax_l.set_title(f"1e{exp}", fontsize=10)
-                    cax_l.set_anchor('W')
+                    self._heat_cbars[p_idx] = (cb, exp)
+                elif exp != bar[1]:
+                    # The bar follows the mesh's norm by itself; its tick unit and exponent title follow v_max.
+                    bar[0].ax.yaxis.set_major_formatter(plt.ticker.FuncFormatter(lambda x, pos, e=exp: f"{x / (10 ** e):.1f}"))
+                    cax_l.set_title(f"1e{exp}", fontsize=10)
+                    self._heat_cbars[p_idx] = (bar[0], exp)
 
-                for i, r in enumerate(self.marker_ratios):
-                    idx = int(r * (self.npts - 1))
-                    color = self.m_colors[i % len(self.m_colors)]
-                    if p_idx == 0:
-                        self.ax_prof.axvline(x=p_dist[idx], color=color, ls='--', lw=2, alpha=0.7, picker=5, label=f'marker_{i}')
-                    ax_l.axhline(y=p_dist[idx], color=color, ls='--', lw=2, alpha=0.7, picker=5, label=f'marker_{i}')
-                    if p_idx == 0:
-                        self.ax_stripe.axhline(y=p_dist[idx], color=color, ls='--', lw=2, alpha=0.7, picker=5, label=f'marker_{i}')
+        if self._line_markers_n != len(self.marker_ratios):
+            self._make_line_markers(p_dist, p_len)
+        self._place_line_markers()
 
-            # The cluster's row shares one height (the row rule, Figure.align_row): the stripe and the
-            # colour bars follow the heatmaps' box aspect at any window size.
-            self.fig.align_row(*self.line_decomp_axes)
-            quantity = "(dI/dV)/(I/V)" if self.feenstra else "LDOS"
-            self._cluster_label.set_text(f"{quantity}: {self.active_element}" if self.plot_level >= 3 else quantity)
-            self._rearrange()                      # the row is new: the arrangement and the window follow (rule 11)
+    def _make_line_markers(self, p_dist, p_len):
+        """
+        The Line / Path markers' counterparts made anew for the marker count (the old ones
+        removed): on the Line Topo a scatter at the marker's place along the line (pickable,
+        label 'marker_<i>': a marker is dragged from the Line Topo), and, once there are
+        heatmaps, a dashed line at the marker's distance on the Tip Height profile, on every
+        heatmap and on the stripe (picker 5, label 'marker_<i>': dragged from any of them).
+        """
+        for items in self._line_markers:
+            for art in [items['topo'], items['prof']] + items['h']:
+                if art is not None:
+                    art.remove()
+        self._line_markers = []
+        for i, r in enumerate(self.marker_ratios):
+            idx = int(r * (self.npts - 1))
+            color = self.m_colors[i % len(self.m_colors)]
+            items = {'topo': None, 'prof': None, 'h': []}
+            if self.ax_line_topo is not None:
+                items['topo'] = self.ax_line_topo.scatter([0], [r * p_len], c=color, edgecolors='black', s=80, zorder=10,
+                                                          picker=5, label=f'marker_{i}')
+            if self._heat_axes:
+                items['prof'] = self.ax_prof.axvline(x=p_dist[idx], color=color, ls='--', lw=2, alpha=0.7, picker=5, label=f'marker_{i}')
+                for ax_l in self._heat_axes:
+                    items['h'].append(ax_l.axhline(y=p_dist[idx], color=color, ls='--', lw=2, alpha=0.7, picker=5, label=f'marker_{i}'))
+                items['h'].append(self.ax_stripe.axhline(y=p_dist[idx], color=color, ls='--', lw=2, alpha=0.7, picker=5, label=f'marker_{i}'))
+            self._line_markers.append(items)
+        self._line_markers_n = len(self.marker_ratios)
 
-        elif self.mode == 'Map':
-            num_p = max(1, len(partitions))
+    def _place_line_markers(self, counterparts=True):
+        """
+        The Line / Path markers placed at marker_ratios on the line as last drawn (_line_geom):
+        the placement topo's markers, and with `counterparts` the Line Topo's scatters, the
+        dashed lines on the heatmaps and the stripe (set_ydata) and on the Tip Height profile
+        (set_xdata), all together.  Nothing is computed.
+        """
+        p_xy, p_dist, p_len = self._line_geom
+        if self.mode == 'Line':
+            v = self.p2 - self.p1
+            self.marks.set_offsets(np.array([self.p1 + r * v for r in self.marker_ratios]))
+        else:
+            mark_idx = (np.array(self.marker_ratios) * (self.npts - 1)).astype(int)
+            self.marks.set_offsets(p_xy[mark_idx])
+        if not counterparts:
+            return
+        for items, r in zip(self._line_markers, self.marker_ratios):
+            y = p_dist[int(r * (self.npts - 1))]
+            if items['topo'] is not None:
+                items['topo'].set_offsets([[0, r * p_len]])
+            for line in items['h']:
+                line.set_ydata([y, y])
+            if items['prof'] is not None:
+                items['prof'].set_xdata([y, y])
 
-            if len(self.map_axes) != nepts * num_p or full_refresh:
-                # The map block rebuilt: nepts maps per partition, wrapped into the rows that make
-                # them largest (controls.MapBlock; rule 11), a colour bar cell per partition
-                # (show_dcmp_norm) or one for the whole block (automatic layout).
-                self._clear_map_rows()
-                groups, cell_bars = [], {}
-                for r in range(num_p):
-                    cells = []
-                    for _ in range(nepts):
-                        ax_m, cell = self._cell_axes()
-                        ax_m.set_rotated(self.cell_rotated)
-                        self.map_axes.append(ax_m)
-                        cells.append(cell)
-                        if self.cmap_norm:
-                            # 'cmap norm': every map its own colour bar beside it (cax_list by the map's index).
-                            bar = self.fig.cell(inner_w=12 / (1000 / 72) * plt.em_px())
-                            self._panel_cells.append(bar)
-                            self.cax_list.append(self.fig.add_axes(cell=bar))
-                            cell_bars[cell] = bar
-                    bar = None
-                    if self.show_dcmp_norm and not self.cmap_norm:
-                        bar = self.fig.cell(inner_w=15 / (1000 / 72) * plt.em_px())
-                        self._panel_cells.append(bar)
-                        self.cax_list.append(self.fig.add_axes(cell=bar))
-                    groups.append((cells, bar))
-                    self._map_cells += cells + ([bar] if bar is not None else []) + [cell_bars[c] for c in cells if c in cell_bars]
-                shared = None
-                if not self.show_dcmp_norm and not self.cmap_norm:
-                    shared = self.fig.cell(inner_w=15 / (1000 / 72) * plt.em_px())
-                    self._panel_cells.append(shared)
-                    self.cax_list.append(self.fig.add_axes(cell=shared))
-                    self._map_cells.append(shared)
-                self._map_block.set_groups(groups, shared_bar=shared, extra=self._spec_cell, cell_bars=cell_bars)
-                self._rearrange()                  # the block is new: the arrangement and the window follow (rule 11)
-
-            if not hasattr(self, 'map_e_targets') or len(self.map_e_targets) != nepts or full_refresh:
-                self.map_e_targets = np.linspace(self.s_emin.val, self.s_emax.val, nepts)
-            m_coords_np = np.array(self.marker_coords)
-
-            processed_partitions = []
-            global_vmax = 0.0
-            global_vmin = np.inf
-            if self.normalize and f_ldos_raw is not None:
-                total_ldos_map = np.sum(f_ldos_raw, axis=(2, 3))
-                s_idx = np.argsort(self.map_e_targets)
-                norm_denom_map = simpson(total_ldos_map[:, s_idx], x=self.map_e_targets[s_idx], axis=1)[:, None] + 1e-15
-            else:
-                norm_denom_map = 1.0
-
-            for p_label, p_data in partitions:
-                t_data = p_data.copy()
-                if self.normalize:
-                    t_data /= norm_denom_map
-                t_data = np.nan_to_num(t_data, nan=0.0, posinf=0.0, neginf=0.0)
-                processed_partitions.append((p_label, t_data))
-                v_max = np.max(np.abs(t_data))
-                if v_max > global_vmax:
-                    global_vmax = v_max
-                global_vmin = min(global_vmin, float(np.min(t_data)))
-            if global_vmax == 0:
-                global_vmax = 1e-15
-
-            for p_idx, (p_label, t_data) in enumerate(processed_partitions):
-                p_vmax = np.max(np.abs(t_data)) if self.show_dcmp_norm else global_vmax
-                p_vmin = np.min(t_data) if self.show_dcmp_norm else global_vmin
-                for i, target_e in enumerate(self.map_e_targets):
-                    k = p_idx * nepts + i
-                    ax = self.map_axes[k]
-                    ax.clear()
-                    slice_data = t_data[:, i]
-                    v_max = self._map_vmax(slice_data, p_vmax)
-                    v_min = self._map_vmin(slice_data, p_vmin)
-                    self._draw_map_slice(ax, slice_data, v_min, v_max, use_diverging, has_mag)
-                    if self.cmap_norm:
-                        self._draw_map_cbar(self.cax_list[k], v_min, v_max, use_diverging, has_mag, labelsize=6)
-                    ax.scatter(m_coords_np[:, 0], m_coords_np[:, 1], color=self.m_colors[:len(m_coords_np)], s=30, edgecolors='white', zorder=5)
-                    title_str = f"E = {target_e:.3f} eV" if p_idx == 0 else ""
-                    if self.plot_level >= 3:
-                        ylabel_str = p_label.split()[-1] if i == 0 else ""
-                    else:
-                        ylabel_str = p_label if i == 0 else ""
-                    ax.set_title(title_str, fontsize=10)
-                    if ylabel_str:
-                        ax.set_ylabel(ylabel_str, fontsize=10)
-                    ax.set_aspect('equal')
-                    ax.set_xticks([])
-                    ax.set_yticks([])
-
-                if self.show_dcmp_norm and not self.cmap_norm:
-                    self._draw_map_cbar(self.cax_list[p_idx], p_vmin, p_vmax if p_vmax > 0 else 1e-15, use_diverging, has_mag)
-
-            if not self.show_dcmp_norm and not self.cmap_norm and len(processed_partitions) > 0:
-                self._draw_map_cbar(self.cax_list[0], global_vmin, global_vmax, use_diverging, has_mag)
-            self._draw_contour_artists()           # the contour slice on the maps as drawn
-
-            quantity = "(dI/dV)/(I/V)" if self.feenstra else "LDOS"
-            self._cluster_label.set_text(f"{quantity}: {self.active_element}" if self.plot_level >= 3 else quantity)
-
+    def _move_line_markers(self):
+        """
+        A Line / Path marker dragged: every counterpart moved with it (_place_line_markers; while
+        not running only the placement topo's markers, as the redraw of a stopped window) and,
+        while running, the marker spectra set from the display cache (_line_disp, built once per
+        data change by _update_all; _draw_spectrum in place).  Nothing is computed again while
+        the button is down.
+        """
+        self._place_line_markers(counterparts=self.is_running)
+        if self.is_running and self._line_disp is not None and self._spec_key is not None:
+            self._draw_spectrum(self._line_disp, None, self._line_geom[1])
         self.fig.canvas.draw_idle()
+
+    def _build_map_block(self, num_p, nepts):
+        """
+        The Map view's block of energy maps built anew, only when its panel count changes (num_p
+        partitions of the level, nepts maps each, the colour bars of 'cmap norm'): nepts maps per
+        partition, wrapped into the rows that make them largest (controls.MapBlock; rule 11), a
+        colour bar cell per partition (show_dcmp_norm), one per map ('cmap norm') or one for the
+        whole block (automatic layout).  The maps' contents are drawn by _fill_map; _update_all
+        then calls _rearrange().
+        """
+        self._clear_map_rows()
+        groups, cell_bars = [], {}
+        for r in range(num_p):
+            cells = []
+            for _ in range(nepts):
+                ax_m, cell = self._cell_axes()
+                ax_m.set_rotated(self.cell_rotated)
+                self.map_axes.append(ax_m)
+                cells.append(cell)
+                if self.cmap_norm:
+                    # 'cmap norm': every map its own colour bar beside it (cax_list by the map's index).
+                    bar = self.fig.cell(inner_w=12 / (1000 / 72) * plt.em_px())
+                    self._panel_cells.append(bar)
+                    self.cax_list.append(self.fig.add_axes(cell=bar))
+                    cell_bars[cell] = bar
+            bar = None
+            if self.show_dcmp_norm and not self.cmap_norm:
+                bar = self.fig.cell(inner_w=15 / (1000 / 72) * plt.em_px())
+                self._panel_cells.append(bar)
+                self.cax_list.append(self.fig.add_axes(cell=bar))
+            groups.append((cells, bar))
+            self._map_cells += cells + ([bar] if bar is not None else []) + [cell_bars[c] for c in cells if c in cell_bars]
+        shared = None
+        if not self.show_dcmp_norm and not self.cmap_norm:
+            shared = self.fig.cell(inner_w=15 / (1000 / 72) * plt.em_px())
+            self._panel_cells.append(shared)
+            self.cax_list.append(self.fig.add_axes(cell=shared))
+            self._map_cells.append(shared)
+        self._map_block.set_groups(groups, shared_bar=shared, extra=self._spec_cell, cell_bars=cell_bars)
+        self._block_key = (num_p, nepts, self.cmap_norm, self.show_dcmp_norm)
+
+    def _fill_map(self, k, p_idx, i, p_label, slice_data, v_min, v_max, target_e, use_diverging, has_mag, m_coords_np):
+        """
+        Energy map k (partition p_idx, energy i) given its data in its own axes, with no
+        ax.clear(): its contour set drawn again only when its slice or its colour scale changed
+        (_set_map_slice; an unchanged map is not touched), its own colour bar under 'cmap norm'
+        (_set_map_cbar), the marker scatter made at its first drawing (pickable: a Map marker is
+        dragged from any energy map; _place_map_markers moves it), its title and partition label
+        set when their text changes, its ticks removed at its first drawing.
+        """
+        ax = self.map_axes[k]
+        first = k not in self._map_marks
+        self._set_map_slice(k, ax, slice_data, v_min, v_max, use_diverging, has_mag)
+        if self.cmap_norm:
+            self._set_map_cbar(k, v_min, v_max, use_diverging, has_mag, labelsize=6)
+        if first:
+            self._map_marks[k] = ax.scatter(m_coords_np[:, 0], m_coords_np[:, 1], color=self.m_colors[:len(m_coords_np)], s=30,
+                                            edgecolors='white', zorder=5, picker=5)
+        title_str = f"E = {target_e:.3f} eV" if p_idx == 0 else ""
+        if self.plot_level >= 3:
+            ylabel_str = p_label.split()[-1] if i == 0 else ""
+        else:
+            ylabel_str = p_label if i == 0 else ""
+        if self._map_titles.get(k) != title_str:
+            ax.set_title(title_str, fontsize=10)
+            self._map_titles[k] = title_str
+        if ylabel_str and self._map_ylabels.get(k) != ylabel_str:
+            ax.set_ylabel(ylabel_str, fontsize=10)
+            self._map_ylabels[k] = ylabel_str
+        if first:
+            ax.set_xticks([])
+            ax.set_yticks([])
+
+    def _set_map_slice(self, k, ax, slice_data, v_min, v_max, use_diverging, has_mag):
+        """
+        Energy map k's filled contours: the old contour set removed and the slice drawn again in
+        the map's own axes (_draw_map_slice; TriContourSet has no set_array) when its data or its
+        colour scale (the colour map's branch, v_min, v_max, LDOS γ) differ from what it shows;
+        otherwise nothing is touched.
+        """
+        sig = (bool(use_diverging), bool(self.show_mag and has_mag), float(v_min), float(v_max), float(self.ldos_gamma))
+        st = self._map_state.get(k)
+        if st is not None and st['sig'] == sig and np.array_equal(st['data'], slice_data):
+            return
+        if st is not None and st['cs'] is not None:
+            st['cs'].remove()
+        cs = self._draw_map_slice(ax, slice_data, v_min, v_max, use_diverging, has_mag)
+        self._map_state[k] = {'cs': cs, 'sig': sig, 'data': np.array(slice_data, copy=True)}
+
+    def _set_map_cbar(self, slot, v_min, v_max, use_diverging, has_mag, labelsize=None):
+        """
+        The energy maps' colour bar cax_list[slot] at v_min..v_max: drawn the first time
+        (_draw_map_cbar), then updated in place when its scale changes: its norm and colour map
+        (ScalarMappable.set_norm / set_cmap; the bar follows), its tick unit and exponent title
+        when the exponent changes.
+        """
+        cax = self.cax_list[slot]
+        cmap = self._map_cmap(use_diverging, has_mag)
+        sig = (float(v_min), float(v_max))
+        st = self._map_cbar_state.get(slot)
+        if st is None:
+            cb = self._draw_map_cbar(cax, v_min, v_max, use_diverging, has_mag, labelsize=labelsize)
+            self._map_cbar_state[slot] = {'cb': cb, 'sig': sig, 'cmap': cmap, 'exp': int(np.floor(np.log10(v_max)))}
+            return
+        if st['sig'] == sig and st['cmap'] == cmap:
+            return
+        sm = st['cb'].mappable
+        if st['cmap'] != cmap:
+            sm.set_cmap(cmap)
+        sm.set_norm(plt.Normalize(vmin=v_min, vmax=v_max))
+        exp = int(np.floor(np.log10(v_max)))
+        if exp != st['exp']:
+            st['cb'].ax.yaxis.set_major_formatter(plt.ticker.FuncFormatter(lambda x, pos, e=exp: f"{x / (10 ** e):.1f}"))
+            cax.set_title(f"1e{exp}", fontsize=10 if labelsize is None else labelsize)
+        st.update(sig=sig, cmap=cmap, exp=exp)
+
+    def _place_map_markers(self):
+        """The Map markers (marker_coords) placed on every counterpart together: the Map Topo's scatter and each energy map's (a drag moves them; the spectrum follows on release)."""
+        xy = np.array(self.marker_coords)
+        recolor = self._map_marks_xy is None or len(self._map_marks_xy) != len(xy)
+        cols = self.m_colors[:len(xy)]
+        for sc in [self.marks] + list(self._map_marks.values()):
+            sc.set_offsets(xy)
+            if recolor:
+                sc.set_facecolors(cols)
+        self._map_marks_xy = np.array(xy, copy=True)
 
     def _redraw_map_slice(self, i):
         target_e = self.map_e_targets[i]
@@ -2911,29 +3050,14 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
 
         for p_idx, (p_label, t_data) in enumerate(processed_partitions):
             k = p_idx * nepts + i
-            ax = self.map_axes[k]
-            ax.clear()
             p_vmax = np.max(np.abs(t_data)) if self.show_dcmp_norm else global_vmax
             p_vmin = np.min(t_data) if self.show_dcmp_norm else global_vmin
             slice_data = t_data[:, i]
             v_max = self._map_vmax(slice_data, p_vmax)
             v_min = self._map_vmin(slice_data, p_vmin)
-            self._draw_map_slice(ax, slice_data, v_min, v_max, use_diverging, has_mag)
-            if self.cmap_norm:
-                self._draw_map_cbar(self.cax_list[k], v_min, v_max, use_diverging, has_mag, labelsize=6)
-            ax.scatter(m_coords_np[:, 0], m_coords_np[:, 1], color=self.m_colors[:len(m_coords_np)], s=30, edgecolors='white', zorder=5)
-            title_str = f"E = {target_e:.3f} eV" if p_idx == 0 else ""
-            if self.plot_level >= 3:
-                ylabel_str = p_label.split()[-1] if i == 0 else ""
-            else:
-                ylabel_str = p_label if i == 0 else ""
-            ax.set_title(title_str, fontsize=10)
-            if ylabel_str:
-                ax.set_ylabel(ylabel_str, fontsize=10)
-            ax.set_aspect('equal')
-            ax.set_xticks([])
-            ax.set_yticks([])
-        self._draw_contour_artists()               # the cleared map's trace again (all are cheap)
+            # The map of energy i in its own axes, in place (no ax.clear(): its marker scatter and the
+            # contour slice's trace stay; _fill_map), its own bar under 'cmap norm'.
+            self._fill_map(k, p_idx, i, p_label, slice_data, v_min, v_max, target_e, use_diverging, has_mag, m_coords_np)
 
     def _on_pick(self, event):
         label = event.artist.get_label() if hasattr(event.artist, 'get_label') else ''
@@ -2951,6 +3075,9 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         elif event.artist == getattr(self, 'path_pts', None) and self.mode == 'Path':
             self.active_obj = ('path_node', event.ind[0])
         elif event.artist == getattr(self, 'marks', None):
+            self.active_obj = ('mark_map', event.ind[0])
+        elif self.mode == 'Map' and any(event.artist is sc for sc in self._map_marks.values()):
+            # A Map marker on an energy map: dragged as on the Map Topo (all counterparts together).
             self.active_obj = ('mark_map', event.ind[0])
         elif getattr(event, 'mouseevent', None) and event.mouseevent.inaxes == self.ax_spec:
             label = event.artist.get_label()
@@ -2972,19 +3099,27 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
                 self.active_element = self._get_element_by_index_helper(self.active_atom)
                 self.plot_level = 4
             self._update_all()
-        elif isinstance(event.artist, plt.Line2D) and event.artist.get_label().startswith('marker_'):
+        elif (isinstance(event.artist, (plt.Line2D, plt._RefLine, plt.PathCollection))
+              and event.artist.get_label().startswith('marker_')):
+            # A Line / Path marker's line on the Tip Height profile, a heatmap or the stripe, or its
+            # scatter on the Line Topo: selected (the active marker) and dragged from there.
             self.active_obj = ('mark_dynamic', int(event.artist.get_label().split('_')[1]))
             self.active_marker_idx = int(event.artist.get_label().split('_')[1])
-            self._update_all()
+            # Only what shows the active marker is updated: the spectrum, from the display cache.
+            if self.is_running and self.mode in ('Line', 'Path') and self._line_disp is not None and self._spec_key is not None:
+                self._draw_spectrum(self._line_disp, None, self._line_geom[1])
+            self.fig.canvas.draw_idle()
 
     def _on_press(self, event):
         if event.inaxes == self.ax_spec:
             if self.fig.canvas.manager.toolbar.mode == "" and not event.dblclick:
                 hit = any(l.contains(event)[0] for l in self.ax_spec.get_lines() if l.get_picker())
                 if not hit:
-                    self.plot_level = max(0, self.plot_level - 1)
-        if self.fig.canvas.manager.toolbar.mode == "":
-            self._update_all()
+                    level = max(0, self.plot_level - 1)
+                    if level != self.plot_level:
+                        # The spectrum's step-back click (the level decreased): the one press that updates the display.
+                        self.plot_level = level
+                        self._update_all()
 
     def _get_element_by_index_helper(self, a):
         curr = 0
@@ -3010,42 +3145,81 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
                 _, axis, k = self.active_obj
                 self._set_cursor(axis, k, event.xdata if axis == 'x' else event.ydata)
             return
+        # A drag moves only the dragged item and its counterparts: no _update_all, no GPU work and no
+        # recomputation while the button is down (the release does that work once: _on_rel), and a
+        # motion that leaves the item where it is returns at once.
         t_obj, idx = self.active_obj
-        if self.mode == 'Line':
-            p_len = norm(self.p2 - self.p1)
-        elif self.mode == 'Path':
-            _, _, p_len, _ = self._build_path_xy()
+        if self.mode in ('Line', 'Path'):
+            p_xy, _, p_len = self._line_geom           # the line / path as last drawn (_update_all)
         else:
             p_len = 1.0
 
         if t_obj == 'end' and self.mode == 'Line':
+            # A line end: only the line and its end markers move on the placement topo.
+            new = np.array([event.xdata, event.ydata])
+            if np.array_equal(new, self.p1 if idx == 0 else self.p2):
+                return
             if idx == 0:
-                self.p1 = np.array([event.xdata, event.ydata])
+                self.p1 = new
             else:
-                self.p2 = np.array([event.xdata, event.ydata])
+                self.p2 = new
+            self.line_art.set_data([self.p1[0], self.p2[0]], [self.p1[1], self.p2[1]])
+            self.ends.set_offsets([self.p1, self.p2])
         elif t_obj == 'path_node' and self.mode == 'Path':
-            if event.inaxes == self.ax_map:
-                self.path_nodes[idx] = np.array([event.xdata, event.ydata])
-        elif t_obj == 'mark_map' and event.inaxes == self.ax_map:
+            # A path node: only the path and its node markers move on the placement topo.
+            if event.inaxes != self.ax_map:
+                return
+            new = np.array([event.xdata, event.ydata])
+            if np.array_equal(new, self.path_nodes[idx]):
+                return
+            self.path_nodes[idx] = new
+            _, _, _, verts = self._build_path_xy()
+            self.line_art.set_data(verts[:, 0], verts[:, 1])
+            self.path_pts.set_offsets(np.array(self.path_nodes))
+        elif t_obj == 'mark_map' and (event.inaxes == self.ax_map
+                                      or (self.mode == 'Map' and event.inaxes in self.map_axes)):
             if self.mode == 'Line':
                 v = self.p2 - self.p1
                 v_sq = np.dot(v, v)
-                if v_sq > 1e-9:
-                    self.marker_ratios[idx] = np.clip(np.dot(np.array([event.xdata, event.ydata]) - self.p1, v) / v_sq, 0, 1)
+                if v_sq <= 1e-9:
+                    return
+                new = np.clip(np.dot(np.array([event.xdata, event.ydata]) - self.p1, v) / v_sq, 0, 1)
             elif self.mode == 'Path':
                 # Project click onto the polyline: nearest resampled path point.
-                p_xy, _, _, _ = self._build_path_xy()
                 d2 = (p_xy[:, 0] - event.xdata) ** 2 + (p_xy[:, 1] - event.ydata) ** 2
-                self.marker_ratios[idx] = int(np.argmin(d2)) / (self.npts - 1)
+                new = int(np.argmin(d2)) / (self.npts - 1)
             else:
-                self.marker_coords[idx] = [event.xdata, event.ydata]
+                new = [event.xdata, event.ydata]
+            if self.mode in ('Line', 'Path'):
+                if new == self.marker_ratios[idx]:
+                    return
+                self.marker_ratios[idx] = new
+                self._move_line_markers()
+                self._drag_moved = True
+                return
+            if new == list(self.marker_coords[idx]):
+                return
+            self.marker_coords[idx] = new
+            # Single Point / Map: the markers move (Map: on the Map Topo and every energy map); the
+            # spectrum is computed on release.
+            if self.mode == 'Map':
+                self._place_map_markers()
+            else:
+                self.marks.set_offsets(self.marker_coords)
         elif t_obj == 'mark_dynamic' and self.mode in ('Line', 'Path'):
+            new = None
             if hasattr(self, 'ax_prof') and event.inaxes == self.ax_prof:
                 if p_len > 1e-9:
-                    self.marker_ratios[idx] = np.clip(event.xdata / p_len, 0, 1)
-            elif event.inaxes in [ax for ax in [getattr(self, 'ax_ldos', None), getattr(self, 'ax_stripe', None), getattr(self, 'ax_line_topo', None)] if ax is not None]:
+                    new = np.clip(event.xdata / p_len, 0, 1)
+            elif event.inaxes in [ax for ax in [getattr(self, 'ax_ldos', None), getattr(self, 'ax_stripe', None), getattr(self, 'ax_line_topo', None)] + list(self._heat_axes) if ax is not None]:
                 if p_len > 1e-9:
-                    self.marker_ratios[idx] = np.clip(event.ydata / p_len, 0, 1)
+                    new = np.clip(event.ydata / p_len, 0, 1)
+            if new is None or new == self.marker_ratios[idx]:
+                return
+            self.marker_ratios[idx] = new
+            self._move_line_markers()
+            self._drag_moved = True
+            return
         elif t_obj == 'emarker' and event.inaxes == self.ax_spec:
             self.map_e_targets[idx] = np.clip(event.xdata, self.s_emin.val, self.s_emax.val)
             for line in self.ax_spec.get_lines():
@@ -3053,7 +3227,10 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
                     line.set_xdata([self.map_e_targets[idx], self.map_e_targets[idx]])
             self.fig.canvas.draw_idle()
             return
-        self._update_all()
+        else:
+            return
+        self._drag_moved = True
+        self.fig.canvas.draw_idle()
 
     def _on_rel(self, event):
         if self.active_obj is not None and self.active_obj[0] == 'emarker':
@@ -3072,4 +3249,13 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
                 self.cached_ld_dn[:, idx:idx + 1] = cp.asnumpy(t_dn[:, 0:1])
             self._redraw_map_slice(idx)
             self.fig.canvas.draw_idle()
+        elif (self.active_obj is not None and self._drag_moved
+              and (self.active_obj[0] in ('end', 'path_node')
+                   or (self.active_obj[0] == 'mark_map' and self.mode in ('Single Point', 'Map')))):
+            # The release of a moved line end, path node or Single Point / Map marker: the work today's
+            # redraw did on every motion, done once (Line / Path: the tip heights, the LDOS along the
+            # line, the heatmaps, stripe, profile, Line Topo and marker spectra; Single Point / Map:
+            # the markers' spectrum), by the same computations (_update_all).
+            self._update_all()
+        self._drag_moved = False
         self.active_obj = None

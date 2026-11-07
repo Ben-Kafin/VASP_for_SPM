@@ -1694,6 +1694,22 @@ def _shaped_size(widget, W, H):
         return None
 
 
+def _panel_shapes(widget):
+    """
+    The shapes of the panels in `widget` (the widget itself when it is a panel cell), in order: each
+    cell's height over width (PanelCell.shape_ratio, rounded as Axes._notify_shape rounds it; None
+    for a free panel).  A crop or a turn of a panel changes it, a panel added or removed too; the text
+    of a label or a tick value never does (a container's layout request re-places only on a change).
+    """
+    cells = [widget] if isinstance(widget, plt.PanelCell) else []
+    cells += [c for c in widget.findChildren(QtWidgets.QWidget) if isinstance(c, plt.PanelCell)]
+    out = []
+    for c in cells:
+        r = c.shape_ratio()
+        out.append(None if r is None else round(float(r), 4))
+    return tuple(out)
+
+
 class Titled(QtWidgets.QWidget):
     """
     A shaped group with a label over it (the 'LDOS' label over the heatmap row or the energy maps):

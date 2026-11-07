@@ -362,7 +362,7 @@ _EPOCH = [0]            # the layout pass (new_measure_pass): a PanelCell's room
 
 
 def new_measure_pass():
-    """A new layout pass: every panel cell measures its room (its axes' tick axes and title, Qt calls) again at its next size question (PanelCell._decor, pass_cached).  The arrangement, the map block, the figure's relayout and an axes' placement start one; so does anything that changes what a pass measures (a panel's shape, a control's font or label, a band's items)."""
+    """A new layout pass: every panel cell measures its room (its axes' tick axes and title, Qt calls) again at its next size question (PanelCell._decor, pass_cached).  The arrangement and the figure's relayout start one; so does anything that changes what a pass measures (a panel's shape, a panel added or removed, a control's font or label, a band's items).  An axes' placement does not: a cell's room is measured at an arrangement and kept until the next one, the axes moving its box inside the cell to fit its labels (Axes._place)."""
     _EPOCH[0] += 1
 
 
@@ -3744,11 +3744,14 @@ class PanelCell(QtWidgets.QWidget):
         self._watched = []
         self._decor_w = 0.0
         self._title_w = 0.0
+        self._fill_ratio = None        # fill_as: the ratio the cell is sized as while its box fills its room
 
     def _want_w(self):
         z = getattr(self.figure, 'font_zoom', 1.0)
-        return int(round(max(self.inner_w / (1000 / 72) * em_px() * z + self._decor_w,
-                             self._title_w + 2.0 / (1000 / 72) * em_px())))
+        # Kept for the layout pass (pass_cached): the width a pass sized the cell with stays until the next
+        # pass (an arrangement), whatever its labels noted since (_note_decor).
+        return pass_cached(self, ('want_w', z), lambda: int(round(max(self.inner_w / (1000 / 72) * em_px() * z + self._decor_w,
+                                                                       self._title_w + 2.0 / (1000 / 72) * em_px()))))
 
     def sizeHint(self):
         if self.inner_w is None:
@@ -3761,7 +3764,7 @@ class PanelCell(QtWidgets.QWidget):
         return QtCore.QSize(self._want_w(), self.minimumHeight())
 
     def _note_decor(self, left_right, title_w=0.0):
-        """The tick axes and label, and the title, of the axes in a narrow cell (Axes._cell_px): the cell's width follows."""
+        """The tick axes and label, and the title, of the axes in a narrow cell (Axes._cell_px): the cell's width follows at the next layout pass (_want_w keeps the current pass's width)."""
         if self.inner_w is not None and (abs(left_right - self._decor_w) > 0.5 or abs(title_w - self._title_w) > 0.5):
             self._decor_w = float(left_right)
             self._title_w = float(title_w)
@@ -3770,7 +3773,7 @@ class PanelCell(QtWidgets.QWidget):
     # --- the panel's shape (rule 11 of the guide: panels know their shape; the window arranges itself) ---
 
     def shape_ratio(self):
-        """The height over width the panel asks for (its axes' locked aspect or box aspect), or None for a free panel; measured once per layout pass (a changed shape starts one: Axes._notify_shape)."""
+        """The height over width the panel asks for (its axes' locked aspect or box aspect, else the ratio it is sized as: fill_as), or None for a free panel; measured once per layout pass (a changed shape starts one: Axes._notify_shape)."""
         return pass_cached(self, 'shape', self._shape_now)
 
     def _shape_now(self):
@@ -3783,7 +3786,22 @@ class PanelCell(QtWidgets.QWidget):
                     r = None
                 if r is not None and np.isfinite(r) and r > 0:
                     return float(r)
-        return None
+        return self._fill_ratio
+
+    def fill_as(self, ratio):
+        """
+        The cell sized as a panel of height over width `ratio` (its row and the arrangement count it
+        so: shape_ratio) while its axes keeps no ratio of its own: placed, it fills the room its row
+        gives it (PanelRow: the width the row has left over its shaped items, and the row's full
+        height), so its box stretches in x or y (the simulator's Line / Path heatmaps, counted as square).
+        """
+        self._fill_ratio = float(ratio)
+        new_measure_pass()                             # the shape kept for this pass is old
+        self.updateGeometry()
+
+    def fills(self):
+        """Whether the cell fills the room its row gives it (fill_as)."""
+        return self._fill_ratio is not None
 
     def _decor(self):
         """The room around the panel's box (_measure_decor), measured once per layout pass (new_measure_pass): the arrangement asks a cell its size hundreds of times in one pass."""
@@ -3924,7 +3942,10 @@ class PanelRow(QtWidgets.QLayout):
     height, and no shaped item leaves an empty band above or below it.  Given more height (a
     taller window), the shaped items grow until their widths fill the row (the free items at their
     minimum widths); given less, they shrink to the height and the free items widen.  A free item
-    always takes the row's full height; a shaped item is centred in a row taller than it.
+    always takes the row's full height; a shaped item is centred in a row taller than it.  A fill
+    item (a PanelCell sized as a ratio, PanelCell.fill_as) is a shaped item in every size question;
+    placed, it takes the row's full height and, when the row has no free item, the width left over
+    the shaped items (by stretch), so it fills the room the row is given.
     """
 
     def __init__(self, spacing=8):
@@ -4014,6 +4035,12 @@ class PanelRow(QtWidgets.QLayout):
         return w.height_for_width, w.width_for_height
 
     @staticmethod
+    def _fills(it):
+        """Whether a shaped item fills the room the row gives it (a PanelCell sized as a ratio: fill_as)."""
+        f = getattr(it.widget(), 'fills', None)
+        return bool(f()) if f is not None else False
+
+    @staticmethod
     def _fixed(it):
         w = it.widget()
         if w is None:
@@ -4086,11 +4113,17 @@ class PanelRow(QtWidgets.QLayout):
         tot_free = float(sum(st for _, st in free)) or 1.0
         for it, st in free:
             widths[id(it)] = max(rest * st / tot_free, self._min_w(it))
+        fill = [(it, st) for it, st in shaped if self._fills(it)]
+        if fill and not free:
+            # The fill items (PanelCell.fill_as) take the width the row has left over its shaped items.
+            tot_fill = float(sum(st for _, st in fill)) or 1.0
+            for it, st in fill:
+                widths[id(it)] += rest * st / tot_fill
         for it, _ in fixed:
             widths[id(it)] = self._fixed_w(it)
         total_w = sum(widths.values()) + self._sp * max(len(items) - 1, 0)
         scale = W / total_w if total_w > W and total_w > 0 else 1.0      # nothing fits: everything scaled together
-        shaped_ids = {id(it) for it, _ in shaped}
+        shaped_ids = {id(it) for it, _ in shaped} - {id(it) for it, _ in fill}     # a fill item takes the full height
         x = float(r.x())
         for it, _ in items:
             w = widths[id(it)] * scale
@@ -4625,7 +4658,6 @@ class Axes:
         keep_legend_clear re-run on a size change.
         """
         self._place_pending = False
-        new_measure_pass()                             # a placement: the cells' room may have changed
         if getattr(self.figure, '_closed', False):
             return                                     # a placement queued (a row member re-placed) after the window closed
         self._notify_shape()
