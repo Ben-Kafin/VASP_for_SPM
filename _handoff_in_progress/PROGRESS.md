@@ -83,6 +83,12 @@ Branch: `claude/jolly-babbage-ppmbdj`. Base of part 1's work: b051547.
     3D view; K7 (d): with RUN off a decomp step redraws the spectrum, legend, maps and heatmaps from the last run's
     data; K8 (a); K9 update, the `qtgui/__init__.py` mplexport line in all three copies as an exception to ruling 1;
     K10 (a), package copies only; K11 (a). These are applied after part 3's workflow (a follow-up workflow).
+13. The owner's answers to N1-N4 (2026-11-07): `RESPONSE_N1_N4.md`. N1 (a): Arrangement takes a list of allowed layouts,
+    Line passes only `row_top`, a row of fill panels reports the height that fills its width (both package copies);
+    N2 (c): export_vector's SVG at 720 dpi, every font a pixel size equal to its on-screen size while the file is
+    drawn, restored after (all three copies); N3 (a): TriContourSet.set_cmap / set_norm update `_args` (both package
+    copies); N4: README rows for cmap_shading.py and _resolve.py. Applied after the follow-up workflow (wf_a3502bdb-787)
+    finishes, since it is editing the same files.
 
 ## Conventions given to the implementing agents (part 1)
 
