@@ -1095,6 +1095,12 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         self.extra_broadening = {t: 0.0 for t in self.atomtypes}
         self._broadening_topo_dirty = False
 
+        # Line's and Path's tip heights, each kept with its own key and the bias and decay model it was converged
+        # at: Line's (current_z_line) with its ends (cached_p1, cached_p2), cached_bias_energy_line and
+        # cached_d_topo_line; Path's (current_z_path) with its nodes and Extend (cached_path_nodes,
+        # cached_path_extend), cached_bias_energy_path and cached_d_topo_path.
+        self.current_z_line, self.current_z_path = None, None
+        self.cached_bias_energy_path, self.cached_d_topo_path = None, None
         self.cached_p1, self.cached_p2 = None, None
         self.cached_emin, self.cached_emax = None, None
         self.cached_d_topo_line, self.cached_d_topo_map, self.cached_d_ldos = None, None, None
@@ -2825,6 +2831,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         self.cached_path_nodes = None
         self.cached_bias_energy_line = self.cached_bias_energy_map = None
         self.cached_d_topo_line = self.cached_d_topo_map = None
+        self.cached_bias_energy_path = self.cached_d_topo_path = None
         self.cached_emin = self.cached_emax = None
         self.cached_ld_up = self.cached_ld_dn = None
         self.cached_ld_up_gpu = self.cached_ld_dn_gpu = None
@@ -2845,6 +2852,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         self.cached_d_topo_line = self.cached_d_topo_map = None
         self.cached_d_ldos = None
         self.cached_bias_energy_line = self.cached_bias_energy_map = None
+        self.cached_bias_energy_path = self.cached_d_topo_path = None
         self.cached_marker_coords = self.cached_spec_ldos = None
         self.cached_spec_ldos_gpu = None
         self.cached_ld_up = self.cached_ld_dn = None
@@ -2868,12 +2876,17 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         # Decay toggle or path-extend toggle: invalidate caches and recompute.
         decay_model_changed = (self.use_decay != prev_decay)
         if decay_model_changed or (self.path_extend != prev_path_extend):
-            self.cached_p1 = self.cached_p2 = None
+            # Path's tip heights are dropped by either (the Extend is in Path's key), Line's by a decay-model
+            # change only (the Extend leaves Line's points as they are).
+            if decay_model_changed:
+                self.cached_p1 = self.cached_p2 = None
+                self.cached_d_topo_line = None
+                self.cached_bias_energy_line = None
             self.cached_path_nodes = None
+            self.cached_d_topo_path = None
+            self.cached_bias_energy_path = None
             self.cached_emin = self.cached_emax = None
-            self.cached_d_topo_line = None
             self.cached_d_ldos = None
-            self.cached_bias_energy_line = None
             self.cached_ld_up = self.cached_ld_dn = None
             self.cached_ld_up_gpu = self.cached_ld_dn_gpu = None
             # Only a decay-model change alters the global topo (recompute, or
@@ -3048,7 +3061,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         decay_model = self._effective_decay_model()
         needs_topo = compute and (
             (self.mode == 'Line' and (self.cached_p1 is None or not np.array_equal(self.p1, self.cached_p1) or not np.array_equal(self.p2, self.cached_p2) or self.cached_bias_energy_line != v_b or self.cached_d_topo_line != decay_model)) or
-            (self.mode == 'Path' and (self.cached_path_nodes is None or not np.array_equal(np.array(self.path_nodes), self.cached_path_nodes) or self.cached_path_extend != self.path_extend or self.cached_bias_energy_line != v_b or self.cached_d_topo_line != decay_model)) or
+            (self.mode == 'Path' and (self.cached_path_nodes is None or not np.array_equal(np.array(self.path_nodes), self.cached_path_nodes) or self.cached_path_extend != self.path_extend or self.cached_bias_energy_path != v_b or self.cached_d_topo_path != decay_model)) or
             (self.mode == 'Map' and (self.cached_bias_energy_map != v_b or self.cached_d_topo_map != decay_model)))
         # The window's ends compared as snapped (_snap: a sample index, or ZERO_V): a typed change that lands on the
         # same samples recomputes nothing.
@@ -3090,13 +3103,16 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
                 print(f"[*] Path Setpoint LDOS: {float(target):.6e}")
                 z_line = self._converge_tip_height(cp.full(self.npts, self.z_highest_atom + self.ldos_height, dtype=cp.float32), p_xy_gpu, l_samples, v_b, target,
                                                    use_decay=self.use_decay)
-                self.current_z_line = cp.asnumpy(z_line)
+                # Into the view's own record, with its key and the bias and decay model they were converged at.
                 if self.mode == 'Line':
+                    self.current_z_line = cp.asnumpy(z_line)
                     self.cached_p1, self.cached_p2 = self.p1.copy(), self.p2.copy()
+                    self.cached_bias_energy_line, self.cached_d_topo_line = v_b, decay_model
                 else:
+                    self.current_z_path = cp.asnumpy(z_line)
                     self.cached_path_nodes = np.array(self.path_nodes).copy()
                     self.cached_path_extend = self.path_extend
-                self.cached_bias_energy_line, self.cached_d_topo_line = v_b, decay_model
+                    self.cached_bias_energy_path, self.cached_d_topo_path = v_b, decay_model
             elif self.mode == 'Map':
                 grid_res = int(np.sqrt(len(self.grid_xy)))
                 ldos_cache_name = f"ldos_topo_{v_b}V_{self.ldos_height}A_{grid_res}px{self._broadening_cache_suffix()}{self._unit_cell_cache_suffix()}{self._decay_cache_suffix()}_fold{self._precision_cache_suffix()}.npy"
@@ -3172,8 +3188,10 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         elif needs_ldos:
             if self.mode in ('Line', 'Path'):
                 l_idx = self._display_indices(self.s_emin.val, self.s_emax.val)
+                # At the view's own tip heights: Line's (current_z_line) or Path's (current_z_path).
+                z_view = self.current_z_line if self.mode == 'Line' else self.current_z_path
                 ld_up, ld_dn, eg, cur = self._calculate_ldos_at_points_gpu(
-                    np.hstack([p_xy, self.current_z_line[:, None]]),
+                    np.hstack([p_xy, z_view[:, None]]),
                     None, None,
                     use_energy_decay=self.use_decay, preserve_orbitals=True, with_current=True,
                     samples=l_idx)
@@ -3619,27 +3637,30 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
                 self._line_topo_key = topo_key
                 self._line_topo_z = np.array(self.global_z_map, copy=True)
 
+        # The stripe and the Tip Height profile from the view's own tip heights: Line's (current_z_line) or
+        # Path's (current_z_path).
+        z_view = self.current_z_line if self.mode == 'Line' else self.current_z_path
         # The stripe: its segments, colours and limits in place.
         segs = np.array([np.array([np.zeros_like(p_dist), p_dist]).T[:-1],
                          np.array([np.zeros_like(p_dist), p_dist]).T[1:]]).transpose(1, 0, 2)
-        z_norm = plt.Normalize(float(self.current_z_line.min()), float(self.current_z_line.max()))
+        z_norm = plt.Normalize(float(z_view.min()), float(z_view.max()))
         if self._stripe_lc is None:
             lc = plt.LineCollection(segs, cmap=self._cmap('topo'), norm=z_norm, linewidth=40)
-            lc.set_array(self.current_z_line[:-1])
+            lc.set_array(z_view[:-1])
             self.ax_stripe.add_collection(lc)
             self._stripe_lc = lc
         else:
             self._stripe_lc.set_segments(segs)
             self._stripe_lc.set_norm(z_norm)
-            self._stripe_lc.set_array(self.current_z_line[:-1])
+            self._stripe_lc.set_array(z_view[:-1])
         if self._stripe_len != p_len:
             self.ax_stripe.set(xlim=(-0.1, 0.1), ylim=(0, p_len))
             self._stripe_len = p_len
         # The Tip Height profile's curve.
         if self._prof_line is None:
-            self._prof_line, = self.ax_prof.plot(p_dist, self.current_z_line, 'k-', lw=1.5)
+            self._prof_line, = self.ax_prof.plot(p_dist, z_view, 'k-', lw=1.5)
         else:
-            self._prof_line.set_data(p_dist, self.current_z_line)
+            self._prof_line.set_data(p_dist, z_view)
 
         for p_idx, (p_label, t_data) in enumerate(processed_partitions):
             ax_l, cax_l = self._heat_axes[p_idx], self._heat_caxes[p_idx]
