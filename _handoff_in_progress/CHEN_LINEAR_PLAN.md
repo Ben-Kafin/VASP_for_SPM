@@ -54,8 +54,9 @@ pass the model; sim_wrapper's Decay-off rule for the decomposition unchanged.
 ## 5. '0-clamp'
 
 The 'sim toggles' line and its comment in the simulator package's `qtgui/widgets.py` become the simulator's real
-rows, 'exact' and 'linearized' indented under 'Decay'. Under the scope rule the root and matcher copies keep their old
-line, so the matcher's qtgui copy differs from the package copy by that one line. The `Claude outputs/` folder
+rows, 'exact' and 'linearized' indented under 'Decay'. The owner then (2026-11-07): "go ahead and update all three",
+with no extra review: after the workflow, the matcher's widgets.py takes the package copy's line (the two package
+copies identical again) and the root qtgui/widgets.py the same line. Nothing else outside stm_from_dft_opt/ changes. The `Claude outputs/` folder
 is already removed (774172a).
 
 ## 6. Documentation
@@ -72,7 +73,6 @@ Everything in `wrong_decays/`; the README's `wrong_decays/` row; the historical 
 ## Process
 
 One workflow on the branch: three implementation stages in sequence (names, model and control; the linearized kernel;
-texts, run scripts, widgets.py), three reviewers (fidelity to the owner's file and this plan, with the exact option's
-diff renames only; every formula derived, the walk against quadrature.py line by line; correctness: CUDA argument
-lists, every caller, no old name left outside wrong_decays/ and the history), a fixer (anything needing a choice comes
-back to the owner unchosen). py_compile every changed file; commit and push the branch; the change list; this folder deleted in a last commit; main fast-forwarded only on the owner's OK.
+texts, run script, widgets.py); then, the owner asked for minimal reviews ("this is a pretty simple insert"), one
+reviewer with a short checklist (the exact option renames only; the owner's weight; the kernel's argument list; the
+control and model names; no old names; py_compile), and a fixer only if it finds a defect. py_compile every changed file; commit and push the branch; the change list; this folder deleted in a last commit; main fast-forwarded only on the owner's OK.
