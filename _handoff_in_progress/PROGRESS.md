@@ -15,6 +15,22 @@ Branch: `claude/jolly-babbage-ppmbdj`. Base of part 1's work: b051547.
 2. Part 2: `PART2_ANSWERS.md` — every R of `PART2_QUESTIONS.md` accepted except A1, A2, A4, A9, A11, A15 as
    answered there; group B approved as a block; C noted. Plus the three added part-2 sections.
 
+3. Part 2 section 11, the Decay row: no Rejali. Drop "Cite R. Rejali et al., Phys. Rev. B 107, 035406 (2023), as
+   wrong_decays/tilted_barrier_decay.py does". Cite Chen only, for the frozen-bias topography and the swept dI/dV.
+4. Nothing in `wrong_decays/` is written again: its files (and their Rejali / Goes mentions) and the README's
+   `wrong_decays/` row stay exactly as they are now. Part 2 (including A15's text updates) does not touch them.
+5. New requirement (owner): the README, the comments and the layout of the defs make clear what is the actual
+   decay logic (the physics, with its citations) and what is machinery needed to integrate and to run on the
+   GPU. Layout not yet ruled; default until ruled: no new module; simulator.py opens with a block "THE DECAY
+   MODEL (physics)" (constants, the weight and its derivative, the definitions of I and dI/dV, citations), the
+   rest under "NUMERICS AND GPU (no physics)"; each def's docstring starts with "Physics:" or "Machinery:";
+   the kernel's comment says which lines transcribe the physics; the README separates the model from how it
+   is computed.
+6. Checks in part 2, until ruled otherwise: agents read files and run `python -m py_compile` only (no AST scans,
+   no scratch maths scripts).
+7. Every agent runs on Opus 5.5 or higher (workflow agents inherit the session model, claude-opus-5-5; any
+   agent type with its own default model is given model: opus).
+
 ## Conventions given to the implementing agents (part 1)
 
 - Size API in the simulator's qtgui copy (`qtplot.py`): `base_font()`, `em_px()`, `px_per_pt()`, `pt2px(pt)`;
