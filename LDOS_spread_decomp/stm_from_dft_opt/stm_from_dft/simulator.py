@@ -161,7 +161,7 @@ def gpu_decay_off_factor(phi, d):
 
 # ==== NUMERICS AND GPU (no physics) ====
 # --- CORE UTILITIES ---
-# The exact_sweep kernel (Decay on, the bias swept): dI/dV_o(V) and I(V) as THE DECAY MODEL (physics) defines them,
+# The exact_sweep kernel (Decay on, 'exact', the bias swept): dI/dV_o(V) and I(V) as THE DECAY MODEL (physics) defines them,
 # at chosen DOSCAR samples V, dI/dV per tip point, atom and orbital (out) and I per tip point and atom (cur,
 # want_cur = 1), each summed over the atom's images, with w(E, V) = exp(-S(E, V)) the exact tilted barrier and
 # dw/dV = -(dS/dV) w (gpu_exact_factor; the kernel's exact_weight computes the same S and dS/dV with the

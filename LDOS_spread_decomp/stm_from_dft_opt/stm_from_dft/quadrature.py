@@ -5,7 +5,7 @@ The package's one integration rule, on the GPU (CuPy, float32).
 Machinery, no physics: this module only integrates sampled arrays.  What is integrated and why
 (the weighted LDOS, the current, dI/dV) is the decay model's, in simulator.py's block THE DECAY
 MODEL (physics).  Everything in the package that integrates uses this module; the simulator's
-exact_sweep kernel repeats integral_from_zero's formulas in CUDA, because it cannot call Python.
+exact_sweep and linearized_sweep kernels repeat integral_from_zero's formulas in CUDA, because they cannot call Python.
 
 - simpson(y, x=None, *, dx=1.0, axis=-1): composite Simpson's rule, SciPy 1.18.1's
   scipy.integrate.simpson (its own signature) with its arithmetic transcribed.  Nothing is

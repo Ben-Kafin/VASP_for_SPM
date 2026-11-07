@@ -1,8 +1,9 @@
 # stm_from_dft_opt
 
 GPU-accelerated STM / LDOS simulator from DFT output (package `stm_from_dft/`): the site- and
-orbital-projected DOS weighted by the tunneling matrix element of the exact tilted barrier (to first
-order in (E - V/2)/φ and V/φ, Chen's energy-dependent element), with the tip DOS constant as in
+orbital-projected DOS weighted by the tunneling matrix element of the exact tilted barrier or, chosen
+with the `exact` / `linearized` rows under `Decay`, of its first order in (E - V/2)/φ and V/φ, Chen's
+energy-dependent element, with the tip DOS constant as in
 Tersoff and Hamann and the barrier taken from the local potential at each tip point (the `Decay` row
 below). Auto-detects ISPIN=1, ISPIN=2 and noncollinear / SOC calculations from
 DOSCAR and LOCPOT.
@@ -12,7 +13,7 @@ DOSCAR and LOCPOT.
 `run_DFT_STM.py`: set `v_dir` to the VASP directory containing DOSCAR, LOCPOT and POSCAR/CONTCAR,
 then adjust the `Interactive_STM_Simulator(...)` arguments (energy range, LDOS sampling height,
 colormap, number of unit cells) and the `run_interactive(...)` arguments (topography grid, bias,
-tip height, decay model on/off, cache reuse, line-scan endpoints, marker positions, extra
+tip height, decay on/off and its model (`decay_linearized`: `exact` or `linearized`), cache reuse, line-scan endpoints, marker positions, extra
 broadening per element, path mode seed). The window gives constant-current topography, dI/dV at
 markers, line scans, path scans and energy maps.
 

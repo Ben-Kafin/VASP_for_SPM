@@ -32,7 +32,7 @@ sim.run_interactive(
     ldos_bias_sign='neg',          # 'pos' or 'neg' — which box (E Max or E Min) sets the bias; an end of 0.0 makes the other end the bias
     use_decay=True,                # Decay on (its model: decay_linearized) for topography convergence and LDOS together
     decay_linearized=False,        # the Decay-on model: False 'exact' (the exact tilted barrier), True 'linearized' (the exact weight to first order in (E - V/2)/phi)
-    show_decay_toggle=True,        # show the 'Decay' checkbox on the figure (False hides it; decay stays on)
+    show_decay_toggle=True,        # show the 'Decay' checkbox and its 'exact' / 'linearized' rows (False hides the three; the decay model stays as set)
     reuse_cache=True,              # load existing global_topo_*/ldos_topo_* .npy caches; False recomputes and rewrites them
 
     # Optional: pre-set line scan endpoints

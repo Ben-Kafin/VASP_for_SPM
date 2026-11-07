@@ -62,7 +62,7 @@ SPECS = {
     'Norm': _spec('check', 0.7, 0.3),                               # state_decomposition_plot: per-curve normalization
     'cmap norm': _spec('check', 1.1, 0.3),                          # the simulator's Map view: each energy map its own colour scale (the sm4_Browser Map window's toggle)
     # --- toggle boxes (several rows) ---
-    'sim toggles': _spec('checks', 1.2, 1.4, labels=['Atoms', 'Decay', '0-clamp', 'Norm', 'Mag', 'Cell', 'Extend']),   # the simulator ('0-clamp' indented under 'Decay')
+    'sim toggles': _spec('checks', 1.2, 1.4, labels=['Atoms', 'Decay', 'exact', 'linearized', 'Norm', 'Feenstra', 'Mag', 'Cell', 'Extend']),   # the simulator ('exact' and 'linearized' indented under 'Decay')
     'broadening': _spec('checks', 0.6, 0.6, labels=None),           # the simulator: one row per atom type (labels per file)
     'collapse': _spec('checks', 1.1, 0.9, labels=['Vertical', 'Horizontal', 'Amplitude']),   # decomp_window; spread_collapse adds 'Curve' (labels per window)
     'spread view': _spec('checks', 1.0, 0.6, labels=['Curve', 'Amplitude']),               # spread_plot, state_decomposition_plot
