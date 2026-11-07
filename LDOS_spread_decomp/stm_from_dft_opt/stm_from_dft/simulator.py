@@ -1533,6 +1533,288 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         self._panel_cells.append(cell)
         return self.fig.add_axes(cell=cell), cell
 
+    # --- the legend panel (right of the spectrum: Single Point, Line, Path) ---
+
+    LEGEND_SAMPLE_PX = 26      # an entry's sample line, as qtplot's legend sample (pixels at the old fixed 100 DPI, converted by em_px and the text zoom where used)
+    LEGEND_PAD_PX = 4          # the room inside an entry's box around its sample and label
+    LEGEND_GAP_PX = 4          # between an entry's sample and its label (qtplot's legend horSpacing)
+    LEGEND_ROW_GAP_PX = 2      # between two entries' boxes, and between a box and the stack's edges
+    LEGEND_BOX_FILL = '#f0f0f0'     # a clickable entry's box: controls.FRAME_CSS's fill and border colours
+    LEGEND_BOX_EDGE = '#c8c8c8'
+    LEGEND_BOX_LW = 0.72            # the box's border in points: FRAME_CSS's 1 px at the old fixed 100 DPI
+    LEGEND_BACK_CSS = "QPushButton { background: #c8c8c8; }"      # the Back button's gray
+
+    def _spectrum_and_legend(self, spec_cell):
+        """
+        Machinery: the spectrum's sub-section: its cell and, right of it in one row, the legend panel, a
+        composite of fixed width (_legend_size) spanning the spectrum's plot box (_legend_follow): from the
+        top, the title cell (a figure text, 10 pt bold, saved with the figure: '' at level 0, 'Parts',
+        'Atoms', 'Orbitals'), the Back button (hidden at level 0, its place kept) and the stack, a qtplot
+        axes with no ticks or frame on white whose data units are pixels (y downward from the first
+        entry), with a Qt vertical scroll bar at its right edge (shown only while the entries do not fit,
+        its strip always reserved; _legend_view).  The stack's entries come from the decomp
+        (ldos_decomp.Decomp.legend, _update_legend).  The stack axes is left out of the CSV and draws its
+        full list in the vector saves (Axes.csv, Axes.export_extent: _legend_extent).  Returns the
+        sub-section's widget.
+        """
+        fig = self.fig
+        panel = QtWidgets.QWidget()
+        lay = QtWidgets.QVBoxLayout(panel)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(round(2 / (1000 / 72) * plt.em_px()))
+        title_cell = fig.cell(min_px=(10, 10), stretch=(True, False))
+        stack_cell = fig.cell(min_px=(10, 10))
+        self._panel_cells.extend([title_cell, stack_cell])
+        lay.addWidget(title_cell)
+        lay.addWidget(self._btn_back.qt)           # detached (hidden) since the last build
+        bar = QtWidgets.QScrollBar(QtCore.Qt.Orientation.Vertical)
+        pol = bar.sizePolicy()
+        pol.setRetainSizeWhenHidden(True)
+        bar.setSizePolicy(pol)
+        bar.setSingleStep(20)                      # QScrollArea's own single step
+        bar.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.PreventContextMenu)   # a right press goes back (_LegendEvents)
+        bar.installEventFilter(self._legend_events)
+        bar.valueChanged.connect(self._legend_scrolled)
+        stack = QtWidgets.QHBoxLayout()
+        stack.setContentsMargins(0, 0, 0, 0)
+        stack.setSpacing(0)
+        stack.addWidget(stack_cell, 1)
+        stack.addWidget(bar, 0)
+        lay.addLayout(stack, 1)
+        ax = fig.add_axes(cell=stack_cell)
+        ax.axis('off')
+        ax.set_facecolor('w')
+        ax.csv = False                             # export_csv leaves the samples out
+        ax.export_extent = self._legend_extent     # the vector saves draw the full list
+        title, entries, back = self.decomp.legend([])
+        self._legend_title = fig.text(0.5, 0.5, title, cell=title_cell, fontsize=10, fontweight='bold',
+                                      ha='center', va='center')
+        self._btn_back.show(back)
+        self._legend_state = (title, back)
+        self._legend_ax, self._legend_bar, self._legend_panel = ax, bar, panel
+        self._legend_title_cell, self._legend_stack_cell = title_cell, stack_cell
+        self._legend_size()
+        self._legend_draw_zoom = float(fig.font_zoom)  # nothing drawn yet: the stack is empty at this zoom
+        self._legend_view()
+        ax.on_placed(self._legend_placed)
+        self.ax_spec.on_placed(self._legend_follow)
+        self._spec_sub = controls.widget_of(controls.row(spec_cell, panel))
+        return self._spec_sub
+
+    def _legend_size(self):
+        """
+        Machinery: the legend panel's sizes at the window's text zoom (nothing when they are already at it):
+        an entry's row height (the label font's height with the text item's two document margins, the
+        box's padding and the gap between boxes); the panel's one fixed width, the widest entry any level
+        can show for the loaded data (ldos_decomp.all_labels: the box's border and padding, the sample, the
+        gap and the widest label) plus the scroll bar's strip; the title cell's height (the title font's
+        with its margins); the stack's smallest height, one row (with the title and Back, the panel's
+        smallest height).
+        """
+        z = float(self.fig.font_zoom)
+        if z == self._legend_zoom:
+            return
+        self._legend_zoom = z
+        k = 1 / (1000 / 72) * plt.em_px()          # pixels per pixel at the old fixed 100 DPI
+        doc = k                                    # a text item's document margin (qtplot._TextItem), each side
+        fm = QtGui.QFontMetricsF(plt.qfont(10, zoom=z))
+        self._legend_m = 0.5 * self.LEGEND_ROW_GAP_PX * k * z
+        self._legend_b = plt.pt2px(self.LEGEND_BOX_LW)
+        self._legend_pad = self.LEGEND_PAD_PX * k * z
+        self._legend_len = self.LEGEND_SAMPLE_PX * k * z
+        self._legend_gap = self.LEGEND_GAP_PX * k * z
+        self._legend_row_h = fm.height() + 2 * doc + 2 * self._legend_pad + 2 * self._legend_m
+        label_w = max((fm.horizontalAdvance(s) for s in ldos_decomp.all_labels(self.atomtypes, self.orbitals)),
+                      default=0.0)
+        stack_w = (2 * (self._legend_m + self._legend_b + self._legend_pad) + self._legend_len + self._legend_gap
+                   + label_w + 2 * doc)
+        bar_w = int(self._legend_bar.sizeHint().width())
+        W = int(np.ceil(stack_w)) + bar_w
+        self._legend_panel.setFixedWidth(W)
+        self._legend_w = float(W - bar_w)          # the stack's width as laid out (its x range)
+        title_h = QtGui.QFontMetricsF(plt.qfont(10, weight='bold', zoom=z)).height() + 2 * doc
+        self._legend_title_cell.setFixedHeight(int(np.ceil(title_h)))
+        self._legend_stack_cell.setMinimumHeight(int(np.ceil(self._legend_row_h)))
+
+    def _legend_draw(self, entries, to_top):
+        """
+        Machinery: the legend stack drawn anew for `entries` (ldos_decomp.Entry, top to bottom): entry k in
+        the row from k to k + 1 row heights; its sample, a line in its curve's colour, line style and line
+        width; its label (10 pt) when it has one (level 0: none, the colour only); a box around both for a
+        clickable entry (levels 0 to 2: a PolyCollection quad in LEGEND_BOX_FILL under a LineCollection
+        outline in LEGEND_BOX_EDGE), none for level 3's plain key rows.  The boxes are kept as drawn
+        (_legend_drawn) for the clicks (_legend_entry_at); nothing is pickable or labelled as a marker.
+        The scroll goes to the top with `to_top` (a level change), else it is kept, clamped (_legend_view).
+        """
+        ax, bar = self._legend_ax, self._legend_bar
+        self._legend_draw_zoom = float(self.fig.font_zoom)
+        m, b, pad, row_h = self._legend_m, self._legend_b, self._legend_pad, self._legend_row_h
+        self._legend_content_h = len(entries) * row_h
+        if to_top:
+            blocked = bar.blockSignals(True)
+            try:
+                bar.setValue(0)
+            finally:
+                bar.blockSignals(blocked)
+        ax.clear()                                 # the axis stays off; its placement sets the view (_legend_placed)
+        x_s = m + b + pad
+        x1 = self._legend_w - m
+        fills, outlines, drawn, samples = [], [], [], []
+        for k, e in enumerate(entries):
+            y0, y1, yc = k * row_h + m, (k + 1) * row_h - m, (k + 0.5) * row_h
+            if e.clickable:
+                quad = [(m, y0), (x1, y0), (x1, y1), (m, y1)]
+                fills.append(quad)
+                outlines.append(quad + [quad[0]])
+                drawn.append((m, y0, x1, y1, e))
+            ln, = ax.plot([x_s, x_s + self._legend_len], [yc, yc], color=e.color, lw=e.linewidth,
+                          linestyle=e.linestyle, zorder=2.5)
+            samples.append(ln)
+            if e.label:
+                ax.text(x_s + self._legend_len + self._legend_gap, yc, e.label, fontsize=10, ha='left', va='center')
+        if fills:
+            ax.add_collection(plt.PolyCollection(fills, facecolors=self.LEGEND_BOX_FILL, zorder=1))
+            ax.add_collection(plt.LineCollection(outlines, colors=self.LEGEND_BOX_EDGE, linewidths=self.LEGEND_BOX_LW,
+                                                 zorder=1.5))
+        self._legend_drawn, self._legend_samples, self._legend_entries = drawn, samples, list(entries)
+        self._legend_view()
+
+    def _update_legend(self):
+        """
+        Machinery: the legend panel brought to the spectrum's curves as drawn (_spec_curves; called at the
+        end of every _draw_spectrum, built or in place): the title and the Back button from the decomp
+        (ldos_decomp.Decomp.legend); the stack drawn anew only when its entries' labels or count, or the
+        level, changed (_legend_draw: to the top on a level change), else its samples recoloured in place
+        where their colour differs (a Line / Path re-sort).  Nothing in Map (no legend panel there yet).
+        """
+        if self._legend_ax is None:
+            return
+        title, entries, back = self.decomp.legend(self._spec_curves)
+        if (title, back) != self._legend_state:
+            self._legend_title.set_text(title)
+            self._btn_back.show(back)
+            self._legend_state = (title, back)
+        key = (self.plot_level, tuple(e.label for e in entries))
+        if key != self._legend_key:
+            to_top = self._legend_key is None or self._legend_key[0] != self.plot_level
+            self._legend_key = key
+            self._legend_draw(entries, to_top)
+            return
+        for ln, e in zip(self._legend_samples, entries):
+            if ln.get_color() != e.color:
+                ln.set_color(e.color)
+        clickable = [e for e in entries if e.clickable]
+        self._legend_drawn = [(x0, y0, x1, y1, e) for (x0, y0, x1, y1, _), e in zip(self._legend_drawn, clickable)]
+        self._legend_entries = list(entries)
+
+    def _legend_view(self):
+        """
+        Machinery: the legend stack's view for its box as placed: x from 0 to the stack's width, y from the
+        scroll value down by the box's height (one data unit a pixel); the scroll bar configured as
+        QScrollArea configures its own (range 0 to the entries' height less the box's, page step the box's
+        height, single step 20), its value clamped into the range, and shown only while the entries do not
+        fit.
+        """
+        ax, bar = self._legend_ax, self._legend_bar
+        if ax is None:
+            return
+        h = max(float(ax._px_rect()[3]), 1.0)
+        top = max(int(np.ceil(self._legend_content_h - h)), 0)
+        v = min(max(int(bar.value()), 0), top)
+        blocked = bar.blockSignals(True)
+        try:
+            bar.setRange(0, top)
+            bar.setPageStep(max(int(h), 1))
+            bar.setSingleStep(20)
+            bar.setValue(v)
+        finally:
+            bar.blockSignals(blocked)
+        bar.setVisible(top > 0)
+        self._legend_h = h
+        ax.set_xlim(0.0, self._legend_w)
+        ax.set_ylim(v + h, v)
+
+    def _legend_scrolled(self, v):
+        """Machinery: the scroll bar moved (a drag, a click, the wheel): the stack's view from the new value down by its box's height; nothing is drawn again."""
+        ax = self._legend_ax
+        if ax is not None:
+            ax.set_ylim(v + self._legend_h, v)
+
+    def _legend_placed(self):
+        """Machinery: after every placement of the legend stack (Axes.on_placed: a resize, a text zoom): its view for the new box (_legend_view); at a new text zoom its sizes and entries again, once, after the placement (_legend_rezoom)."""
+        if self._legend_ax is None:
+            return
+        self._legend_view()
+        if float(self.fig.font_zoom) != self._legend_draw_zoom and not self._legend_rezoom_pending:
+            self._legend_rezoom_pending = True
+            QtCore.QTimer.singleShot(0, self._legend_rezoom)
+
+    def _legend_rezoom(self):
+        """Machinery: the legend panel at the window's new text zoom: its sizes (_legend_size) and its stack drawn again with the same entries, the scroll kept (clamped)."""
+        self._legend_rezoom_pending = False
+        ax = self._legend_ax
+        if ax is None or ax not in self.fig.axes or float(self.fig.font_zoom) == self._legend_draw_zoom:
+            return
+        self._legend_size()
+        self._legend_draw(self._legend_entries, False)
+
+    def _legend_follow(self):
+        """Machinery: the legend panel spans the spectrum's plot box: its top and bottom margins follow the box in the spectrum's cell (ax_spec's placement), as controls.UnderPanel._follow does sideways (the panel and the cell share their row's top and height)."""
+        panel = self._legend_panel
+        cell = getattr(self.ax_spec, '_cell', None)
+        if panel is None or cell is None:
+            return
+        cx, cy, cw, ch = cell.rect_px()
+        x0, y0, w, h = self.ax_spec._px_rect()
+        top = max(int(round(y0 - cy)), 0)
+        bottom = max(int(round(cy + ch - (y0 + h))), 0)
+        lay = panel.layout()
+        m = lay.contentsMargins()
+        if (m.top(), m.bottom()) != (top, bottom):
+            lay.setContentsMargins(0, top, 0, bottom)
+
+    def _legend_extent(self):
+        """Machinery: the legend stack's full list for the vector saves (its Axes.export_extent): (content_h_px, (y_top, y_bottom)), the height in logical pixels every entry needs and the y limits that show them from the first entry (0) at the top to max(the box's height on screen, that height) at the bottom, one data unit a pixel as on screen."""
+        h = float(self._legend_ax._px_rect()[3])
+        c = float(self._legend_content_h)
+        return (c, (0.0, max(h, c)))
+
+    def _in_legend(self, event):
+        """Machinery: whether a canvas press lies in the legend panel: on its stack (event.inaxes), or in its rectangle from the title cell's top to the stack's bottom across the panel's width (the title, the Back button's row, the scroll bar's strip)."""
+        if self._legend_ax is None:
+            return False
+        if event.inaxes is self._legend_ax:
+            return True
+        if event.x is None or event.y is None:
+            return False
+        py = self.fig.canvas.viewport().height() - event.y
+        tx, ty, tw, th = self._legend_title_cell.rect_px()
+        sx, sy, sw, sh = self._legend_stack_cell.rect_px()
+        return tx <= event.x <= tx + tw and ty <= py <= sy + sh
+
+    def _legend_entry_at(self, event):
+        """Machinery: the entry (ldos_decomp.Entry) whose box, as drawn at the press (_legend_drawn), holds a press on the legend stack, else None (a gap, a level-3 row, the title, the Back button's row)."""
+        if event.inaxes is not self._legend_ax or event.xdata is None or event.ydata is None:
+            return None
+        for x0, y0, x1, y1, e in self._legend_drawn:
+            if x0 <= event.xdata <= x1 and y0 <= event.ydata <= y1:
+                return e
+        return None
+
+    def _legend_back(self):
+        """Machinery: a right press on the legend panel's Back button or scroll bar (Qt widgets: _LegendEvents): back one level, as a right click in the panel; ignored while the toolbar's Pan or Zoom is on, as the canvas's presses are."""
+        if self.fig.canvas.manager.toolbar.mode == "":
+            self._decomp_click(plt.MouseButton.RIGHT)
+
+    def _on_scroll(self, event):
+        """Machinery: the mouse wheel over the legend stack forwarded to its scroll bar (QCoreApplication.sendEvent, as QAbstractScrollArea forwards its wheel: a mostly vertical wheel), which takes Qt's own step and moves the stack (_legend_scrolled)."""
+        ax = self._legend_ax
+        if ax is None or event.inaxes is not ax or event.guiEvent is None:
+            return
+        d = event.guiEvent.angleDelta()
+        if abs(d.y()) >= abs(d.x()):
+            QtCore.QCoreApplication.sendEvent(self._legend_bar, event.guiEvent)
+
     @staticmethod
     def _detach(*widgets):
         """Machinery: the reused widgets (the tip-height boxes, the cluster's label) taken out of the pair or layout about to be deleted: hidden and parentless until the next build puts them back and shows them."""
@@ -1559,7 +1841,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
                 sub.deleteLater()
 
     def _kept_widgets(self):
-        return (self._box_topo_h, self._box_ldos_h, self._cluster_label.qt, self._box_crop) + tuple(b.qt for b in self._cursor_boxes.values())
+        return (self._box_topo_h, self._box_ldos_h, self._cluster_label.qt, self._box_crop, self._btn_back.qt) + tuple(b.qt for b in self._cursor_boxes.values())
 
     def _clear_cluster(self):
         """Machinery: the Line / Path cluster's axes removed and its row emptied (it is built again only when its panel count changes: _build_heat_row); the LDOS h box detached from its pair first."""
@@ -1608,6 +1890,15 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         self._clear_map_rows()
         for ax in list(self.fig.axes):
             ax.remove()
+        # The legend panel (Single Point, Line, Path): its stack axes went with the others; its title, a figure
+        # text, goes here; its widgets with the panel area, the Back button detached for the next build.
+        if getattr(self, '_legend_title', None) is not None:
+            self._legend_title.remove()
+        self._legend_ax = self._legend_title = self._legend_bar = self._legend_panel = None
+        self._legend_title_cell = self._legend_stack_cell = self._spec_sub = None
+        self._legend_drawn, self._legend_samples, self._legend_entries = [], [], []
+        self._legend_key = self._legend_state = self._legend_zoom = self._legend_draw_zoom = None
+        self._legend_content_h, self._legend_h, self._legend_w = 0.0, 1.0, 1.0
         self._detach(*self._kept_widgets())
         self._empty_layout(self._panel_area, self._kept_widgets())
         self._arrangement = None
@@ -1668,10 +1959,11 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         if mode == 'Map':
             self.s_nepts.set(5 if self.cached_nepts is None else self.cached_nepts)
         if mode == 'Single Point':
-            # The placement topo; the Partitioned LDOS beside it, a first-class panel (free_scored).
+            # The placement topo; the Partitioned LDOS beside it, a first-class panel (free_scored), with its
+            # legend panel at its right (one sub-section).
             self.ax_map, topo = self._placement()
             self.ax_spec, spec_cell = self._cell_axes()
-            groups, free = [topo], spec_cell
+            groups, free = [topo], self._spectrum_and_legend(spec_cell)
             self.marks = self.ax_map.scatter([], [], s=150, edgecolors='black', zorder=15, picker=5)
         elif mode in ('Line', 'Path'):
             # The placement topo; the heatmap row (built by _update_all, again only when its panel
@@ -1683,7 +1975,9 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
             cluster = controls.Titled(plt.RowWidget(self._cluster_row), self._cluster_label.qt)
             self.ax_prof, prof_cell = self._cell_axes()
             self.ax_spec, spec_cell = self._cell_axes()
-            groups, free = [topo, cluster], controls.FlipBox((prof_cell, 25), (spec_cell, 10), spacing=10)
+            # The spectrum and its legend panel: one sub-sub-section of the 1D sub-section.
+            groups, free = [topo, cluster], controls.FlipBox((prof_cell, 25), (self._spectrum_and_legend(spec_cell), 10),
+                                                             spacing=10)
             # Until RUN builds the row, the LDOS h box stands in it alone: reachable, and between no panels.
             self._cluster_row.addWidget(self._box_ldos_h, 0)
             self.line_art, = self.ax_map.plot([], [], 'r--', lw=2.5, zorder=5)
@@ -1756,7 +2050,9 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         panel's cell is given, as its minimum size, the readable plot box (CURVE_BOX_MIN_PX at the
         window's text zoom) plus its own labels (Axes._decor_px), so that a split between two
         panels never squeezes one below it; returns the free widget's minimum (w, h): the panels
-        side by side.  The panels take the room the heatmaps and topographies leave beyond it.
+        side by side, with the legend panel's fixed width (at the window's text zoom: _legend_size)
+        and its row's spacing beside the spectrum in Single Point, Line and Path.  The panels take
+        the room the heatmaps and topographies leave beyond it.
         """
         z = float(getattr(self.fig, 'font_zoom', 1.0) or 1.0)
         bw, bh = self.CURVE_BOX_MIN_PX
@@ -1768,7 +2064,13 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
                 ax._cell.setMinimumSize(w, h)
             ws.append(w)
             hs.append(h)
-        return (sum(ws) + 6 / (1000 / 72) * plt.em_px() * (len(ws) - 1), max(hs)) if ws else (0, 0)
+        if not ws:
+            return (0, 0)
+        width = sum(ws) + 6 / (1000 / 72) * plt.em_px() * (len(ws) - 1)
+        if self._spec_sub is not None:
+            self._legend_size()
+            width += self._legend_panel.minimumWidth() + self._spec_sub.layout().spacing()
+        return (width, max(hs))
 
     TOPO_MAX_FACTOR = 2.0              # a topography's plot box at most this many times a heatmap's (Map, Line, Path)
 
@@ -2813,6 +3115,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
                 for line, e_val in zip(self._spec_emarkers, self.map_e_targets):
                     line.set_xdata([e_val, e_val])
         self._spec_key = key
+        self._update_legend()                      # the legend panel follows the curves drawn
 
     def _build_heat_row(self, n_heat):
         """
@@ -3371,6 +3674,11 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
             if self.fig.canvas.manager.toolbar.mode == "":
                 item = self._spec_curves[self._spec_lines.index(top)] if top in self._spec_lines else None
                 self._decomp_click(event.button, event.dblclick, item)
+        elif self._in_legend(event):
+            # A press in the legend panel (its stack, title or Back row): one decision, from the boxes drawn at
+            # the press (the entry under it, or none); ignored while the toolbar's Pan or Zoom is on.
+            if self.fig.canvas.manager.toolbar.mode == "":
+                self._decomp_click(event.button, event.dblclick, self._legend_entry_at(event))
 
     def _decomp_click(self, button, dblclick=False, item=None):
         """
