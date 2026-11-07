@@ -26,3 +26,23 @@ one-walk `chen_sweep` kernel (`_CHEN_SWEEP_SRC`, lines 137-245: dI/dV = sum rho(
 integral_0^V rho dw(E,0)/dV dE, and the current), `_integral_from_zero` (the trapezoid rule with a linear 0 V value),
 float64 GPU arrays, the topography by `gpu_simpson` over the typed bias window. Open with the owner: whether its
 numerics come with it, or its weight and one-walk design run under the package's float32 and quadrature rules.
+
+## Decided (owner: "b", 2026-11-07) and what follows from the sources
+
+- **(b):** the owner's linearized weight, its derivative and its separable one-walk kernel (b051547's
+  `gpu_chen_tunneling_factor` and `_CHEN_SWEEP_SRC`) run under the package's current numerics: float32 on the GPU
+  (part 2 section 9, energies formed from indices e0 + (i - k0) step), the integration rule of
+  `quadrature.integral_from_zero` (the stencil cubic around 0 V, the unequal pair, Simpson pairs; the current exact
+  kernel already carries this rule in CUDA, per V: the walk takes the same steps once, cumulatively, giving every
+  requested V), the snapped V_b, the same topography path as the exact option (frozen bias at V_b, integrated from 0 V).
+- **From the owner's file:** phi is the local barrier per tip point (phi_local, as the exact option); the model name
+  is the file's own 'decay_chen' (its caches end '_decay_chen_fold_f32', so the old '_decay_chen_f64' files never
+  match); no guard on phi (the file has none).
+- **The control:** an indented row under Decay in the toggle list ('linearized'), off by default = exact (today's
+  behaviour); run_interactive keyword `decay_linearized=False`; ignored while Decay is off (flipping it then changes
+  no model, so nothing is recomputed); the info panel lists it with the other toggles.
+- **The exact option:** untouched (its weight, kernel, topography, caches 'decay_tilt').
+- **Everywhere the model is compared or passed:** a third name through `_effective_decay_model`; `_on_ui_change`
+  compares models (not the Decay bool); `_on_rel` passes Map's kept model; the topography and LDOS calls pass the model.
+- **Texts:** the physics block and module docstring, the README's toggles / Decay / Feenstra / simulator rows, the
+  run scripts' comments (Chen only, ruling 3).
