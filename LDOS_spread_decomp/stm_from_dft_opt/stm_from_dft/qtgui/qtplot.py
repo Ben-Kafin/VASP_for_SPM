@@ -2867,17 +2867,59 @@ class QuadMesh(Artist):
         last = 2.0 * np.take(a, [n - 1], axis=axis) - np.take(mid, [mid.shape[axis] - 1], axis=axis)
         return np.concatenate([first, mid, last], axis=axis)
 
+    @staticmethod
+    def _take_c(C, alpha=None):
+        """
+        C as matplotlib's pcolormesh takes it, as (the array kept, _C; the colours given, _rgba).  (M, N)
+        values: (float64 values, the masked cells NaN; None), coloured through the norm and the colour map.
+        An (M, N, 3) RGB or (M, N, 4) RGBA array of 0-1 floats or 0-255 ints: (the array as float64, its
+        masked entries NaN; its colours as (M, N, 4) float64 RGBA 0-1), as matplotlib's to_rgba takes them:
+        an RGB array gets `alpha` (1 when None) as its alpha, an RGBA array keeps its own, and a cell with a
+        NaN or masked entry is not drawn (its colour (0, 0, 0, 0)).  A float outside 0..1, an int outside
+        0..255, any other dtype, or a third dimension other than 3 or 4 raises ValueError, as matplotlib's
+        does.
+        """
+        A = np.ma.asarray(C)
+        if A.ndim < 3:
+            return np.asarray(np.ma.filled(np.ma.asarray(C, dtype=np.float64), np.nan), dtype=np.float64), None
+        if A.ndim > 3 or A.shape[2] not in (3, 4):
+            raise ValueError(f"pcolormesh: C of shape {A.shape}: an RGB(A) C is (M, N, 3) or (M, N, 4)")
+        if A.dtype.kind not in 'fiu':
+            raise ValueError(f"pcolormesh: an RGB(A) C holds 0-1 floats or 0-255 ints, not {A.dtype}")
+        vals = np.asarray(np.ma.filled(A.astype(np.float64), np.nan), dtype=np.float64)
+        top = 1.0 if A.dtype.kind == 'f' else 255.0
+        ok = vals[np.isfinite(vals)]
+        if ok.size and (ok.min() < 0.0 or ok.max() > top):
+            raise ValueError(f"pcolormesh: the RGB(A) values of C must be in the 0..{top:g} range")
+        rgba = vals / top
+        if rgba.shape[2] == 3:
+            rgba = np.concatenate([rgba, np.full(rgba.shape[:2] + (1,), 1.0 if alpha is None else float(alpha))],
+                                  axis=2)
+        rgba[~np.all(np.isfinite(rgba), axis=2)] = 0.0
+        return vals, rgba
+
     def _paint(self):
-        colors = self.cmap(np.asarray(self.norm(self._C.ravel()), dtype=np.float64), alpha=self._alpha, bytes=True)
-        colors[~np.isfinite(self._C.ravel())] = 0
+        if self._rgba is not None:
+            # The colours as given (_take_c): no norm, no colour map; uint8 as the colour maps round them.
+            colors = (self._rgba.reshape(-1, 4) * 255.0 + 0.5).astype(np.uint8)
+        else:
+            colors = self.cmap(np.asarray(self.norm(self._C.ravel()), dtype=np.float64), alpha=self._alpha, bytes=True)
+            colors[~np.isfinite(self._C.ravel())] = 0
         self.item.setData(self._quads, colors)
 
     def set_array(self, C):
-        self._C = np.asarray(np.ma.filled(np.ma.asarray(C, dtype=np.float64), np.nan), dtype=np.float64).reshape(self._C.shape)
+        """New values or colours for the same cells, C taken as pcolormesh takes it (_take_c): (M, N) values (or their M * N), or an (M, N, 3) RGB / (M, N, 4) RGBA array."""
+        nr, nc = self._C.shape[:2]
+        C, rgba = self._take_c(C, self._alpha)
+        if rgba is None:
+            C = C.reshape(nr, nc)
+        elif C.shape[:2] != (nr, nc):
+            raise ValueError(f"pcolormesh: a C of shape {C.shape} does not fit the mesh's {nr} x {nc} cells")
+        self._C, self._rgba = C, rgba
         self._paint()
 
     def get_array(self):
-        """The cell values as matplotlib gives them: a masked array, the cells given as masked (or NaN) masked."""
+        """The cell values (or the RGB(A) array given) as matplotlib gives them: a masked array, the entries given as masked (or NaN) masked."""
         return np.ma.masked_invalid(self._C)
 
     def set_norm(self, norm):
@@ -3917,7 +3959,7 @@ class PanelCell(QtWidgets.QWidget):
         """Place `obj` (it has _request_place) in this cell from now on."""
         if obj not in self._bound:
             self._bound.append(obj)
-            new_measure_pass()                         # the cell's shape and room may be another's now
+            new_measure_pass()                         # the cell's shape may be another's now (its room follows at the next arrangement)
         self._watch_ancestors()
 
     def unbind(self, obj):
@@ -4323,6 +4365,13 @@ class Axes:
         self._colorbar = None
         self._is_colorbar = False
         self._home = None
+        self._navigate = True          # set_navigate: the axes takes part in the toolbar's Pan and Zoom
+        # The view changed with the toolbar's Pan or Zoom since its last Home or since the window last set
+        # its limits (_nav_follow, _nav_clear): its view line in the info panel, under this key, meanwhile.
+        self._nav_moved = False
+        self._nav_pending = False
+        self._nav_key = f"view {id(self)}"
+        self.vb.sigRangeChanged.connect(self._nav_follow)
         self._aspect = 'auto'
         self._rotated = False          # set_rotated: the axes turned 90 degrees on screen (the data stays as given)
         self._rotor_item = None        # the turned group every item sits in while rotated (_rotor)
@@ -4843,10 +4892,57 @@ class Axes:
         self.axis('on')
 
     def set_navigate(self, b):
-        pass
+        """
+        Whether the axes takes part in the toolbar's Pan and Zoom (matplotlib's set_navigate): False keeps
+        it out of both, so no drag, wheel or zoom rectangle changes its view and Home leaves it alone
+        (_apply_toolbar_mode, _home_view); True takes it back in, in the toolbar's current mode.
+        """
+        self._navigate = bool(b)
+        tb = self.figure.canvas.toolbar
+        self._apply_toolbar_mode(tb.mode if tb is not None else '')
 
     def get_navigate(self):
-        return True
+        return self._navigate
+
+    # --- the view changed with the toolbar's Pan or Zoom: a line in the window's info panel ---
+
+    def _nav_follow(self, *args):
+        """
+        The view box's range changed (pyqtgraph's sigRangeChanged).  During a drag or the wheel on a view box
+        (_NAVIGATING) the change was made with the toolbar's Pan or Zoom: the panel's view is marked so
+        (_nav_moved), unless the panel is out of Pan and Zoom (a colour bar, set_navigate(False)).  While it is
+        marked, its view line follows every change of its limits (_nav_line, once per event-loop turn).
+        """
+        if _NAVIGATING[0] and self._navigate and not self._is_colorbar:
+            self._nav_moved = True
+        if self._nav_moved and not self._nav_pending:
+            self._nav_pending = True
+            QtCore.QTimer.singleShot(0, self._nav_line)
+
+    def _nav_line(self):
+        """
+        The panel's view line in the window's info panel (Figure.set_info_line) while its view is the one the
+        toolbar's Pan or Zoom made (_nav_moved): the panel by its title, else by its place among the figure's
+        panels ('panel k', as export_csv names it), then its x and y limits (get_xlim, get_ylim); none otherwise.
+        """
+        self._nav_pending = False
+        fig = self.figure
+        if getattr(fig, '_closed', False):
+            return
+        text = ''
+        if self._nav_moved:
+            name = " ".join(str(self._title_full).split())
+            if not name:
+                name = f"panel {fig._axes.index(self) + 1}" if self in fig._axes else "panel"
+            (xa, xb), (ya, yb) = self.get_xlim(), self.get_ylim()
+            text = f"view of {name}: x {xa:.5g} to {xb:.5g}, y {ya:.5g} to {yb:.5g}"
+        fig.set_info_line(self._nav_key, text)
+
+    def _nav_clear(self):
+        """The panel's view is no longer the toolbar's (Home, or the window set its limits again): its view line removed."""
+        if self._nav_moved:
+            self._nav_moved = False
+            self.figure.set_info_line(self._nav_key, '')
 
     def set_axes_locator(self, locator):
         """matplotlib's axes locator: not needed, a panel's place is its layout cell (automatic layout)."""
@@ -4913,6 +5009,7 @@ class Axes:
             self._cell.unbind(self)
             fig._auto_dispose(self._cell)
         fig._set_info(self, '')
+        self._nav_clear()                          # its view line, when it had one
         fig.__dict__.get('_hover_labels', {}).pop(self, None)     # the hover label registered on this axes (widgets.HoverLabels)
 
     # --- clearing ---
@@ -4995,6 +5092,7 @@ class Axes:
                 self.vb.enableAutoRange(axis, False)
                 self.vb.linkedViewChanged(src.vb, axis)
         self._home = None
+        self._nav_clear()                      # the limits are the window's again: no view line
         self._target_x = self._target_y = None
         self._legend_clear = False
         self._place()
@@ -5018,6 +5116,8 @@ class Axes:
             self._title = None
         full = '' if label is None else str(label)
         self._title_full = full
+        if self._nav_moved:
+            self._nav_follow()                 # the view line names the panel by its new title
         label = short_title(full, self.figure.portrait)
         self.figure._set_info(self, full if full.strip() != label else '')
         size = font_pt(fontsize, self._title_size)
@@ -5282,6 +5382,7 @@ class Axes:
     def _store_home(self):
         (xa, xb), (ya, yb) = self.vb.viewRange()
         self._home = (xa, xb, ya, yb)
+        self._nav_clear()                      # the window set the limits: no view line
 
     def get_xlim(self):
         return self._get_lim('x')
@@ -5332,6 +5433,7 @@ class Axes:
     def autoscale(self, enable=True, axis='both', tight=None):
         if enable:
             self.vb.enableAutoRange(x=axis in ('both', 'x'), y=axis in ('both', 'y'))
+            self._nav_clear()                  # the window set the limits (to the data's): no view line
 
     def autoscale_view(self, *a, **k):
         pass
@@ -5453,8 +5555,9 @@ class Axes:
         self._request_place()
 
     def _home_view(self):
-        if self._is_colorbar:
-            return
+        if self._is_colorbar or not self._navigate:
+            return                             # out of Pan and Zoom (set_navigate(False)): Home leaves it alone
+        self._nav_clear()                      # Home: the view as the window set it, no view line
         cb = getattr(self, 'home_callback', None)
         if cb is not None:
             # An axes whose view a controller owns (home_callback set by the window):
@@ -5470,6 +5573,12 @@ class Axes:
     def _apply_toolbar_mode(self, mode):
         if self._is_colorbar:
             self.vb.setMouseEnabled(False, False)
+            return
+        if not self._navigate:
+            # Out of Pan and Zoom (set_navigate(False)): no drag or wheel moves the view, and the pan mode
+            # keeps a left drag from zooming to a rectangle (pyqtgraph's rectangle zoom ignores mouseEnabled).
+            self.vb.setMouseEnabled(False, False)
+            self.vb.setMouseMode(pg.ViewBox.PanMode)
             return
         on = bool(mode)
         self.vb.setMouseEnabled(on, on)
@@ -5692,10 +5801,16 @@ class Axes:
 
     def pcolormesh(self, *args, cmap=None, norm=None, vmin=None, vmax=None, shading='flat', zorder=None,
                    alpha=None, **kw):
+        """
+        A QuadMesh as matplotlib's pcolormesh(C) / pcolormesh(X, Y, C): C (M, N) values coloured through the
+        norm and the colour map, or an (M, N, 3) RGB / (M, N, 4) RGBA array of 0-1 floats or 0-255 ints
+        painted as given, with no norm or colour map (QuadMesh._take_c).
+        """
         if len(args) == 1:
-            C = np.asarray(np.ma.filled(np.ma.asarray(args[0], dtype=np.float64), np.nan))
-            X = np.arange(C.shape[1] + 1, dtype=np.float64)
-            Y = np.arange(C.shape[0] + 1, dtype=np.float64)
+            C = args[0]
+            nr, nc = np.shape(C)[:2]
+            X = np.arange(nc + 1, dtype=np.float64)
+            Y = np.arange(nr + 1, dtype=np.float64)
         else:
             X, Y, C = args[:3]
         return self._register(QuadMesh(self, X, Y, C, cmap=cmap, norm=norm, vmin=vmin, vmax=vmax, zorder=zorder,
@@ -6423,7 +6538,7 @@ class NavigationToolbar(QtWidgets.QToolBar):
         self.a_zoom.toggled.connect(lambda on: self._mode('zoom rect' if on else ''))
         self.addSeparator()
         a = self.addAction(st.standardIcon(sp.SP_DialogSaveButton), 'Save')
-        a.setToolTip('Save the figure: PDF / EPS / SVG / PNG / TIFF for publication (matplotlib), PNG / SVG as on screen, or the curves as CSV')
+        a.setToolTip('Save the figure: PDF / EPS / SVG for publication (matplotlib), PNG / TIFF / SVG as on screen, or the curves as CSV')
         a.triggered.connect(self._save)
         spacer = QtWidgets.QWidget()
         spacer.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Preferred)
@@ -6522,7 +6637,8 @@ class NavigationToolbar(QtWidgets.QToolBar):
 class FigureManager:
     """
     The figure's window (matplotlib's Qt window): the navigation toolbar on top, the canvas, and
-    the info panel docked at the bottom (set_info: the details cut from the titles; hidden while
+    the info panel docked at the bottom (set_info: Figure.info_text, the details cut from the titles,
+    the window's own lines and the settings of its controls; hidden while
     empty, and once closed by hand it stays closed).  The window opens at the canvas's size plus
     the toolbar, limited to the screen's available area (98 % of its width, 95 % of its height).
     """
@@ -6668,7 +6784,7 @@ class Figure:
     the Qt controls of controls.py in the same layout, and (in its own window) a navigation toolbar
     and an info panel.  Its text zoom (font_zoom) and shape
     (portrait) follow the canvas (_relayout, on every resize); the design size it was opened with
-    (_design_px) is the reference of both and the size of the publication export.
+    (_design_px) is the reference of both.
     """
 
     def __init__(self, figsize=(6.4, 4.8), num=None, embed=False, fill_screen=False):
