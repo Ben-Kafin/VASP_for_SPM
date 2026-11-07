@@ -6,8 +6,18 @@ Auto-detects ISPIN=1, ISPIN=2, and NCL/SOC calculations.
 The window (Interactive_STM_Simulator) is drawn with the suite's shared Qt layer (qtgui at the
 repository root: PySide6 + pyqtgraph): its panels are cells of one Qt layout and its controls
 real Qt widgets (automatic layout: the one rule for every window, nothing placed by hand), every
-slider of the old figure a number box, the orbital hover labels widgets.HoverLabels.  The
-physics (Unified_STM_Simulator) is unchanged.
+slider of the old figure a number box, the orbital hover labels widgets.HoverLabels.
+
+Tunneling model (Unified_STM_Simulator): the signal at a tip point is each atom's site- and
+orbital-projected DOS weighted by the squared tunneling matrix element |M|^2 of every periodic
+image of that atom, the tip DOS taken as constant (the s-wave tip of Tersoff and Hamann,
+Phys. Rev. B 31, 805 (1985)).  With Decay on, |M|^2 is Chen's energy-dependent matrix element
+(gpu_chen_tunneling_factor; C. J. Chen, Introduction to Scanning Tunneling Microscopy, 3rd ed.,
+Oxford 2021, Sec. 2.2.3-2.2.4, Eqs. 2.34-2.41); with Decay off it is exp(-2 kappa0 d), the same
+element without its energy dependence.  kappa0 = sqrt(2 m phi) / hbar (Chen Eq. 2.38), phi the
+LOCPOT potential at the tip point minus E_F.  As in a measurement, the topography is converged
+on the current at one frozen bias (Chen Eq. 2.40), and the displayed LDOS is dI/dV with the
+bias swept (the derivative of Eq. 2.40 at each bias).
 
 Developed by Benjamin Kafin
 """
@@ -39,6 +49,7 @@ from qtgui.qtplot import QtWidgets, QtCore
 from .doscar_parser import SpinAwareDosParser, SpinMode
 from .locpot_manager import LocpotManager
 from . import contour
+from . import feenstra
 
 
 # --- CORE UTILITIES ---
@@ -69,15 +80,179 @@ def gpu_simpson(y, x):
     return core + tail
 
 
-def gpu_chen_tunneling_factor(V, E, phi):
-    """Vectorized Julian Chen barrier model character-for-character."""
-    me, h, q = 9.1093837e-31, 6.62607015e-34, 1.60217663e-19
-    V_eff = cp.where(cp.abs(V) < 1e-6, 1e-6, V)
-    V_j, E_j, phi_j = cp.abs(V_eff) * q, E * q, phi * q
-    prefactor = (8.0 / (3.0 * V_j)) * cp.pi * cp.sqrt(2.0 * me) / h
-    term1 = cp.power(cp.maximum(0.0, phi_j - E_j + V_j), 1.5)
-    term2 = cp.power(cp.maximum(0.0, phi_j - E_j), 1.5)
-    return prefactor * (term1 - term2)
+_ME, _H, _Q = 9.1093837e-31, 6.62607015e-34, 1.60217663e-19
+# sqrt(2 m_e e) / hbar in 1/Angstrom per sqrt(eV): kappa0 = KAPPA0_PER_SQRT_EV * sqrt(phi in eV) (Chen Eq. 2.38).
+KAPPA0_PER_SQRT_EV = float(np.sqrt(2.0 * _ME * _Q) / (_H / (2.0 * np.pi)) * 1e-10)
+
+
+def gpu_chen_tunneling_factor(E, V, phi, d, topo):
+    """
+    |M|^2 of a state at E (eV from E_F), distance d (Angstrom) from the tip, bias V, local barrier phi
+    (eV): exp(-2 kappa0 d + kappa0 (E - V/2) d / phi), kappa0 = sqrt(2 m phi) / hbar. C. J. Chen,
+    Introduction to Scanning Tunneling Microscopy, 3rd ed. (2021), Eqs. 2.34, 2.37-2.40: kappa expanded
+    to first order in eps / phi, eps = E - V/2 the state's energy from the middle of the bias window.
+    Topography (bias frozen): the weight. LDOS (bias swept, dI/dV): the weight and its derivative in V.
+    """
+    kappa0 = KAPPA0_PER_SQRT_EV * cp.sqrt(phi)
+    w = cp.exp(-2.0 * kappa0 * d + kappa0 * (E - 0.5 * V) * d / phi)
+    if topo:
+        return w
+    else:
+        return w, -0.5 * kappa0 * d / phi * w
+
+
+def _integral_from_zero(f, E):
+    """Integral of f from 0 to each sample of E along the last axis, by the trapezoid rule (the
+    rule of feenstra.current_from_ldos: a sample at 0 inserted by linear interpolation when 0 lies
+    between two samples), summed outward from 0 on each side. Negative below 0."""
+    k = int(cp.searchsorted(E, cp.zeros(1, dtype=E.dtype))[0])
+    out = cp.zeros_like(f)
+    if k < len(E) and float(E[k]) == 0.0:
+        lo_i = hi_i = k
+    else:
+        lo_i, hi_i = k - 1, k
+        f0 = f[..., lo_i] + (0.0 - E[lo_i]) / (E[hi_i] - E[lo_i]) * (f[..., hi_i] - f[..., lo_i])
+        out[..., hi_i] = 0.5 * (f0 + f[..., hi_i]) * E[hi_i]
+        out[..., lo_i] = 0.5 * (f0 + f[..., lo_i]) * E[lo_i]
+    if hi_i + 1 < len(E):
+        out[..., hi_i + 1:] = out[..., hi_i:hi_i + 1] + cp.cumsum(0.5 * (f[..., hi_i + 1:] + f[..., hi_i:-1]) * cp.diff(E[hi_i:]), axis=-1)
+    if lo_i > 0:
+        seg = (0.5 * (f[..., :lo_i] + f[..., 1:lo_i + 1]) * cp.diff(E[:lo_i + 1]))[..., ::-1]
+        out[..., :lo_i] = (out[..., lo_i:lo_i + 1] - cp.cumsum(seg, axis=-1))[..., ::-1]
+    return out
+
+
+# The swept LDOS of Chen's model (C. J. Chen, Introduction to Scanning Tunneling Microscopy, 3rd ed.,
+# Eqs. 2.37-2.40) at chosen DOSCAR samples V, per tip point, atom and orbital:
+#   dI/dV(V) = sum over the atom's images of  rho(V) w(V, V)  +  w(0, V) / w(0, 0) * integral_0^V rho(E) dw(E, 0)/dV dE
+#   I(V)     = sum over the atom's images of  w(0, V) / w(0, 0) * integral_0^V rho(E) w(E, 0) dE        (current)
+# with w(E, V) = exp(-2 kappa0 d + kappa0 (E - V/2) d / phi), kappa0 = KAPPA0_PER_SQRT_EV sqrt(phi) and
+# dw/dV = -kappa0 d / (2 phi) w (gpu_chen_tunneling_factor). The V dependence of w is one factor per image,
+# w(E, V) = w(E, 0) w(0, V) / w(0, 0), so one walk over the samples outward from 0 gives the integral at
+# every requested V. The integral is the trapezoid rule of _integral_from_zero (feenstra.current_from_ldos):
+# a sample at 0 interpolated linearly when 0 lies between two samples, summed outward from 0 on each side.
+# One thread per (tip point, atom): for each image it walks the samples from 0 out to the farthest requested
+# sample, keeps every orbital's running integral in registers, and adds the image's share at each requested
+# sample. Nothing per sample is stored; the output holds only the requested samples.
+_CHEN_SWEEP_SRC = r'''
+extern "C" __global__ void chen_sweep(
+    const double* __restrict__ E,       // span energies (eV), n_span, ascending, bracketing 0
+    const double* __restrict__ dos,     // (n_atoms, n_e_all, N_ORB): the DOS of each atom
+    const double* __restrict__ dists,   // (n_shift * n_atoms, n_pts_all): image-tip distances (Angstrom), shift-major
+    const double* __restrict__ phi,     // (n_pts_all): the local barrier at each tip point (eV)
+    const int* __restrict__ js,         // (n_t): the requested samples as span indices, ascending, each once
+    double* __restrict__ out,           // (n_p, n_t, n_atoms, N_ORB), zeroed: the result for points p0 .. p0 + n_p
+    const double kappa0_per_sqrt_ev,
+    const int n_atoms, const int n_shift, const int n_pts_all, const int p0, const int n_p,
+    const int n_e_all, const int span_lo, const int lo_i, const int hi_i,
+    const int n_t, const int t_split, const int current)
+{
+    const int pl = blockIdx.x * blockDim.x + threadIdx.x;
+    const int a = blockIdx.y;
+    if (pl >= n_p) return;
+    const int p = p0 + pl;
+    const double ph = phi[p];
+    const double kap = kappa0_per_sqrt_ev * sqrt(ph);
+    const double* rho = dos + ((long long)a * n_e_all + span_lo) * N_ORB;       // rho[j * N_ORB + o]: span sample j
+    double* o_pa = out + ((long long)pl * n_t * n_atoms + a) * N_ORB;          // + t * t_stride: requested sample t
+    const long long t_stride = (long long)n_atoms * N_ORB;
+    const bool exact0 = (lo_i == hi_i);                                        // a sample lies exactly at 0
+
+    for (int s = 0; s < n_shift; ++s) {
+        const double d = dists[((long long)s * n_atoms + a) * n_pts_all + p];
+        const double base = -2.0 * kap * d;
+        const double c = current ? 1.0 : -0.5 * kap * d / ph;                  // dw/dV = c w (dI/dV), 1 (current)
+        const double w00 = exp(base + kap * (0.0 - 0.5 * 0.0) * d / ph);       // w(0, 0)
+        double f_lo[N_ORB], f_hi[N_ORB], v_lo[N_ORB], v_hi[N_ORB], C[N_ORB], fp[N_ORB];
+
+        // The integrand f = c w(E, 0) rho(E) at the samples bracketing 0, and the integral to each of them.
+        const double h_hi = c * exp(base + kap * (E[hi_i] - 0.5 * 0.0) * d / ph);
+        for (int o = 0; o < N_ORB; ++o) f_hi[o] = h_hi * rho[(long long)hi_i * N_ORB + o];
+        if (exact0) {
+            for (int o = 0; o < N_ORB; ++o) { f_lo[o] = f_hi[o]; v_lo[o] = 0.0; v_hi[o] = 0.0; }
+        } else {
+            const double h_lo = c * exp(base + kap * (E[lo_i] - 0.5 * 0.0) * d / ph);
+            const double r = (0.0 - E[lo_i]) / (E[hi_i] - E[lo_i]);
+            for (int o = 0; o < N_ORB; ++o) {
+                f_lo[o] = h_lo * rho[(long long)lo_i * N_ORB + o];
+                const double f0 = f_lo[o] + r * (f_hi[o] - f_lo[o]);           // f at 0 V, linearly interpolated
+                v_hi[o] = 0.5 * (f0 + f_hi[o]) * E[hi_i];
+                v_lo[o] = 0.5 * (f0 + f_lo[o]) * E[lo_i];
+            }
+        }
+
+        // The requested samples at and above hi_i: the walk upward from hi_i.
+        if (t_split < n_t) {
+            for (int o = 0; o < N_ORB; ++o) { C[o] = 0.0; fp[o] = f_hi[o]; }
+            int t = t_split;
+            for (int j = hi_i; ; ++j) {
+                if (j > hi_i) {
+                    const double hj = c * exp(base + kap * (E[j] - 0.5 * 0.0) * d / ph);
+                    const double dE = E[j] - E[j - 1];
+                    for (int o = 0; o < N_ORB; ++o) {
+                        const double fj = hj * rho[(long long)j * N_ORB + o];
+                        C[o] += 0.5 * (fj + fp[o]) * dE;
+                        fp[o] = fj;
+                    }
+                }
+                if (js[t] == j) {
+                    const double V = E[j];
+                    const double g = exp(base + kap * (0.0 - 0.5 * V) * d / ph) / w00;   // w(0, V) / w(0, 0)
+                    double* o_t = o_pa + (long long)t * t_stride;
+                    if (current) {
+                        for (int o = 0; o < N_ORB; ++o) o_t[o] += g * (v_hi[o] + C[o]);
+                    } else {
+                        const double edge = exp(base + kap * (V - 0.5 * V) * d / ph);    // w(V, V)
+                        for (int o = 0; o < N_ORB; ++o)
+                            o_t[o] += edge * rho[(long long)j * N_ORB + o] + g * (v_hi[o] + C[o]);
+                    }
+                    if (++t >= n_t) break;
+                }
+            }
+        }
+
+        // The requested samples below hi_i: the walk downward from lo_i (the integral is negative there).
+        if (t_split > 0) {
+            for (int o = 0; o < N_ORB; ++o) { C[o] = 0.0; fp[o] = f_lo[o]; }
+            int t = t_split - 1;
+            for (int j = lo_i; ; --j) {
+                if (j < lo_i) {
+                    const double hj = c * exp(base + kap * (E[j] - 0.5 * 0.0) * d / ph);
+                    const double dE = E[j + 1] - E[j];
+                    for (int o = 0; o < N_ORB; ++o) {
+                        const double fj = hj * rho[(long long)j * N_ORB + o];
+                        C[o] += 0.5 * (fj + fp[o]) * dE;
+                        fp[o] = fj;
+                    }
+                }
+                if (js[t] == j) {
+                    const double V = E[j];
+                    const double g = exp(base + kap * (0.0 - 0.5 * V) * d / ph) / w00;
+                    double* o_t = o_pa + (long long)t * t_stride;
+                    if (current) {
+                        for (int o = 0; o < N_ORB; ++o) o_t[o] += g * (v_lo[o] - C[o]);
+                    } else {
+                        const double edge = exp(base + kap * (V - 0.5 * V) * d / ph);
+                        for (int o = 0; o < N_ORB; ++o)
+                            o_t[o] += edge * rho[(long long)j * N_ORB + o] + g * (v_lo[o] - C[o]);
+                    }
+                    if (--t < 0) break;
+                }
+            }
+        }
+    }
+}
+'''
+_CHEN_SWEEP_KERNELS = {}
+
+
+def _chen_sweep_kernel(n_orb):
+    """The chen_sweep kernel compiled for n_orb DOS columns per atom (one build per column count)."""
+    kern = _CHEN_SWEEP_KERNELS.get(n_orb)
+    if kern is None:
+        kern = cp.RawKernel(f"#define N_ORB {int(n_orb)}\n" + _CHEN_SWEEP_SRC, 'chen_sweep')
+        _CHEN_SWEEP_KERNELS[n_orb] = kern
+    return kern
 
 
 class Unified_STM_Simulator:
@@ -93,8 +268,9 @@ class Unified_STM_Simulator:
 
     def _converge_tip_height(self, z_map_gpu, grid_xy_gpu, emin, emax, target_ldos,
                              target_threshold=0.01, topo_gain=0.5, max_iter=1000, use_decay=True,
-                             clamp_occupied=False):
-        """Exhaustive Point-Wise Convergence Engine."""
+                             v_bias=None):
+        """Exhaustive Point-Wise Convergence Engine: the tip height at each point is moved until the
+        current at the frozen bias v_bias (the integral of the window's weighted LDOS) is target_ldos."""
         t_start = time()
         print("--- INITIALIZING TIP CONVERGENCE ENGINE ---")
         for i in range(max_iter):
@@ -102,7 +278,7 @@ class Unified_STM_Simulator:
             ld_1, _, a_grid = self._calculate_ldos_at_points_gpu(
                 cp.hstack([grid_xy_gpu, z_map_gpu[:, None]]), emin, emax,
                 use_energy_decay=use_decay, preserve_orbitals=False, topo_only=True,
-                clamp_occupied=clamp_occupied)
+                v_bias=v_bias)
             # Topography always uses total LDOS — ld_1 is already combined for POL when topo_only=True.
             cur_ldos = gpu_simpson(ld_1, a_grid)
             rat = cp.maximum(cur_ldos, 1e-20) / target_ldos
@@ -119,7 +295,7 @@ class Unified_STM_Simulator:
             idx_g = (cp.dot(pts_active, self.inv_lv_gpu) % 1.0).T * self.locpot_dims_gpu[:, None]
             pot_g = self._get_barrier_potential()
             phi_l = cp_ndimage.map_coordinates(pot_g, idx_g, order=1, mode='wrap') - self.ef
-            kappa = 0.512 * cp.sqrt(cp.maximum(0.1, phi_l))
+            kappa = KAPPA0_PER_SQRT_EV * cp.sqrt(phi_l)
             z_map_gpu[active_mask] += (topo_gain / (2.0 * kappa)) * cp.log(rat[active_mask])
         print(f"--- CONVERGENCE COMPLETE: Total Time ={time() - t_start:6.3f}s ---")
         return z_map_gpu
@@ -185,7 +361,7 @@ class Unified_STM_Simulator:
         # --- DOSCAR: auto-detects spin mode ---
         dos_parser = SpinAwareDosParser(join(self.filepath, 'DOSCAR'))
         self.energies, self.ef = dos_parser.energies, dos_parser.ef
-        self.energies_gpu = cp.asarray(self.energies, dtype=cp.float32)
+        self.energies_gpu = cp.asarray(self.energies, dtype=cp.float64)
         self.spin_mode = dos_parser.spin_mode
         self.is_polarized = dos_parser.is_polarized  # backward compat (True only for COLLINEAR_POL)
 
@@ -229,7 +405,7 @@ class Unified_STM_Simulator:
 
         # --- LOCPOT: auto-detects from section count ---
         lpt_mgr = LocpotManager(self.filepath, spin_mode=self.spin_mode)
-        locpot_raw = cp.array(lpt_mgr.get_data(), dtype=cp.float32)
+        locpot_raw = cp.array(lpt_mgr.get_data(), dtype=cp.float64)
 
         if self.spin_mode == SpinMode.COLLINEAR_POL:
             # LocpotManager stores [V_up, V_dn].
@@ -242,24 +418,24 @@ class Unified_STM_Simulator:
             # ISPIN=1 and NCL: single 3D grid (total potential)
             self.locpot_gpu = locpot_raw
 
-        self.inv_lv_gpu = cp.array(inv(self.lv), dtype=cp.float32)
+        self.inv_lv_gpu = cp.array(inv(self.lv), dtype=cp.float64)
         if self.spin_mode == SpinMode.COLLINEAR_POL:
-            self.locpot_dims_gpu = cp.array(self.locpot_gpu.shape[-3:], dtype=cp.float32)
+            self.locpot_dims_gpu = cp.array(self.locpot_gpu.shape[-3:], dtype=cp.float64)
         else:
-            self.locpot_dims_gpu = cp.array(self.locpot_gpu.shape, dtype=cp.float32)
+            self.locpot_dims_gpu = cp.array(self.locpot_gpu.shape, dtype=cp.float64)
 
         self.num_total_atoms = sum(self.atomnums)
 
         # --- DOS arrays on GPU ---
-        self.dos_up_gpu = cp.array(dos_parser.get_dos_for_simulator(spin='up'), dtype=cp.float32)
+        self.dos_up_gpu = cp.array(dos_parser.get_dos_for_simulator(spin='up'), dtype=cp.float64)
         self.dos_up_collapsed = cp.ascontiguousarray(cp.sum(self.dos_up_gpu, axis=2))
 
         if self.spin_mode == SpinMode.COLLINEAR_POL:
-            self.dos_dn_gpu = cp.array(dos_parser.get_dos_for_simulator(spin='down'), dtype=cp.float32)
+            self.dos_dn_gpu = cp.array(dos_parser.get_dos_for_simulator(spin='down'), dtype=cp.float64)
             self.dos_dn_collapsed = cp.ascontiguousarray(cp.sum(self.dos_dn_gpu, axis=2))
         elif self.spin_mode == SpinMode.NCL_SOC:
             # NCL: second channel is magnetization magnitude |m|
-            self.dos_dn_gpu = cp.array(dos_parser.get_dos_for_simulator(spin='mag'), dtype=cp.float32)
+            self.dos_dn_gpu = cp.array(dos_parser.get_dos_for_simulator(spin='mag'), dtype=cp.float64)
             self.dos_dn_collapsed = cp.ascontiguousarray(cp.sum(self.dos_dn_gpu, axis=2))
         else:
             self.dos_dn_gpu = None
@@ -289,9 +465,9 @@ class Unified_STM_Simulator:
             for j in range(-self.unit_cell_num, self.unit_cell_num + 1):
                 coords.append(self.coord + self.lv[0] * i + self.lv[1] * j)
                 idx_list.append(base_idx)
-        self.periodic_coord_gpu = cp.array(np.concatenate(coords), dtype=cp.float32)
+        self.periodic_coord_gpu = cp.array(np.concatenate(coords), dtype=cp.float64)
         self.atom_indices_periodic_gpu = cp.array(np.concatenate(idx_list))
-        self.map_mat_gpu = cp.zeros((self.num_total_atoms, len(self.atom_indices_periodic_gpu)), dtype=cp.float32)
+        self.map_mat_gpu = cp.zeros((self.num_total_atoms, len(self.atom_indices_periodic_gpu)), dtype=cp.float64)
         self.map_mat_gpu[self.atom_indices_periodic_gpu, cp.arange(len(self.atom_indices_periodic_gpu))] = 1.0
 
     def _apply_extra_broadening(self):
@@ -337,72 +513,132 @@ class Unified_STM_Simulator:
         return f"_uc{getattr(self, 'unit_cell_num', 1)}"
 
     def _effective_decay_model(self):
-        """'decay_off' = Decay off; 'decay_on' = Decay on with the occupied-side
-        0-clamp (the default); 'decay_on_noclamp' = Decay on, the original model
-        without the clamp."""
-        if not getattr(self, 'use_decay', True):
-            return 'decay_off'
-        return 'decay_on' if getattr(self, 't2_clamp', True) else 'decay_on_noclamp'
+        """'decay_chen' = Decay on: Chen's energy-dependent matrix element (gpu_chen_tunneling_factor);
+        'decay_k0' = Decay off: exp(-2 kappa0 d), the same element without its energy dependence."""
+        return 'decay_chen' if getattr(self, 'use_decay', True) else 'decay_k0'
 
     def _decay_cache_suffix(self):
-        # Converged topographies depend on the decay model used to produce them;
-        # the tag is the model name, so each of the three models has its own
-        # caches (caches from the pre-tag unclamped model, no suffix, never match).
+        # Converged topographies depend on the decay model used to produce them, so the model name
+        # is part of every topography cache name.
         return "_" + self._effective_decay_model()
+
+    def _precision_cache_suffix(self):
+        return "_f64"
 
     def _calculate_ldos_at_points_gpu(self, tip_positions, emin, emax,
                                       use_energy_decay=False, preserve_orbitals=False,
-                                      topo_only=False, clamp_occupied=False):
-        estart = np.searchsorted(self.energies, emin)
-        eend = np.searchsorted(self.energies, emax, side='right')
-        energy_indices = cp.arange(estart, eend)
-        calc_energies_gpu = self.energies_gpu[estart:eend]
-        num_pts, num_e = tip_positions.shape[0], len(calc_energies_gpu)
-        tip_pos_gpu = cp.asarray(tip_positions, dtype=cp.float32)
+                                      topo_only=False, v_bias=None, current=False, samples=None):
+        """
+        The LDOS at the tip positions on the DOSCAR samples in [emin, emax], or, with `samples`, on those
+        sample indices (emin and emax then unused): per point and energy, or with preserve_orbitals per
+        point, energy, atom and orbital.
+
+        Decay off: every image of every atom weighted by exp(-2 kappa0 d).
+        Decay on (Chen's matrix element, gpu_chen_tunneling_factor):
+          v_bias given (topography): the bias is frozen at v_bias, each state weighted at
+            eps = E - v_bias/2; the integral over the window is the current of Chen Eq. 2.40.
+          v_bias None (LDOS): the bias is swept, and the value at each sample energy V is dI/dV at V,
+            the derivative of Eq. 2.40: the state entering at the window edge, rho(V) w(V, V), plus
+            the change of every state already in [0, V], the integral from 0 to V of rho(E) dw(E, V)/dV.
+            That integral always starts at 0, so the DOS from 0 to the samples is used whether or not
+            they reach 0. Computed by the chen_sweep kernel (_CHEN_SWEEP_SRC).
+          current=True (with v_bias None): instead of dI/dV, the current of Eq. 2.40 at each sample V,
+            the integral from 0 to V of rho(E) w(E, V).
+        """
+        if samples is None:
+            estart = int(np.searchsorted(self.energies, emin))
+            eend = int(np.searchsorted(self.energies, emax, side='right'))
+            idx_np = np.arange(estart, eend)
+        else:
+            idx_np = np.asarray(samples, dtype=np.int64).ravel()
+            estart, eend = int(idx_np.min()), int(idx_np.max()) + 1
+        energy_indices = cp.asarray(idx_np)
+        calc_energies_gpu = self.energies_gpu[energy_indices]
+        num_pts, num_e = tip_positions.shape[0], len(idx_np)
+        tip_pos_gpu = cp.asarray(tip_positions, dtype=cp.float64)
         frac_coords = cp.dot(tip_pos_gpu, self.inv_lv_gpu)
 
         wrapped_frac_coords = cp.empty_like(frac_coords)
         wrapped_frac_coords[:, :2] = frac_coords[:, :2] % 1.0
         wrapped_frac_coords[:, 2] = frac_coords[:, 2]
 
-        lv_gpu = cp.array(self.lv, dtype=cp.float32)
+        lv_gpu = cp.array(self.lv, dtype=cp.float64)
         wrapped_tip_pos_gpu = cp.dot(wrapped_frac_coords, lv_gpu)
 
         grid_indices = (frac_coords % 1.0).T * self.locpot_dims_gpu[:, None]
         dists = cp.sqrt(cp.sum((self.periodic_coord_gpu[:, None, :] - wrapped_tip_pos_gpu[None, :, :]) ** 2, axis=2))
 
+        sweep = use_energy_decay and v_bias is None
+        if sweep:
+            # The samples from 0 to the requested ones: the integral at each V runs from 0.
+            span_lo = min(estart, max(int(np.searchsorted(self.energies, 0.0, side='right')) - 1, 0))
+            span_hi = max(eend, min(int(np.searchsorted(self.energies, 0.0, side='left')), len(self.energies) - 1) + 1)
+            E_span = self.energies[span_lo:span_hi]
+            k0 = int(np.searchsorted(E_span, 0.0))
+            lo_i, hi_i = (k0, k0) if (k0 < len(E_span) and E_span[k0] == 0.0) else (k0 - 1, k0)   # the samples bracketing 0
+            u_idx, u_inv = np.unique(idx_np, return_inverse=True)                # the requested samples, ascending, once each
+            in_order = np.array_equal(u_idx, idx_np)
+            js_gpu = cp.asarray(u_idx - span_lo, dtype=cp.int32)
+            t_split = int(np.searchsorted(u_idx - span_lo, hi_i))               # the first at or above hi_i
+            E_span_gpu = cp.ascontiguousarray(self.energies_gpu[span_lo:span_hi], dtype=cp.float64)
+            dists_c = cp.ascontiguousarray(dists, dtype=cp.float64)
+            n_shift = dists.shape[0] // self.num_total_atoms                    # images are shift-major: shift, then atom
+
+        def _sweep(phi_c, dos3, p0, n_p, out):
+            """chen_sweep over tip points p0 .. p0 + n_p: out (n_p, n_unique, atoms, columns) += dI/dV, or the current."""
+            _chen_sweep_kernel(dos3.shape[2])(
+                ((n_p + 63) // 64, self.num_total_atoms), (64,),
+                (E_span_gpu, dos3, dists_c, phi_c, js_gpu, out, np.float64(KAPPA0_PER_SQRT_EV),
+                 np.int32(self.num_total_atoms), np.int32(n_shift), np.int32(num_pts), np.int32(p0), np.int32(n_p),
+                 np.int32(dos3.shape[1]), np.int32(span_lo), np.int32(lo_i), np.int32(hi_i),
+                 np.int32(len(u_idx)), np.int32(t_split), np.int32(1 if current else 0)))
+
         def _compute_channel(pot, dos_gpu, dos_collapsed):
             phi_local = cp_ndimage.map_coordinates(pot, grid_indices, order=1, mode='wrap') - self.ef
+            phi_row = phi_local[None, :]
             if not preserve_orbitals:
-                output_ldos = cp.zeros((num_pts, num_e), dtype=cp.float32)
+                output_ldos = cp.zeros((num_pts, num_e), dtype=cp.float64)
                 dos_periodic = dos_collapsed[self.atom_indices_periodic_gpu, :]
                 dos_active = dos_periodic[:, energy_indices]
-                if use_energy_decay:
-                    # 0-clamp (on by default; the '0-clamp' toggle): E anchored at
-                    # the Fermi level for occupied states, moving the eps < 0
-                    # averaging interval to [phi, phi + |eps|]. Off = the original
-                    # decay model.
-                    e_arg = cp.maximum(calc_energies_gpu, 0.0) if clamp_occupied else calc_energies_gpu
-                    K_all = gpu_chen_tunneling_factor(cp.abs(calc_energies_gpu)[:, None], e_arg[:, None], phi_local)
+                if use_energy_decay and not sweep:
                     for e_idx in range(num_e):
-                        sf = cp.exp(-1.0 * dists * K_all[e_idx][None, :] * 1e-10)
+                        sf = gpu_chen_tunneling_factor(float(self.energies[idx_np[e_idx]]), v_bias, phi_row, dists, topo=True)
                         output_ldos[:, e_idx] = cp.dot(sf.T, dos_active[:, e_idx])
+                elif sweep:
+                    phi_c = cp.ascontiguousarray(phi_local, dtype=cp.float64)
+                    dos3 = cp.ascontiguousarray(dos_collapsed[:, :, None], dtype=cp.float64)
+                    n_u = len(u_idx)
+                    step = max(1, int(2.5e7 // max(1, n_u * self.num_total_atoms)))      # tip points per launch
+                    tot = cp.zeros((num_pts, n_u), dtype=cp.float64)
+                    for p0 in range(0, num_pts, step):
+                        n_p = min(step, num_pts - p0)
+                        part = cp.zeros((n_p, n_u, self.num_total_atoms, 1), dtype=cp.float64)
+                        _sweep(phi_c, dos3, p0, n_p, part)
+                        tot[p0:p0 + n_p] = part.sum(axis=(2, 3))
+                    output_ldos = tot if in_order else tot[:, cp.asarray(u_inv)]
                 else:
-                    kappa = 0.512 * cp.sqrt(cp.maximum(0.1, phi_local))
-                    sf = cp.exp(-2.0 * kappa[None, :] * dists)
+                    kappa0 = KAPPA0_PER_SQRT_EV * cp.sqrt(phi_local)
+                    sf = cp.exp(-2.0 * kappa0[None, :] * dists)
                     output_ldos = cp.dot(sf.T, dos_active)
             else:
-                output_ldos = cp.zeros((num_pts, num_e, self.num_total_atoms, dos_gpu.shape[2]), dtype=cp.float32)
-                if use_energy_decay:
-                    e_arg = cp.maximum(calc_energies_gpu, 0.0) if clamp_occupied else calc_energies_gpu
-                    K_all = gpu_chen_tunneling_factor(cp.abs(calc_energies_gpu)[:, None], e_arg[:, None], phi_local)
+                output_ldos = cp.zeros((num_pts, num_e, self.num_total_atoms, dos_gpu.shape[2]), dtype=cp.float64)
+                if use_energy_decay and not sweep:
                     for e_idx in range(num_e):
-                        sf = cp.exp(-1.0 * dists * K_all[e_idx][None, :] * 1e-10)
+                        sf = gpu_chen_tunneling_factor(float(self.energies[idx_np[e_idx]]), v_bias, phi_row, dists, topo=True)
                         w_atom = cp.dot(self.map_mat_gpu, sf)
                         output_ldos[:, e_idx, :, :] = w_atom.T[:, :, None] * dos_gpu[:, energy_indices[e_idx], :][None, :, :]
+                elif sweep:
+                    phi_c = cp.ascontiguousarray(phi_local, dtype=cp.float64)
+                    dos3 = cp.ascontiguousarray(dos_gpu, dtype=cp.float64)
+                    if in_order:
+                        _sweep(phi_c, dos3, 0, num_pts, output_ldos)
+                    else:
+                        out = cp.zeros((num_pts, len(u_idx), self.num_total_atoms, dos_gpu.shape[2]), dtype=cp.float64)
+                        _sweep(phi_c, dos3, 0, num_pts, out)
+                        output_ldos = out[:, cp.asarray(u_inv)]
                 else:
-                    kappa = 0.512 * cp.sqrt(cp.maximum(0.1, phi_local))
-                    sf = cp.exp(-2.0 * kappa[None, :] * dists)
+                    kappa0 = KAPPA0_PER_SQRT_EV * cp.sqrt(phi_local)
+                    sf = cp.exp(-2.0 * kappa0[None, :] * dists)
                     w_atom = cp.dot(self.map_mat_gpu, sf)
                     output_ldos = w_atom.T[:, None, :, None] * dos_gpu[:, energy_indices, :].transpose(1, 0, 2)[None, :, :, :]
             return output_ldos
@@ -505,9 +741,14 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         self.cmap_norm = False
         self.npts = 72
         self.is_running, self.normalize, self.show_mag = False, False, False
+        # 'Feenstra': the display divided by I/V, I the total LDOS integrated from 0 V (feenstra.py),
+        # display only; 'broadened' under it: the I/V broadened by the 'width (V)' box (the
+        # sm4_Browser's rule). Off at open; the width the sm4_Browser's default.
+        self.feenstra = False
+        self.feenstra_broadened = False
+        self.feenstra_width = 0.2
         self.show_atoms, self.show_unit_cell = True, False
         self.use_decay = True
-        self.t2_clamp = True     # occupied-side 0-clamp within the decay model (on by default)
         self.reuse_cache = True
         self.show_decay_toggle = True
         self.display_cells = 1
@@ -540,6 +781,11 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         self.cached_bias_energy_line, self.cached_bias_energy_map, self.cached_nepts = None, None, None
         self.cached_ld_up, self.cached_ld_dn, self.cached_eg = None, None, None
         self.cached_marker_coords, self.cached_spec_ldos = None, None
+        # The Feenstra currents: the tip positions and DOSCAR sample indices of the cached LDOS
+        # (recorded when the LDOS is computed) and the current on its span of samples from 0 V
+        # (computed the first time 'Feenstra' needs it, cleared whenever the LDOS is recomputed).
+        self._iv_pts, self._iv_need, self.cached_iv = None, None, None                 # Line / Path points or the Map grid
+        self._spec_iv_pts, self._spec_iv_need, self.cached_spec_iv = None, None, None  # the Single Point / Map markers
 
         # --- Path mode state ---
         self.path = None                  # initial seed: all atom-index lists [[154],...] OR all [x,y] coords; no mix
@@ -619,24 +865,24 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         print("\n--- Phase 1: Global Topography Pre-Calculation ---")
         grid_xy = (np.meshgrid(np.linspace(0, 1, grid_res), np.linspace(0, 1, grid_res))[0].ravel()[:, None] * self.lv[0, :2]) + \
                   (np.meshgrid(np.linspace(0, 1, grid_res), np.linspace(0, 1, grid_res))[1].ravel()[:, None] * self.lv[1, :2])
-        grid_xy_gpu = cp.array(grid_xy, dtype=cp.float32)
-        z_fixed = cp.full(grid_xy_gpu.shape[0], self.z_highest_atom + topo_height, dtype=cp.float32)
+        grid_xy_gpu = cp.array(grid_xy, dtype=cp.float64)
+        z_fixed = cp.full(grid_xy_gpu.shape[0], self.z_highest_atom + topo_height, dtype=cp.float64)
         t_emin, t_emax = sorted([0.0, topo_bias])
-        cache_name = f"global_topo_{topo_bias}V_{topo_height}A_{grid_res}px{self._broadening_cache_suffix()}{self._unit_cell_cache_suffix()}{self._decay_cache_suffix()}.npy"
+        cache_name = f"global_topo_{topo_bias}V_{topo_height}A_{grid_res}px{self._broadening_cache_suffix()}{self._unit_cell_cache_suffix()}{self._decay_cache_suffix()}{self._precision_cache_suffix()}.npy"
         if self.reuse_cache and exists(cache_name):
             print(f"[*] Loading Cached Global Topography: {cache_name}")
             self.current_z_map = np.load(cache_name)
-            z_map_gpu = cp.array(self.current_z_map, dtype=cp.float32)
+            z_map_gpu = cp.array(self.current_z_map, dtype=cp.float64)
         else:
             print(f"[*] Cache not found. Calculating Global Topography: {cache_name}")
             ld_1, _, init_engs = self._calculate_ldos_at_points_gpu(
                 cp.hstack([grid_xy_gpu, z_fixed[:, None]]), t_emin, t_emax,
                 use_energy_decay=self.use_decay, preserve_orbitals=False, topo_only=True,
-                clamp_occupied=self.t2_clamp)
+                v_bias=topo_bias)
             target_setp = cp.max(gpu_simpson(ld_1, init_engs))
             print(f"[*] Global Setpoint LDOS: {float(target_setp):.6e}")
             z_map_gpu = self._converge_tip_height(z_fixed, grid_xy_gpu, t_emin, t_emax, target_setp,
-                                                  use_decay=self.use_decay, clamp_occupied=self.t2_clamp)
+                                                  use_decay=self.use_decay, v_bias=topo_bias)
             self.current_z_map = cp.asnumpy(z_map_gpu)
             np.save(cache_name, self.current_z_map)
         self.grid_xy = grid_xy
@@ -690,6 +936,66 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
                                 orb_data = np.sum(f_ldos_raw[:, :, e_idx, col_idx], axis=2)
                                 partitions.append((f"{self.active_element} {orb}", orb_data))
         return partitions
+
+    # ------------------------------------------------------------------
+    # 'Feenstra': the display divided by I/V (feenstra.py)
+    # ------------------------------------------------------------------
+    def _display_indices(self, emin, emax):
+        """The DOSCAR sample indices of an energy window, as _calculate_ldos_at_points_gpu takes them."""
+        return np.arange(np.searchsorted(self.energies, emin), np.searchsorted(self.energies, emax, side='right'))
+
+    def _map_sample_indices(self, targets):
+        """The DOSCAR sample each Map energy's LDOS is taken at: the first sample at or above it (as _update_all and _on_rel take it)."""
+        return np.minimum(np.searchsorted(self.energies, np.asarray(targets, dtype=np.float64)), len(self.energies) - 1)
+
+    def _feenstra_current(self, pts, need):
+        """
+        The current I(V) at the tip positions `pts` (n, 3) at every DOSCAR sample V of the span that
+        covers the samples `need` (indices into self.energies) and brackets 0 V, integrated from 0 V
+        by feenstra.current_from_ldos (the trapezoid rule, I(0) = 0), with the display's extra
+        broadening. Decay on: each V is a bias of its own, the window [0, V] with every state weighted
+        at eps = E - V/2 (Chen Eq. 2.40, the frozen-bias current the topography uses, here at V; the
+        swept path with current=True). Decay off: the weights do not depend on V, so I(V) is the
+        integral of the total LDOS.
+        Returns {'I': (n, n_span), 's0': the span's first sample index, 'width': None, 'iv': None}
+        (width / iv: the last I/V formed from it).
+        """
+        E = self.energies
+        n = len(E)
+        k_lo = max(int(np.searchsorted(E, 0.0, side='right')) - 1, 0)     # the last sample at or below 0 V
+        k_hi = min(int(np.searchsorted(E, 0.0, side='left')), n - 1)       # the first sample at or above 0 V
+        s0 = min(int(np.min(need)), k_lo)
+        s1 = max(int(np.max(need)) + 1, k_hi + 1)
+        pts_gpu = cp.asarray(np.asarray(pts, dtype=np.float64), dtype=cp.float64)
+        if not self.use_decay:
+            ld, _, _ = self._calculate_ldos_at_points_gpu(pts_gpu, E[s0], E[s1 - 1], use_energy_decay=False,
+                                                          preserve_orbitals=False, topo_only=True)
+            return {'I': feenstra.current_from_ldos(E[s0:s1], cp.asnumpy(ld)), 's0': s0, 'width': None, 'iv': None}
+        ld, _, _ = self._calculate_ldos_at_points_gpu(pts_gpu, E[s0], E[s1 - 1], use_energy_decay=True,
+                                                      preserve_orbitals=False, topo_only=True, current=True)
+        return {'I': np.asarray(cp.asnumpy(ld), dtype=np.float64), 's0': s0, 'width': None, 'iv': None}
+
+    def _feenstra_iv(self, which, need):
+        """
+        The I/V the display is divided by, (n_pts, len(need)), at the DOSCAR samples `need`:
+        which = 'grid' for the Line / Path points or the Map grid, 'spec' for the Single Point / Map
+        markers.  The current is computed the first time it is needed after the LDOS (and again if
+        `need` reaches outside its span); I/V is formed on the whole span, broadened by 'width (V)'
+        while 'broadened' is on (feenstra.iv_ratio), kept for that width, and taken at `need`.
+        """
+        need = np.asarray(need)
+        attr, pts_attr, need_attr = (('cached_iv', '_iv_pts', '_iv_need') if which == 'grid'
+                                     else ('cached_spec_iv', '_spec_iv_pts', '_spec_iv_need'))
+        rec = getattr(self, attr)
+        if rec is None or need.min() < rec['s0'] or need.max() >= rec['s0'] + rec['I'].shape[1]:
+            rec = self._feenstra_current(getattr(self, pts_attr), np.union1d(getattr(self, need_attr), need))
+            setattr(self, attr, rec)
+        width = float(self.feenstra_width) if self.feenstra_broadened else 0.0
+        if rec['iv'] is None or rec['width'] != width:
+            s0 = rec['s0']
+            rec['iv'] = feenstra.iv_ratio(self.energies[s0:s0 + rec['I'].shape[1]], rec['I'], width)
+            rec['width'] = width
+        return rec['iv'][:, need - rec['s0']]
 
     def _build_path_xy(self):
         """Build resampled path sample points from the current draggable nodes.
@@ -758,21 +1064,24 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         self.btn_run = controls.make(fig, 'RUN')
         self.btn_run.set_text('STOP' if self.is_running else 'RUN')
         self.btn_run.on_change(self._toggle_run)
-        # One list defines every toggle: label and the attribute it drives. '0-clamp' sits
-        # indented under 'Decay' as its sub-option (the occupied-side 0-clamp of the decay model,
-        # on by default); it stays visible whether or not Decay is on.
+        # One list defines every toggle: label and the attribute it drives. 'broadened' sits indented
+        # under 'Feenstra' as its sub-option (the I/V broadened by the 'width (V)' box).
         toggle_defs = [('Atoms', 'show_atoms'), ('Decay', 'use_decay'),
-                       ('0-clamp', 't2_clamp'),
-                       ('Norm', 'normalize'), ('Mag', 'show_mag'),
+                       ('Norm', 'normalize'), ('Feenstra', 'feenstra'),
+                       ('broadened', 'feenstra_broadened'), ('Mag', 'show_mag'),
                        ('Cell', 'show_unit_cell'), ('Extend', 'path_extend')]
         if not getattr(self, 'show_decay_toggle', True):
-            toggle_defs = [d for d in toggle_defs if d[0] not in ('Decay', '0-clamp')]
+            toggle_defs = [d for d in toggle_defs if d[0] != 'Decay']
         self._toggle_defs = toggle_defs
         labels = [label for label, _ in toggle_defs]
         self.chk = controls.make(fig, 'sim toggles', labels=labels,
                                  values=[getattr(self, attr) for _, attr in toggle_defs],
-                                 indents=['    ' if label == '0-clamp' else 0 for label in labels])
+                                 indents=['    ' if label == 'broadened' else 0 for label in labels])
         self.chk.on_change(self._on_ui_change)
+        # The Feenstra broadening width (V), in the RUN / toggles box, shown only while 'broadened' is on.
+        self.s_feen_width = controls.make(fig, 'width (V)', value=self.feenstra_width)
+        self.s_feen_width.on_change(self._on_ui_change)
+        self.s_feen_width.show(self.feenstra_broadened)
         # The bottom strip's boxes (the counts and values that were sliders).
         self.s_cell = controls.make(fig, 'Cells', value=self.display_cells)
         self.s_path_pts = controls.make(fig, 'Path Pts', value=len(self.path_nodes))
@@ -845,7 +1154,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
             controls.box(self.chk_broad, controls.column(*self.s_broad.values()), title='broadening'),
             self._hook_layout,
             'stretch',
-            controls.box(self.btn_run, self.chk))
+            controls.box(self.btn_run, controls.column(self.chk, self.s_feen_width)))
         left_w = controls.widget_of(self._left_column)
         left_w.setSizePolicy(QtWidgets.QSizePolicy.Policy.Fixed, QtWidgets.QSizePolicy.Policy.Preferred)
         self._panel_area = QtWidgets.QVBoxLayout()         # the view's arrangement (controls.Arrangement; _build_ui fills it)
@@ -1538,15 +1847,15 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
             self._draw_cursors()
             self._rearrange(orient=True)
 
-    def _draw_map_slice(self, ax, slice_data, v_max, use_diverging, has_mag):
+    def _draw_map_slice(self, ax, slice_data, v_min, v_max, use_diverging, has_mag):
         """One energy map on `ax`: the slice over the 2 x 2 cells drawn (one raster at four offsets), the colour scale of the view."""
         offs = self._cell_offsets_2x2()
         if use_diverging:
-            ax.tricontourf(self.grid_xy[:, 0], self.grid_xy[:, 1], slice_data, levels=40, cmap='bwr', vmin=-v_max, vmax=v_max, offsets=offs)
+            ax.tricontourf(self.grid_xy[:, 0], self.grid_xy[:, 1], slice_data, levels=40, cmap='bwr', vmin=v_min, vmax=v_max, offsets=offs)
         elif self.show_mag and has_mag:
-            ax.tricontourf(self.grid_xy[:, 0], self.grid_xy[:, 1], slice_data, levels=40, cmap='hot', norm=plt.PowerNorm(self.ldos_gamma, vmin=0, vmax=v_max), offsets=offs)
+            ax.tricontourf(self.grid_xy[:, 0], self.grid_xy[:, 1], slice_data, levels=40, cmap='hot', norm=plt.PowerNorm(self.ldos_gamma, vmin=v_min, vmax=v_max), offsets=offs)
         else:
-            ax.tricontourf(self.grid_xy[:, 0], self.grid_xy[:, 1], slice_data, levels=40, cmap=self.cmap_map, norm=plt.PowerNorm(self.ldos_gamma, vmin=0, vmax=v_max), offsets=offs)
+            ax.tricontourf(self.grid_xy[:, 0], self.grid_xy[:, 1], slice_data, levels=40, cmap=self.cmap_map, norm=plt.PowerNorm(self.ldos_gamma, vmin=v_min, vmax=v_max), offsets=offs)
         ax.set_aspect('equal')
 
     def _map_cmap(self, use_diverging, has_mag):
@@ -1558,10 +1867,14 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         v = float(np.max(np.abs(slice_data))) if self.cmap_norm else float(group_vmax)
         return v if v > 0 else 1e-15
 
-    def _draw_map_cbar(self, cax, v_max, use_diverging, has_mag, labelsize=None):
-        """One colour bar of the energy maps into `cax`: their colour map over 0..v_max (-v_max..v_max for a signed magnetization), the ticks in units of 10^exp with the exponent as the bar's title."""
+    def _map_vmin(self, slice_data, group_vmin):
+        """An energy map's colour-scale minimum: the smallest value of the slice with 'cmap norm' on, else its group's (the partition's with show_dcmp_norm, the whole set's otherwise)."""
+        return float(np.min(slice_data)) if self.cmap_norm else float(group_vmin)
+
+    def _draw_map_cbar(self, cax, v_min, v_max, use_diverging, has_mag, labelsize=None):
+        """One colour bar of the energy maps into `cax`: their colour map over v_min..v_max, the ticks in units of 10^exp with the exponent as the bar's title."""
         cax.clear()
-        norm_choice = plt.Normalize(vmin=-v_max, vmax=v_max) if use_diverging else plt.Normalize(vmin=0, vmax=v_max)
+        norm_choice = plt.Normalize(vmin=v_min, vmax=v_max)
         sm = plt.cm.ScalarMappable(cmap=self._map_cmap(use_diverging, has_mag), norm=norm_choice)
         sm.set_array([])
         cb = self.fig.colorbar(sm, cax=cax)
@@ -1618,22 +1931,22 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
     def _recompute_global_topo(self):
         """Re-run Phase 1 global topography with current broadened DOS (cache-aware)."""
         grid_res = int(np.sqrt(len(self.grid_xy)))
-        cache_name = f"global_topo_{self.global_topo_bias}V_{self.topo_height}A_{grid_res}px{self._broadening_cache_suffix()}{self._unit_cell_cache_suffix()}{self._decay_cache_suffix()}.npy"
+        cache_name = f"global_topo_{self.global_topo_bias}V_{self.topo_height}A_{grid_res}px{self._broadening_cache_suffix()}{self._unit_cell_cache_suffix()}{self._decay_cache_suffix()}{self._precision_cache_suffix()}.npy"
         if self.reuse_cache and exists(cache_name):
             print(f"[*] Loading Cached Global Topography: {cache_name}")
             self.current_z_map = np.load(cache_name)
         else:
             print(f"[*] Calculating Global Topography with broadening: {cache_name}")
             t_emin, t_emax = sorted([0.0, self.global_topo_bias])
-            z_fixed = cp.full(self.grid_xy_gpu.shape[0], self.z_highest_atom + self.topo_height, dtype=cp.float32)
+            z_fixed = cp.full(self.grid_xy_gpu.shape[0], self.z_highest_atom + self.topo_height, dtype=cp.float64)
             ld_1, _, init_engs = self._calculate_ldos_at_points_gpu(
                 cp.hstack([self.grid_xy_gpu, z_fixed[:, None]]), t_emin, t_emax,
                 use_energy_decay=self.use_decay, preserve_orbitals=False, topo_only=True,
-                clamp_occupied=self.t2_clamp)
+                v_bias=self.global_topo_bias)
             target_setp = cp.max(gpu_simpson(ld_1, init_engs))
             print(f"[*] Global Setpoint LDOS: {float(target_setp):.6e}")
             z_map_gpu = self._converge_tip_height(z_fixed, self.grid_xy_gpu, t_emin, t_emax, target_setp,
-                                                  use_decay=self.use_decay, clamp_occupied=self.t2_clamp)
+                                                  use_decay=self.use_decay, v_bias=self.global_topo_bias)
             self.current_z_map = cp.asnumpy(z_map_gpu)
             np.save(cache_name, self.current_z_map)
         self.global_z_map = self.current_z_map.copy()
@@ -1695,23 +2008,19 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
     def _on_ui_change(self, *args):
         """A toggle, a count or a value box changed: the state is read from the controls, the caches invalidated as the change asks, and the window redrawn."""
         prev_decay = self.use_decay
-        prev_clamp = self.t2_clamp
         prev_path_extend = self.path_extend
         states = self.chk.get_status()
         for (label, attr), state in zip(self._toggle_defs, states):
             setattr(self, attr, state)
         self.display_cells = int(self.s_cell.val)
         self.ldos_gamma = float(self.s_ldos_gamma.value)
+        # The Feenstra width (display only, as 'Feenstra' and 'broadened': they fall through to the redraw);
+        # its box shown only while 'broadened' is on.
+        self.feenstra_width = float(self.s_feen_width.val)
+        self.s_feen_width.show(self.feenstra_broadened)
 
-        # 0-clamp toggled while Decay is off: it only takes effect once Decay is
-        # on, so record the state and do nothing else (no recompute, no redraw).
-        clamp_changed = (self.t2_clamp != prev_clamp)
-        if clamp_changed and not self.use_decay:
-            return
-
-        # Decay toggle, 0-clamp toggle (with Decay on), or path-extend toggle:
-        # invalidate caches and recompute.
-        decay_model_changed = (self.use_decay != prev_decay) or (clamp_changed and self.use_decay)
+        # Decay toggle or path-extend toggle: invalidate caches and recompute.
+        decay_model_changed = (self.use_decay != prev_decay)
         if decay_model_changed or (self.path_extend != prev_path_extend):
             self.cached_p1 = self.cached_p2 = None
             self.cached_path_nodes = None
@@ -1868,15 +2177,15 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
                 raise ValueError("Stabilization bias is 0: set a nonzero E Min or E Max (per ldos_bias_sign) before the constant-current window can be built.")
             if self.mode in ('Line', 'Path'):
                 l_emin, l_emax = sorted([0.0, bias_e])
-                p_xy_gpu = cp.array(p_xy, dtype=cp.float32)
+                p_xy_gpu = cp.array(p_xy, dtype=cp.float64)
                 ld_1, _, l_engs = self._calculate_ldos_at_points_gpu(
-                    cp.hstack([p_xy_gpu, cp.full((self.npts, 1), self.z_highest_atom + self.ldos_height, dtype=cp.float32)]),
+                    cp.hstack([p_xy_gpu, cp.full((self.npts, 1), self.z_highest_atom + self.ldos_height, dtype=cp.float64)]),
                     l_emin, l_emax, use_energy_decay=self.use_decay, preserve_orbitals=False, topo_only=True,
-                    clamp_occupied=self.t2_clamp)
+                    v_bias=bias_e)
                 target = cp.max(gpu_simpson(ld_1, l_engs))
                 print(f"[*] Path Setpoint LDOS: {float(target):.6e}")
-                z_line = self._converge_tip_height(cp.full(self.npts, self.z_highest_atom + self.ldos_height, dtype=cp.float32), p_xy_gpu, l_emin, l_emax, target,
-                                                   use_decay=self.use_decay, clamp_occupied=self.t2_clamp)
+                z_line = self._converge_tip_height(cp.full(self.npts, self.z_highest_atom + self.ldos_height, dtype=cp.float64), p_xy_gpu, l_emin, l_emax, target,
+                                                   use_decay=self.use_decay, v_bias=bias_e)
                 self.current_z_line = cp.asnumpy(z_line)
                 if self.mode == 'Line':
                     self.cached_p1, self.cached_p2 = self.p1.copy(), self.p2.copy()
@@ -1887,21 +2196,21 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
             elif self.mode == 'Map':
                 t_emin, t_emax = sorted([0.0, bias_e])
                 grid_res = int(np.sqrt(len(self.grid_xy)))
-                ldos_cache_name = f"ldos_topo_{bias_e}V_{self.ldos_height}A_{grid_res}px{self._broadening_cache_suffix()}{self._unit_cell_cache_suffix()}{self._decay_cache_suffix()}.npy"
+                ldos_cache_name = f"ldos_topo_{bias_e}V_{self.ldos_height}A_{grid_res}px{self._broadening_cache_suffix()}{self._unit_cell_cache_suffix()}{self._decay_cache_suffix()}{self._precision_cache_suffix()}.npy"
                 if self.reuse_cache and exists(ldos_cache_name):
                     print(f"[*] Loading Cached LDOS Topography: {ldos_cache_name}")
                     self.current_z_map = np.load(ldos_cache_name)
                 else:
                     print(f"[*] Cache not found. Calculating LDOS Topography: {ldos_cache_name}")
-                    z_fixed = cp.full(self.grid_xy_gpu.shape[0], self.z_highest_atom + self.ldos_height, dtype=cp.float32)
+                    z_fixed = cp.full(self.grid_xy_gpu.shape[0], self.z_highest_atom + self.ldos_height, dtype=cp.float64)
                     ld_1, _, init_engs = self._calculate_ldos_at_points_gpu(
                         cp.hstack([self.grid_xy_gpu, z_fixed[:, None]]), t_emin, t_emax,
                         use_energy_decay=self.use_decay, preserve_orbitals=False, topo_only=True,
-                        clamp_occupied=self.t2_clamp)
+                        v_bias=bias_e)
                     target_setp = cp.max(gpu_simpson(ld_1, init_engs))
                     print(f"[*] Map Local Setpoint LDOS: {float(target_setp):.6e}")
                     z_map_gpu = self._converge_tip_height(z_fixed, self.grid_xy_gpu, t_emin, t_emax, target_setp,
-                                                          use_decay=self.use_decay, clamp_occupied=self.t2_clamp)
+                                                          use_decay=self.use_decay, v_bias=bias_e)
                     self.current_z_map = cp.asnumpy(z_map_gpu)
                     np.save(ldos_cache_name, self.current_z_map)
                 self.cached_bias_energy_map, self.cached_d_topo_map = bias_e, decay_model
@@ -1917,25 +2226,15 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
                 ld_up, ld_dn, eg = self._calculate_ldos_at_points_gpu(
                     np.hstack([p_xy, self.current_z_line[:, None]]),
                     self.s_emin.val, self.s_emax.val,
-                    use_energy_decay=self.use_decay, preserve_orbitals=True,
-                    clamp_occupied=self.t2_clamp)
+                    use_energy_decay=self.use_decay, preserve_orbitals=True)
             elif self.mode == 'Map':
                 self.map_e_targets = np.linspace(self.s_emin.val, self.s_emax.val, nepts)
                 eg = cp.array(self.energies[np.searchsorted(self.energies, self.s_emin.val):np.searchsorted(self.energies, self.s_emax.val, side='right')])
-                ld_up_list, ld_dn_list = [], []
+                # Every map energy in one call: the LDOS at each grid point, at each map energy's sample.
                 grid_z = cp.hstack([self.grid_xy_gpu, cp.array(self.current_z_map)[:, None]])
-                for t_e in self.map_e_targets:
-                    e_idx = np.searchsorted(self.energies, t_e)
-                    t_up, t_dn, _ = self._calculate_ldos_at_points_gpu(
-                        grid_z, self.energies[e_idx],
-                        self.energies[min(e_idx + 1, len(self.energies) - 1)] + 1e-6,
-                        use_energy_decay=self.use_decay, preserve_orbitals=True,
-                        clamp_occupied=self.t2_clamp)
-                    ld_up_list.append(t_up[:, 0:1])
-                    if t_dn is not None:
-                        ld_dn_list.append(t_dn[:, 0:1])
-                ld_up = cp.concatenate(ld_up_list, axis=1)
-                ld_dn = cp.concatenate(ld_dn_list, axis=1) if ld_dn_list else None
+                ld_up, ld_dn, _ = self._calculate_ldos_at_points_gpu(
+                    grid_z, None, None, use_energy_decay=self.use_decay, preserve_orbitals=True,
+                    samples=self._map_sample_indices(self.map_e_targets))
             else:
                 eg = cp.array(self.energies[np.searchsorted(self.energies, self.s_emin.val):np.searchsorted(self.energies, self.s_emax.val, side='right')])
                 ld_up, ld_dn = None, None
@@ -1947,6 +2246,19 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
             self.cached_emin, self.cached_emax = self.s_emin.val, self.s_emax.val
             self.cached_d_ldos, self.cached_nepts = decay_model, nepts
             self.cached_mode = self.mode
+            # The Feenstra current belongs to these tip positions and samples: recorded, its cache cleared
+            # (computed again the first time 'Feenstra' needs it). Map: every sample a map energy in
+            # [E Min, E Max] can be taken at, so a dragged energy marker needs no new current.
+            self.cached_iv = None
+            if self.mode in ('Line', 'Path'):
+                self._iv_pts = np.hstack([p_xy, self.current_z_line[:, None]])
+                self._iv_need = self._display_indices(self.s_emin.val, self.s_emax.val)
+            elif self.mode == 'Map':
+                self._iv_pts = np.hstack([self.grid_xy, np.asarray(self.current_z_map)[:, None]])
+                self._iv_need = np.arange(np.searchsorted(self.energies, self.s_emin.val),
+                                          self._map_sample_indices([self.s_emax.val])[0] + 1)
+            else:
+                self._iv_pts = self._iv_need = None
 
         if needs_spec and self.mode in ['Single Point', 'Map']:
             m_coords = np.array(self.marker_coords)
@@ -1961,26 +2273,39 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
                 z_marks.append(self.current_z_map[np.argmin(dist_sq)])
             z_marks = np.array(z_marks)
 
-            pt_gpu = cp.array(np.hstack([m_coords, z_marks[:, None]]), dtype=cp.float32)
+            pt_gpu = cp.array(np.hstack([m_coords, z_marks[:, None]]), dtype=cp.float64)
             s_up, s_dn, _ = self._calculate_ldos_at_points_gpu(
                 pt_gpu, self.s_emin.val, self.s_emax.val,
-                use_energy_decay=self.use_decay, preserve_orbitals=True,
-                clamp_occupied=self.t2_clamp)
+                use_energy_decay=self.use_decay, preserve_orbitals=True)
             s_up_np = cp.asnumpy(s_up)
             s_dn_np = cp.asnumpy(s_dn) if s_dn is not None else None
 
             spec_ldos = self._combine_ldos_display(s_up_np, s_dn_np, self.show_mag)
             self.cached_spec_ldos = spec_ldos
             self.cached_marker_coords = np.array(self.marker_coords).copy()
+            # The markers' Feenstra current belongs to these tip positions and samples: recorded, its cache cleared.
+            self._spec_iv_pts = np.hstack([m_coords, z_marks[:, None]])
+            self._spec_iv_need = self._display_indices(self.s_emin.val, self.s_emax.val)
+            self.cached_spec_iv = None
 
         if self.mode in ['Line', 'Path', 'Map'] and self.cached_ld_up is not None:
             f_up = self.cached_ld_up.copy()
             f_dn = self.cached_ld_dn.copy() if self.cached_ld_dn is not None else None
             f_ldos_raw = self._combine_ldos_display(f_up, f_dn, self.show_mag)
+            if self.feenstra:
+                # 'Feenstra': every partition of a point divided by that point's total I/V at each energy
+                # (Map: at the sample each map's LDOS is taken at); 'Norm', when on, then acts on the ratio.
+                need = self._map_sample_indices(self.map_e_targets) if self.mode == 'Map' else self._iv_need
+                f_ldos_raw = feenstra.divide(f_ldos_raw, self._feenstra_iv('grid', need))
             partitions = self._get_partitions(f_ldos_raw)
         else:
             f_ldos_raw = None
             partitions = []
+
+        # The marker spectra as shown (Single Point, Map): divided by their I/V under 'Feenstra', else as cached.
+        spec_disp = self.cached_spec_ldos
+        if self.feenstra and spec_disp is not None and self.mode in ('Single Point', 'Map'):
+            spec_disp = feenstra.divide(spec_disp, self._feenstra_iv('spec', self._spec_iv_need))
 
         # --- Determine whether mag data is signed (for colormap selection) ---
         mag_signed = self._mag_is_signed()
@@ -1992,7 +2317,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
             active_ldos = f_ldos_raw[active_idx] if f_ldos_raw is not None else np.zeros_like(self.cached_spec_ldos[0])
         else:
             active_idx = min(self.active_marker_idx, len(self.marker_coords) - 1)
-            active_ldos = self.cached_spec_ldos[active_idx]
+            active_ldos = spec_disp[active_idx]
 
         self.ax_spec.clear()
 
@@ -2031,7 +2356,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
                     self.ax_spec.plot(self.cached_eg, t_y, color=color, lw=2.5, picker=True, pickradius=5, label=f'marker_{i}')
             else:
                 for i, pt in enumerate(self.marker_coords):
-                    c_ldos = self.cached_spec_ldos[i].copy()
+                    c_ldos = spec_disp[i].copy()
                     t_y = np.sum(c_ldos, axis=(1, 2))
                     if self.normalize:
                         t_y /= (simpson(t_y, x=self.cached_eg) + 1e-15)
@@ -2100,6 +2425,8 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
 
         p_dist_val = p_dist[active_idx] if self.mode in ('Line', 'Path') else f"[{self.marker_coords[active_idx][0]:.1f}, {self.marker_coords[active_idx][1]:.1f}]"
         self.ax_spec.set(title=f"Partitioned LDOS: marker {self.active_marker_idx} at {p_dist_val} Å", xlabel="Energy (eV)")
+        if self.feenstra:
+            self.ax_spec.set_ylabel("(dI/dV)/(I/V)")
         # (The spectrum no longer keeps a square box in Line / Path: a curve panel fills the room the
         # arrangement gives it, so no blank is left around it; rule 11.)
 
@@ -2115,6 +2442,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
 
             processed_partitions = []
             global_vmax = 0.0
+            global_vmin = np.inf
 
             if self.normalize and f_ldos_raw is not None:
                 total_ldos_line = np.sum(f_ldos_raw, axis=(2, 3))
@@ -2130,6 +2458,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
                 v_max = np.max(np.abs(t_data))
                 if v_max > global_vmax:
                     global_vmax = v_max
+                global_vmin = min(global_vmin, float(np.min(t_data)))
             if global_vmax == 0:
                 global_vmax = 1e-15
 
@@ -2231,14 +2560,15 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
                 v_max = np.max(np.abs(t_data)) if self.show_dcmp_norm else global_vmax
                 if v_max == 0:
                     v_max = 1e-15
+                v_min = np.min(t_data) if self.show_dcmp_norm else global_vmin
 
                 if use_diverging:
-                    mesh = ax_l.pcolormesh(self.cached_eg, p_dist, t_data, cmap='bwr', shading='auto', vmin=-v_max, vmax=v_max)
+                    mesh = ax_l.pcolormesh(self.cached_eg, p_dist, t_data, cmap='bwr', shading='auto', vmin=v_min, vmax=v_max)
                 elif self.show_mag and has_mag:
                     # NCL: |m| is non-negative, use sequential colormap
-                    mesh = ax_l.pcolormesh(self.cached_eg, p_dist, t_data, cmap='hot', shading='auto', norm=plt.PowerNorm(self.ldos_gamma, vmin=0, vmax=v_max))
+                    mesh = ax_l.pcolormesh(self.cached_eg, p_dist, t_data, cmap='hot', shading='auto', norm=plt.PowerNorm(self.ldos_gamma, vmin=v_min, vmax=v_max))
                 else:
-                    mesh = ax_l.pcolormesh(self.cached_eg, p_dist, t_data, cmap='nipy_spectral', shading='auto', norm=plt.PowerNorm(self.ldos_gamma, vmin=0, vmax=v_max))
+                    mesh = ax_l.pcolormesh(self.cached_eg, p_dist, t_data, cmap='nipy_spectral', shading='auto', norm=plt.PowerNorm(self.ldos_gamma, vmin=v_min, vmax=v_max))
 
                 ax_l.set_box_aspect(1)
                 ax_l.set_anchor('W')
@@ -2270,7 +2600,8 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
             # The cluster's row shares one height (the row rule, Figure.align_row): the stripe and the
             # colour bars follow the heatmaps' box aspect at any window size.
             self.fig.align_row(*self.line_decomp_axes)
-            self._cluster_label.set_text(f"LDOS: {self.active_element}" if self.plot_level >= 3 else "LDOS")
+            quantity = "(dI/dV)/(I/V)" if self.feenstra else "LDOS"
+            self._cluster_label.set_text(f"{quantity}: {self.active_element}" if self.plot_level >= 3 else quantity)
             self._rearrange()                      # the row is new: the arrangement and the window follow (rule 11)
 
         elif self.mode == 'Map':
@@ -2317,6 +2648,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
 
             processed_partitions = []
             global_vmax = 0.0
+            global_vmin = np.inf
             if self.normalize and f_ldos_raw is not None:
                 total_ldos_map = np.sum(f_ldos_raw, axis=(2, 3))
                 s_idx = np.argsort(self.map_e_targets)
@@ -2333,20 +2665,23 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
                 v_max = np.max(np.abs(t_data))
                 if v_max > global_vmax:
                     global_vmax = v_max
+                global_vmin = min(global_vmin, float(np.min(t_data)))
             if global_vmax == 0:
                 global_vmax = 1e-15
 
             for p_idx, (p_label, t_data) in enumerate(processed_partitions):
                 p_vmax = np.max(np.abs(t_data)) if self.show_dcmp_norm else global_vmax
+                p_vmin = np.min(t_data) if self.show_dcmp_norm else global_vmin
                 for i, target_e in enumerate(self.map_e_targets):
                     k = p_idx * nepts + i
                     ax = self.map_axes[k]
                     ax.clear()
                     slice_data = t_data[:, i]
                     v_max = self._map_vmax(slice_data, p_vmax)
-                    self._draw_map_slice(ax, slice_data, v_max, use_diverging, has_mag)
+                    v_min = self._map_vmin(slice_data, p_vmin)
+                    self._draw_map_slice(ax, slice_data, v_min, v_max, use_diverging, has_mag)
                     if self.cmap_norm:
-                        self._draw_map_cbar(self.cax_list[k], v_max, use_diverging, has_mag, labelsize=6)
+                        self._draw_map_cbar(self.cax_list[k], v_min, v_max, use_diverging, has_mag, labelsize=6)
                     ax.scatter(m_coords_np[:, 0], m_coords_np[:, 1], color=self.m_colors[:len(m_coords_np)], s=30, edgecolors='white', zorder=5)
                     title_str = f"E = {target_e:.3f} eV" if p_idx == 0 else ""
                     if self.plot_level >= 3:
@@ -2361,13 +2696,14 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
                     ax.set_yticks([])
 
                 if self.show_dcmp_norm and not self.cmap_norm:
-                    self._draw_map_cbar(self.cax_list[p_idx], p_vmax if p_vmax > 0 else 1e-15, use_diverging, has_mag)
+                    self._draw_map_cbar(self.cax_list[p_idx], p_vmin, p_vmax if p_vmax > 0 else 1e-15, use_diverging, has_mag)
 
             if not self.show_dcmp_norm and not self.cmap_norm and len(processed_partitions) > 0:
-                self._draw_map_cbar(self.cax_list[0], global_vmax, use_diverging, has_mag)
+                self._draw_map_cbar(self.cax_list[0], global_vmin, global_vmax, use_diverging, has_mag)
             self._draw_contour_artists()           # the contour slice on the maps as drawn
 
-            self._cluster_label.set_text(f"LDOS: {self.active_element}" if self.plot_level >= 3 else "LDOS")
+            quantity = "(dI/dV)/(I/V)" if self.feenstra else "LDOS"
+            self._cluster_label.set_text(f"{quantity}: {self.active_element}" if self.plot_level >= 3 else quantity)
 
         self.fig.canvas.draw_idle()
 
@@ -2376,6 +2712,9 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         f_up = self.cached_ld_up.copy()
         f_dn = self.cached_ld_dn.copy() if self.cached_ld_dn is not None else None
         f_ldos_raw = self._combine_ldos_display(f_up, f_dn, self.show_mag)
+        if self.feenstra:
+            # 'Feenstra': every map divided by I/V at the sample its LDOS is taken at (as in _update_all).
+            f_ldos_raw = feenstra.divide(f_ldos_raw, self._feenstra_iv('grid', self._map_sample_indices(self.map_e_targets)))
         partitions = self._get_partitions(f_ldos_raw)
 
         mag_signed = self._mag_is_signed()
@@ -2387,6 +2726,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
 
         processed_partitions = []
         global_vmax = 0.0
+        global_vmin = np.inf
         if self.normalize and f_ldos_raw is not None:
             total_ldos_map = np.sum(f_ldos_raw, axis=(2, 3))
             s_idx = np.argsort(self.map_e_targets)
@@ -2403,6 +2743,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
             v_max = np.max(np.abs(t_data))
             if v_max > global_vmax:
                 global_vmax = v_max
+            global_vmin = min(global_vmin, float(np.min(t_data)))
         if global_vmax == 0:
             global_vmax = 1e-15
 
@@ -2411,11 +2752,13 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
             ax = self.map_axes[k]
             ax.clear()
             p_vmax = np.max(np.abs(t_data)) if self.show_dcmp_norm else global_vmax
+            p_vmin = np.min(t_data) if self.show_dcmp_norm else global_vmin
             slice_data = t_data[:, i]
             v_max = self._map_vmax(slice_data, p_vmax)
-            self._draw_map_slice(ax, slice_data, v_max, use_diverging, has_mag)
+            v_min = self._map_vmin(slice_data, p_vmin)
+            self._draw_map_slice(ax, slice_data, v_min, v_max, use_diverging, has_mag)
             if self.cmap_norm:
-                self._draw_map_cbar(self.cax_list[k], v_max, use_diverging, has_mag, labelsize=6)
+                self._draw_map_cbar(self.cax_list[k], v_min, v_max, use_diverging, has_mag, labelsize=6)
             ax.scatter(m_coords_np[:, 0], m_coords_np[:, 1], color=self.m_colors[:len(m_coords_np)], s=30, edgecolors='white', zorder=5)
             title_str = f"E = {target_e:.3f} eV" if p_idx == 0 else ""
             if self.plot_level >= 3:
@@ -2560,10 +2903,8 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
                 e_idx = len(self.energies) - 1
             grid_z = cp.hstack([self.grid_xy_gpu, cp.array(self.current_z_map)[:, None]])
             t_up, t_dn, _ = self._calculate_ldos_at_points_gpu(
-                grid_z, self.energies[e_idx],
-                self.energies[min(e_idx + 1, len(self.energies) - 1)] + 1e-6,
-                use_energy_decay=self.use_decay, preserve_orbitals=True,
-                clamp_occupied=self.t2_clamp)
+                grid_z, None, None, use_energy_decay=self.use_decay, preserve_orbitals=True,
+                samples=[e_idx])
             self.cached_ld_up[:, idx:idx + 1] = cp.asnumpy(t_up[:, 0:1])
             if t_dn is not None and self.cached_ld_dn is not None:
                 self.cached_ld_dn[:, idx:idx + 1] = cp.asnumpy(t_dn[:, 0:1])

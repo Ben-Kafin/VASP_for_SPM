@@ -1,0 +1,74 @@
+--- /mnt/user-data/outputs/commit3/simulator.py	2026-11-05 16:40:13.825713000 -0800
++++ /mnt/user-data/outputs/commit4/simulator.py	2026-11-05 16:45:28.817594219 -0800
+@@ -71,24 +71,25 @@
+ 
+ 
+ def gpu_chen_tunneling_factor(V, E, phi):
+-    """Vectorized Julian Chen barrier model character-for-character, in float64.
++    """
++    Decay constant K (1/m) of a state through the Julian Chen trapezoidal barrier.
++
++    K = 8*pi*sqrt(2*m) / (3*h*V) * [(phi - E + V)^(3/2) - (phi - E)^(3/2)]
+ 
+-    No floor on V: every V != 0 goes through the formula as written; at V = 0 exactly (where the
+-    formula is 0/0) K is its exact V -> 0 limit, 4*pi*sqrt(2*m*max(0, phi - E))/h, the 2*kappa
+-    of a rectangular barrier of height phi - E.
++    is 2*kappa averaged over a barrier whose height runs linearly from phi - E to phi - E + V
++    (kappa = sqrt(2*m*height)/hbar). A state at distance d (Å) from the tip is weighted by
++    exp(-K * d * 1e-10).
++
++    V: bias (eV); E: state energy relative to E_F (eV); phi: barrier height above E_F (eV), the
++    LOCPOT at the tip minus E_F. All three are converted to joules. They broadcast: the callers
++    pass V and E as (n_energies, 1) and phi as (n_points,), giving K as (n_energies, n_points).
++    V = 0 gives 0/0, and phi - E < 0 a fractional power of a negative number; both are NaN.
+     """
+     me, h, q = 9.1093837e-31, 6.62607015e-34, 1.60217663e-19
+-    V = cp.abs(cp.asarray(V, dtype=cp.float64))
+-    E = cp.asarray(E, dtype=cp.float64)
+-    phi = cp.asarray(phi, dtype=cp.float64)
+-    at_zero = V == 0.0
+-    V_formula = cp.where(at_zero, 1.0, V)      # V = 0 entries only keep the formula finite; they are replaced by the limit below
+-    V_j, E_j, phi_j = V_formula * q, E * q, phi * q
++    V_j, E_j, phi_j = V * q, E * q, phi * q
+     prefactor = (8.0 / (3.0 * V_j)) * cp.pi * cp.sqrt(2.0 * me) / h
+-    term1 = cp.power(cp.maximum(0.0, phi_j - E_j + V_j), 1.5)
+-    term2 = cp.power(cp.maximum(0.0, phi_j - E_j), 1.5)
+-    K_limit = 4.0 * cp.pi * cp.sqrt(2.0 * me * cp.maximum(0.0, phi_j - E_j)) / h
+-    return cp.where(at_zero, K_limit, prefactor * (term1 - term2))
++    barrier = (phi_j - E_j + V_j) ** 1.5 - (phi_j - E_j) ** 1.5
++    return prefactor * barrier
+ 
+ 
+ class Unified_STM_Simulator:
+@@ -362,8 +363,6 @@
+         return "_" + self._effective_decay_model()
+ 
+     def _precision_cache_suffix(self):
+-        # The topographies computed in float64 with the unfloored Chen factor: the tag keeps
+-        # caches from the float32 build (with its 1e-6 floor on V) from ever matching.
+         return "_f64"
+ 
+     def _calculate_ldos_at_points_gpu(self, tip_positions, emin, emax,
+--- /mnt/user-data/outputs/commit2/checks/check_simulator.py	2026-11-05 14:27:20.280718000 -0800
++++ /mnt/user-data/outputs/commit4/check_simulator.py	2026-11-05 16:45:28.818094513 -0800
+@@ -349,16 +349,14 @@
+                         path=[[0.5, 0.5], [2.5, 2.5], [4.5, 4.5]], path_extend=False)
+     fig = sim.fig
+     rw.pump(150)
+-    # The Chen factor: float64, no floor on V; at V = 0 exactly its V -> 0 limit 4 pi sqrt(2 m (phi - E)) / h (2 kappa)
++    # The Chen factor: at small V it approaches 4 pi sqrt(2 m (phi - E)) / h (2 kappa); at V = 0.1 it is the formula as written
+     me, h, q = 9.1093837e-31, 6.62607015e-34, 1.60217663e-19
+     phis = np.array([4.5, 2.0])
+-    K = np.asarray(simmod.gpu_chen_tunneling_factor(np.array([[0.0], [1e-6], [0.1]]), np.zeros((3, 1)), phis))
++    K = np.asarray(simmod.gpu_chen_tunneling_factor(np.array([[1e-6], [0.1]]), np.zeros((2, 1)), phis))
+     lim = 4.0 * np.pi * np.sqrt(2.0 * me * phis * q) / h
+     at_01 = (8.0 / (3.0 * 0.1 * q)) * np.pi * np.sqrt(2.0 * me) / h * ((phis * q + 0.1 * q) ** 1.5 - (phis * q) ** 1.5)
+-    check('Chen factor: float64, finite, and its V -> 0 limit at V = 0', K.dtype == np.float64 and np.all(np.isfinite(K))
+-          and np.allclose(K[0], lim, rtol=1e-12, atol=0.0), K[0])
+-    check('Chen factor at V = 1e-6 agrees with the V = 0 limit to 1e-5', np.allclose(K[1], lim, rtol=1e-5, atol=0.0), K[1])
+-    check('Chen factor at V = 0.1 is the formula as written', np.allclose(K[2], at_01, rtol=1e-12, atol=0.0), K[2])
++    check('Chen factor at V = 1e-6 agrees with 2 kappa to 1e-5', np.allclose(K[0], lim, rtol=1e-5, atol=0.0), K[0])
++    check('Chen factor at V = 0.1 is the formula as written', np.allclose(K[1], at_01, rtol=1e-12, atol=0.0), K[1])
+     check('simulator window opens with its controls', fig is not None and len(fig._qt_controls) > 10 and sim.mode == 'Single Point')
+     check('no matplotlib on screen', 'matplotlib.pyplot' not in sys.modules or not any(
+         getattr(m, '__file__', '') and 'backend_qt' in getattr(m, '__file__', '') for m in sys.modules.values()))

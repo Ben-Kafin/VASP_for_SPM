@@ -1,0 +1,606 @@
+diff -ruN '--exclude=__pycache__' '--exclude=_cache' orig/LDOS_spread_decomp/stm_from_dft_opt/README.md repo/LDOS_spread_decomp/stm_from_dft_opt/README.md
+--- orig/LDOS_spread_decomp/stm_from_dft_opt/README.md	2026-11-05 13:57:14.641409476 -0800
++++ repo/LDOS_spread_decomp/stm_from_dft_opt/README.md	2026-11-05 14:14:52.856023757 -0800
+@@ -45,7 +45,9 @@
+ | `mode` radio | left column, top | the view: `Single Point`, `Line`, `Path`, `Map` (the panels of the view are rebuilt; the controls stay) |
+ | `broadening` box | left column | one check per atom type with its `σ <type>` box (eV, 0 to 1, two decimals), shown while the check is on: extra Gaussian broadening of that type's DOS |
+ | `RUN` / `STOP` | left column, bottom | starts and stops the computation; on STOP the line endpoints / path nodes and marker positions are printed in the form `run_interactive` takes |
+-| toggles | beside RUN | `Atoms`, `Decay`, `0-clamp` (under Decay), `Norm`, `Mag`, `Cell`, `Extend` |
++| toggles | beside RUN | `Atoms`, `Decay`, `0-clamp` (under Decay), `Norm`, `Feenstra`, `broadened` (under Feenstra), `Mag`, `Cell`, `Extend` |
++| `Feenstra` | toggles | Feenstra's normalized conductance (dI/dV)/(I/V) on top of the calculated LDOS (`feenstra.py`): at the same tip positions as the display, the total LDOS (with the Decay, 0-clamp and σ broadening in force) is integrated from 0 V to give I(V) (trapezoid rule, I(0) = 0 exactly; a window that does not reach 0 V is extended to it for the integral), I/V is formed, and the spectra, heatmaps and maps are divided by it along their energy axis; every partition, atom and orbital of a point is divided by the same total I/V (with `Mag` on, the magnetization over the total I/V). Display only: no LDOS recompute; `Norm`, when on, acts on the ratio. A point with no states between 0 V and V (0/0) shows 0. The spectrum's y axis and the label over the heatmaps and maps read (dI/dV)/(I/V) |
++| `broadened`, `width (V)` | under Feenstra; the width box under the toggles, shown while `broadened` is on | the I/V broadened by the sm4_Browser's rule: at each energy the exponentially weighted mean of I/V with the given width (V, off at open, 0.2 V, at least 0.001 V) over the samples the current was integrated on; off, the plain I/V (a sample exactly at 0 V given its neighbours' I/V) |
+ | `cmap norm` | bottom strip, Map only | off: every energy map on one colour scale, the largest value over all of them, with one colour bar; on: each map its own scale with its own bar beside it (as the sm4_Browser Map window's `cmap norm`). The maps' colour map is the constructor's `cmap_map`: `MAP_CMAP` by default, the sm4_Browser's (`custom_map`, midnight blue to light sky blue); any matplotlib colour-map name or Colormap |
+ | contour slice | the topo colour bar beside the Map Topo | the sm4_Browser Map window's: a cyan level line on the bar (half the range at open) is dragged by a press on it, following the cursor's height while the button is down even off the narrow bar sideways; the Map Topo's contour at that height, the perimeters of everything above it (WSxM's flooding, as outlines), is drawn on every energy map as white 1 pt traces, at the 2 × 2 images the maps show, never on the topography panels; the traces go to the publication files with the maps (`contour.py`: marching squares on the height map, placed on the unit cell's lattice) |
+ | `Topo h`, `LDOS h` | columns beside the topography panels | the tip heights (Å, 0 to the cell top above the highest atom) with a `Rerun` button each: the height applies when Rerun is pressed while running |
+@@ -64,6 +66,7 @@
+ | module | role |
+ |---|---|
+ | `simulator.py` | `Unified_STM_Simulator` (GPU LDOS, Simpson integration, Chen barrier, constant-current convergence, caches) and `Interactive_STM_Simulator` (the window: its controls made once, its panels per view, on the shared `qtgui` layer). Decay model: Tier 2 with the optional occupied-side 0-clamp |
++| `feenstra.py` | the `Feenstra` toggle's arithmetic (numpy only): `current_from_ldos` (I(V), the LDOS integrated from 0 V), `iv_ratio` (I/V, plain or broadened: a port of the sm4_Browser's `feenstra.iv_broadened` without its current filters and 0Vsub, which have no counterpart for a computed current), `divide` |
+ | `doscar_parser.py` | `SpinAwareDosParser`, `SpinMode`: DOSCAR reader for all three spin modes |
+ | `locpot_manager.py` | `LocpotManager`: LOCPOT loading and `.npy` caching for all three spin modes |
+ | `plot_dos_cursors_levels.py` | `DosPlotter`: DOS window with levels (total, Au / molecule, atom types, atoms, one atom's orbitals with hover labels; a click on a curve descends, a click beside the curves ascends; `m` toggles the \|m\| overlay in SOC mode) (run block at the bottom, `v_dir`) |
+diff -ruN '--exclude=__pycache__' '--exclude=_cache' orig/LDOS_spread_decomp/stm_from_dft_opt/stm_from_dft/feenstra.py repo/LDOS_spread_decomp/stm_from_dft_opt/stm_from_dft/feenstra.py
+--- orig/LDOS_spread_decomp/stm_from_dft_opt/stm_from_dft/feenstra.py	1969-12-31 16:00:00.000000000 -0800
++++ repo/LDOS_spread_decomp/stm_from_dft_opt/stm_from_dft/feenstra.py	2026-11-05 14:02:24.876040866 -0800
+@@ -0,0 +1,115 @@
++# -*- coding: utf-8 -*-
++"""
++Feenstra's normalized conductance (dI/dV)/(I/V) for the simulator's 'Feenstra' toggle.
++
++The simulated LDOS stands in for dI/dV, and its integral from 0 V stands in for the current:
++
++    I(r, V) = integral from 0 to V of LDOS_total(r, E) dE        (current_from_ldos)
++
++with E the DOSCAR energy relative to E_F in eV, read as the sample bias V in volts.  I/V is
++then formed and, optionally, broadened by the rule of the sm4_Browser's feenstra.iv_broadened
++(iv_ratio), and every displayed array is divided by it along its energy axis (divide).
++
++The I/V rule is a port of sm4_Browser/feenstra.py (iv_broadened), with the parts that only
++apply to a measured current left out: no Hampel / Savitzky-Golay filters and no '0Vsub' (the
++current here is 0 at 0 V by construction).  The rows here are points and the columns energies
++(sm4 has energies down the rows and one spectrum per column); the arithmetic is the same.
++
++Pure numpy, no GPU and no window code: the simulator computes the total LDOS on the GPU and
++hands the arrays here.
++
++Reference: R. M. Feenstra, J. A. Stroscio and A. P. Fein, "Tunneling spectroscopy of the
++Si(111)2x1 surface", Surf. Sci. 181, 295 (1987), doi:10.1016/0039-6028(87)90170-1.
++
++Developed by Benjamin Kafin
++"""
++
++import numpy as np
++
++
++def current_from_ldos(energies, ldos):
++    """
++    I(V) = integral from 0 to V of the LDOS, per point, at every sample of `energies`.
++
++    energies: (n_e,) ascending, in eV relative to E_F; it must reach 0 (0 on a sample or between
++    two samples).  ldos: (n_pts, n_e), the total LDOS of each point at those energies.  The
++    trapezoid rule over the samples, with a sample at exactly 0 inserted (its LDOS linearly
++    interpolated between the two samples bracketing 0) so that I(0) = 0 exactly; the integral of
++    the linear interpolant of the LDOS from 0 to each sample.  V < 0 gives I < 0 for a
++    non-negative LDOS, so I/V is positive on both sides.  Returns (n_pts, n_e) float64 at the
++    given energies (the inserted sample is not returned).
++    """
++    e = np.asarray(energies, dtype=np.float64)
++    L = np.atleast_2d(np.asarray(ldos, dtype=np.float64))
++    if e.ndim != 1 or L.shape[1] != len(e):
++        raise ValueError(f"current_from_ldos: energies {e.shape} and ldos {L.shape} do not match.")
++    if len(e) == 0 or e[0] > 0.0 or e[-1] < 0.0:
++        raise ValueError("current_from_ldos: the energies must reach 0 (E_F) to integrate from it.")
++    if len(e) > 1 and np.any(np.diff(e) <= 0):
++        raise ValueError("current_from_ldos: the energies must be strictly ascending.")
++    exact = np.flatnonzero(e == 0.0)
++    if len(exact):
++        k0 = int(exact[0])
++        e_full, L_full, inserted = e, L, None
++    else:
++        k0 = int(np.searchsorted(e, 0.0))                        # first sample above 0; e[k0 - 1] < 0 < e[k0]
++        t = (0.0 - e[k0 - 1]) / (e[k0] - e[k0 - 1])
++        L0 = L[:, k0 - 1] + t * (L[:, k0] - L[:, k0 - 1])
++        e_full = np.insert(e, k0, 0.0)
++        L_full = np.insert(L, k0, L0, axis=1)
++        inserted = k0
++    C = np.zeros_like(L_full)
++    if len(e_full) > 1:
++        C[:, 1:] = np.cumsum(0.5 * (L_full[:, 1:] + L_full[:, :-1]) * np.diff(e_full)[None, :], axis=1)
++    I_full = C - C[:, k0:k0 + 1]
++    if inserted is not None:
++        I_full = np.delete(I_full, inserted, axis=1)
++    return I_full
++
++
++def iv_ratio(energies, current, broadening=0.0):
++    """
++    I/V per point at every sample of `energies` (the rule of sm4_Browser feenstra.iv_broadened).
++
++    energies: (n_e,) in volts (eV relative to E_F); current: (n_pts, n_e) from current_from_ldos.
++    broadening > 0: the exponentially weighted mean of I/V over the samples,
++        (sum_k (I_k / V_k) exp(-|V_k - V_i| / broadening)) / (sum_k exp(-|V_k - V_i| / broadening)),
++    a sample exactly at 0 V carrying no weight as a source and still receiving a value from its
++    neighbours.  broadening <= 0: the plain I/V, a sample exactly at 0 V given the linear
++    interpolation of its neighbours' I/V.  Returns (n_pts, n_e) float64.
++    """
++    e = np.asarray(energies, dtype=np.float64)
++    I = np.atleast_2d(np.asarray(current, dtype=np.float64))
++    order = np.argsort(e)
++    es = e[order]
++    Is = I[:, order]
++    nz = es != 0.0
++    ratio = np.zeros_like(Is)
++    ratio[:, nz] = Is[:, nz] / es[nz][None, :]
++    if broadening > 0:
++        W = np.exp(-np.abs(es[:, None] - es[None, :]) / float(broadening))     # W[i, k]
++        W[:, ~nz] = 0.0                                                          # no source at 0 V
++        denom = (ratio @ W.T) / (W @ nz.astype(np.float64))[None, :]
++    else:
++        denom = ratio
++        if not nz.all():
++            for p in range(Is.shape[0]):
++                denom[p, ~nz] = np.interp(es[~nz], es[nz], ratio[p, nz])
++    out = np.empty_like(denom)
++    out[:, order] = denom
++    return out
++
++
++def divide(arr, iv):
++    """
++    `arr` (n_pts, n_e, ...) divided along its energy axis by `iv` (n_pts, n_e): every partition,
++    atom and orbital of a point divided by the same total I/V of that point, so partitions stay
++    additive.  Where I/V is exactly 0 (no states anywhere between 0 V and V: 0/0) the result is
++    0, so the colour scales stay finite.  float64.
++    """
++    a = np.asarray(arr, dtype=np.float64)
++    d = np.asarray(iv, dtype=np.float64)
++    d = d.reshape(d.shape + (1,) * (a.ndim - d.ndim))
++    out = np.zeros(np.broadcast_shapes(a.shape, d.shape), dtype=np.float64)
++    np.divide(a, d, out=out, where=(d != 0.0))
++    return out
+diff -ruN '--exclude=__pycache__' '--exclude=_cache' orig/LDOS_spread_decomp/stm_from_dft_opt/stm_from_dft/simulator.py repo/LDOS_spread_decomp/stm_from_dft_opt/stm_from_dft/simulator.py
+--- orig/LDOS_spread_decomp/stm_from_dft_opt/stm_from_dft/simulator.py	2026-11-05 13:57:14.640984653 -0800
++++ repo/LDOS_spread_decomp/stm_from_dft_opt/stm_from_dft/simulator.py	2026-11-05 14:05:31.196036604 -0800
+@@ -39,6 +39,7 @@
+ from .doscar_parser import SpinAwareDosParser, SpinMode
+ from .locpot_manager import LocpotManager
+ from . import contour
++from . import feenstra
+ 
+ 
+ # --- CORE UTILITIES ---
+@@ -505,6 +506,12 @@
+         self.cmap_norm = False
+         self.npts = 72
+         self.is_running, self.normalize, self.show_mag = False, False, False
++        # 'Feenstra': the display divided by I/V, I the total LDOS integrated from 0 V (feenstra.py),
++        # display only; 'broadened' under it: the I/V broadened by the 'width (V)' box (the
++        # sm4_Browser's rule). Off at open; the width the sm4_Browser's default.
++        self.feenstra = False
++        self.feenstra_broadened = False
++        self.feenstra_width = 0.2
+         self.show_atoms, self.show_unit_cell = True, False
+         self.use_decay = True
+         self.t2_clamp = True     # occupied-side 0-clamp within the decay model (on by default)
+@@ -540,6 +547,11 @@
+         self.cached_bias_energy_line, self.cached_bias_energy_map, self.cached_nepts = None, None, None
+         self.cached_ld_up, self.cached_ld_dn, self.cached_eg = None, None, None
+         self.cached_marker_coords, self.cached_spec_ldos = None, None
++        # The Feenstra currents: the tip positions and DOSCAR sample indices of the cached LDOS
++        # (recorded when the LDOS is computed) and the current on its span of samples from 0 V
++        # (computed the first time 'Feenstra' needs it, cleared whenever the LDOS is recomputed).
++        self._iv_pts, self._iv_need, self.cached_iv = None, None, None                 # Line / Path points or the Map grid
++        self._spec_iv_pts, self._spec_iv_need, self.cached_spec_iv = None, None, None  # the Single Point / Map markers
+ 
+         # --- Path mode state ---
+         self.path = None                  # initial seed: all atom-index lists [[154],...] OR all [x,y] coords; no mix
+@@ -691,6 +703,59 @@
+                                 partitions.append((f"{self.active_element} {orb}", orb_data))
+         return partitions
+ 
++    # ------------------------------------------------------------------
++    # 'Feenstra': the display divided by I/V (feenstra.py)
++    # ------------------------------------------------------------------
++    def _display_indices(self, emin, emax):
++        """The DOSCAR sample indices of an energy window, as _calculate_ldos_at_points_gpu takes them."""
++        return np.arange(np.searchsorted(self.energies, emin), np.searchsorted(self.energies, emax, side='right'))
++
++    def _map_sample_indices(self, targets):
++        """The DOSCAR sample each Map energy's LDOS is taken at: the first sample at or above it (as _update_all and _on_rel take it)."""
++        return np.minimum(np.searchsorted(self.energies, np.asarray(targets, dtype=np.float64)), len(self.energies) - 1)
++
++    def _feenstra_current(self, pts, need):
++        """
++        The current at the tip positions `pts` (n, 3) on the span of DOSCAR samples that covers the
++        samples `need` (indices into self.energies) and brackets 0 V: the total LDOS
++        (topo_only, with the same Decay, 0-clamp and extra broadening as the display) integrated
++        from 0 V (feenstra.current_from_ldos).  Returns {'I': (n, n_span), 's0': the span's first
++        sample index, 'width': None, 'iv': None} (width / iv: the last I/V formed from it).
++        """
++        E = self.energies
++        n = len(E)
++        k_lo = max(int(np.searchsorted(E, 0.0, side='right')) - 1, 0)     # the last sample at or below 0 V
++        k_hi = min(int(np.searchsorted(E, 0.0, side='left')), n - 1)       # the first sample at or above 0 V
++        s0 = min(int(np.min(need)), k_lo)
++        s1 = max(int(np.max(need)) + 1, k_hi + 1)
++        ld, _, _ = self._calculate_ldos_at_points_gpu(
++            cp.asarray(np.asarray(pts, dtype=np.float64), dtype=cp.float32), E[s0], E[s1 - 1],
++            use_energy_decay=self.use_decay, preserve_orbitals=False, topo_only=True,
++            clamp_occupied=self.t2_clamp)
++        return {'I': feenstra.current_from_ldos(E[s0:s1], cp.asnumpy(ld)), 's0': s0, 'width': None, 'iv': None}
++
++    def _feenstra_iv(self, which, need):
++        """
++        The I/V the display is divided by, (n_pts, len(need)), at the DOSCAR samples `need`:
++        which = 'grid' for the Line / Path points or the Map grid, 'spec' for the Single Point / Map
++        markers.  The current is computed the first time it is needed after the LDOS (and again if
++        `need` reaches outside its span); I/V is formed on the whole span, broadened by 'width (V)'
++        while 'broadened' is on (feenstra.iv_ratio), kept for that width, and taken at `need`.
++        """
++        need = np.asarray(need)
++        attr, pts_attr, need_attr = (('cached_iv', '_iv_pts', '_iv_need') if which == 'grid'
++                                     else ('cached_spec_iv', '_spec_iv_pts', '_spec_iv_need'))
++        rec = getattr(self, attr)
++        if rec is None or need.min() < rec['s0'] or need.max() >= rec['s0'] + rec['I'].shape[1]:
++            rec = self._feenstra_current(getattr(self, pts_attr), np.union1d(getattr(self, need_attr), need))
++            setattr(self, attr, rec)
++        width = float(self.feenstra_width) if self.feenstra_broadened else 0.0
++        if rec['iv'] is None or rec['width'] != width:
++            s0 = rec['s0']
++            rec['iv'] = feenstra.iv_ratio(self.energies[s0:s0 + rec['I'].shape[1]], rec['I'], width)
++            rec['width'] = width
++        return rec['iv'][:, need - rec['s0']]
++
+     def _build_path_xy(self):
+         """Build resampled path sample points from the current draggable nodes.
+ 
+@@ -760,10 +825,12 @@
+         self.btn_run.on_change(self._toggle_run)
+         # One list defines every toggle: label and the attribute it drives. '0-clamp' sits
+         # indented under 'Decay' as its sub-option (the occupied-side 0-clamp of the decay model,
+-        # on by default); it stays visible whether or not Decay is on.
++        # on by default); it stays visible whether or not Decay is on. 'broadened' sits indented
++        # under 'Feenstra' the same way (the I/V broadened by the 'width (V)' box).
+         toggle_defs = [('Atoms', 'show_atoms'), ('Decay', 'use_decay'),
+                        ('0-clamp', 't2_clamp'),
+-                       ('Norm', 'normalize'), ('Mag', 'show_mag'),
++                       ('Norm', 'normalize'), ('Feenstra', 'feenstra'),
++                       ('broadened', 'feenstra_broadened'), ('Mag', 'show_mag'),
+                        ('Cell', 'show_unit_cell'), ('Extend', 'path_extend')]
+         if not getattr(self, 'show_decay_toggle', True):
+             toggle_defs = [d for d in toggle_defs if d[0] not in ('Decay', '0-clamp')]
+@@ -771,8 +838,12 @@
+         labels = [label for label, _ in toggle_defs]
+         self.chk = controls.make(fig, 'sim toggles', labels=labels,
+                                  values=[getattr(self, attr) for _, attr in toggle_defs],
+-                                 indents=['    ' if label == '0-clamp' else 0 for label in labels])
++                                 indents=['    ' if label in ('0-clamp', 'broadened') else 0 for label in labels])
+         self.chk.on_change(self._on_ui_change)
++        # The Feenstra broadening width (V), in the RUN / toggles box, shown only while 'broadened' is on.
++        self.s_feen_width = controls.make(fig, 'width (V)', value=self.feenstra_width)
++        self.s_feen_width.on_change(self._on_ui_change)
++        self.s_feen_width.show(self.feenstra_broadened)
+         # The bottom strip's boxes (the counts and values that were sliders).
+         self.s_cell = controls.make(fig, 'Cells', value=self.display_cells)
+         self.s_path_pts = controls.make(fig, 'Path Pts', value=len(self.path_nodes))
+@@ -845,7 +916,7 @@
+             controls.box(self.chk_broad, controls.column(*self.s_broad.values()), title='broadening'),
+             self._hook_layout,
+             'stretch',
+-            controls.box(self.btn_run, self.chk))
++            controls.box(self.btn_run, controls.column(self.chk, self.s_feen_width)))
+         left_w = controls.widget_of(self._left_column)
+         left_w.setSizePolicy(QtWidgets.QSizePolicy.Policy.Fixed, QtWidgets.QSizePolicy.Policy.Preferred)
+         self._panel_area = QtWidgets.QVBoxLayout()         # the view's arrangement (controls.Arrangement; _build_ui fills it)
+@@ -1702,6 +1773,10 @@
+             setattr(self, attr, state)
+         self.display_cells = int(self.s_cell.val)
+         self.ldos_gamma = float(self.s_ldos_gamma.value)
++        # The Feenstra width (display only, as 'Feenstra' and 'broadened': they fall through to the redraw);
++        # its box shown only while 'broadened' is on.
++        self.feenstra_width = float(self.s_feen_width.val)
++        self.s_feen_width.show(self.feenstra_broadened)
+ 
+         # 0-clamp toggled while Decay is off: it only takes effect once Decay is
+         # on, so record the state and do nothing else (no recompute, no redraw).
+@@ -1947,6 +2022,19 @@
+             self.cached_emin, self.cached_emax = self.s_emin.val, self.s_emax.val
+             self.cached_d_ldos, self.cached_nepts = decay_model, nepts
+             self.cached_mode = self.mode
++            # The Feenstra current belongs to these tip positions and samples: recorded, its cache cleared
++            # (computed again the first time 'Feenstra' needs it). Map: every sample a map energy in
++            # [E Min, E Max] can be taken at, so a dragged energy marker needs no new current.
++            self.cached_iv = None
++            if self.mode in ('Line', 'Path'):
++                self._iv_pts = np.hstack([p_xy, self.current_z_line[:, None]])
++                self._iv_need = self._display_indices(self.s_emin.val, self.s_emax.val)
++            elif self.mode == 'Map':
++                self._iv_pts = np.hstack([self.grid_xy, np.asarray(self.current_z_map)[:, None]])
++                self._iv_need = np.arange(np.searchsorted(self.energies, self.s_emin.val),
++                                          self._map_sample_indices([self.s_emax.val])[0] + 1)
++            else:
++                self._iv_pts = self._iv_need = None
+ 
+         if needs_spec and self.mode in ['Single Point', 'Map']:
+             m_coords = np.array(self.marker_coords)
+@@ -1972,16 +2060,30 @@
+             spec_ldos = self._combine_ldos_display(s_up_np, s_dn_np, self.show_mag)
+             self.cached_spec_ldos = spec_ldos
+             self.cached_marker_coords = np.array(self.marker_coords).copy()
++            # The markers' Feenstra current belongs to these tip positions and samples: recorded, its cache cleared.
++            self._spec_iv_pts = np.hstack([m_coords, z_marks[:, None]])
++            self._spec_iv_need = self._display_indices(self.s_emin.val, self.s_emax.val)
++            self.cached_spec_iv = None
+ 
+         if self.mode in ['Line', 'Path', 'Map'] and self.cached_ld_up is not None:
+             f_up = self.cached_ld_up.copy()
+             f_dn = self.cached_ld_dn.copy() if self.cached_ld_dn is not None else None
+             f_ldos_raw = self._combine_ldos_display(f_up, f_dn, self.show_mag)
++            if self.feenstra:
++                # 'Feenstra': every partition of a point divided by that point's total I/V at each energy
++                # (Map: at the sample each map's LDOS is taken at); 'Norm', when on, then acts on the ratio.
++                need = self._map_sample_indices(self.map_e_targets) if self.mode == 'Map' else self._iv_need
++                f_ldos_raw = feenstra.divide(f_ldos_raw, self._feenstra_iv('grid', need))
+             partitions = self._get_partitions(f_ldos_raw)
+         else:
+             f_ldos_raw = None
+             partitions = []
+ 
++        # The marker spectra as shown (Single Point, Map): divided by their I/V under 'Feenstra', else as cached.
++        spec_disp = self.cached_spec_ldos
++        if self.feenstra and spec_disp is not None and self.mode in ('Single Point', 'Map'):
++            spec_disp = feenstra.divide(spec_disp, self._feenstra_iv('spec', self._spec_iv_need))
++
+         # --- Determine whether mag data is signed (for colormap selection) ---
+         mag_signed = self._mag_is_signed()
+         has_mag = self._has_mag_channel()
+@@ -1992,7 +2094,7 @@
+             active_ldos = f_ldos_raw[active_idx] if f_ldos_raw is not None else np.zeros_like(self.cached_spec_ldos[0])
+         else:
+             active_idx = min(self.active_marker_idx, len(self.marker_coords) - 1)
+-            active_ldos = self.cached_spec_ldos[active_idx]
++            active_ldos = spec_disp[active_idx]
+ 
+         self.ax_spec.clear()
+ 
+@@ -2031,7 +2133,7 @@
+                     self.ax_spec.plot(self.cached_eg, t_y, color=color, lw=2.5, picker=True, pickradius=5, label=f'marker_{i}')
+             else:
+                 for i, pt in enumerate(self.marker_coords):
+-                    c_ldos = self.cached_spec_ldos[i].copy()
++                    c_ldos = spec_disp[i].copy()
+                     t_y = np.sum(c_ldos, axis=(1, 2))
+                     if self.normalize:
+                         t_y /= (simpson(t_y, x=self.cached_eg) + 1e-15)
+@@ -2100,6 +2202,8 @@
+ 
+         p_dist_val = p_dist[active_idx] if self.mode in ('Line', 'Path') else f"[{self.marker_coords[active_idx][0]:.1f}, {self.marker_coords[active_idx][1]:.1f}]"
+         self.ax_spec.set(title=f"Partitioned LDOS: marker {self.active_marker_idx} at {p_dist_val} Å", xlabel="Energy (eV)")
++        if self.feenstra:
++            self.ax_spec.set_ylabel("(dI/dV)/(I/V)")
+         # (The spectrum no longer keeps a square box in Line / Path: a curve panel fills the room the
+         # arrangement gives it, so no blank is left around it; rule 11.)
+ 
+@@ -2270,7 +2374,8 @@
+             # The cluster's row shares one height (the row rule, Figure.align_row): the stripe and the
+             # colour bars follow the heatmaps' box aspect at any window size.
+             self.fig.align_row(*self.line_decomp_axes)
+-            self._cluster_label.set_text(f"LDOS: {self.active_element}" if self.plot_level >= 3 else "LDOS")
++            quantity = "(dI/dV)/(I/V)" if self.feenstra else "LDOS"
++            self._cluster_label.set_text(f"{quantity}: {self.active_element}" if self.plot_level >= 3 else quantity)
+             self._rearrange()                      # the row is new: the arrangement and the window follow (rule 11)
+ 
+         elif self.mode == 'Map':
+@@ -2367,7 +2472,8 @@
+                 self._draw_map_cbar(self.cax_list[0], global_vmax, use_diverging, has_mag)
+             self._draw_contour_artists()           # the contour slice on the maps as drawn
+ 
+-            self._cluster_label.set_text(f"LDOS: {self.active_element}" if self.plot_level >= 3 else "LDOS")
++            quantity = "(dI/dV)/(I/V)" if self.feenstra else "LDOS"
++            self._cluster_label.set_text(f"{quantity}: {self.active_element}" if self.plot_level >= 3 else quantity)
+ 
+         self.fig.canvas.draw_idle()
+ 
+@@ -2376,6 +2482,9 @@
+         f_up = self.cached_ld_up.copy()
+         f_dn = self.cached_ld_dn.copy() if self.cached_ld_dn is not None else None
+         f_ldos_raw = self._combine_ldos_display(f_up, f_dn, self.show_mag)
++        if self.feenstra:
++            # 'Feenstra': every map divided by I/V at the sample its LDOS is taken at (as in _update_all).
++            f_ldos_raw = feenstra.divide(f_ldos_raw, self._feenstra_iv('grid', self._map_sample_indices(self.map_e_targets)))
+         partitions = self._get_partitions(f_ldos_raw)
+ 
+         mag_signed = self._mag_is_signed()
+diff -ruN '--exclude=__pycache__' '--exclude=_cache' orig/checks/check_simulator.py repo/checks/check_simulator.py
+--- orig/checks/check_simulator.py	2026-11-05 13:57:14.641960233 -0800
++++ repo/checks/check_simulator.py	2026-11-05 14:11:10.224028850 -0800
+@@ -262,6 +262,79 @@
+     return check(f"render {rep['name']}: no problem at any size", not rep['problems'])
+ 
+ 
++def toggle(sim, label):
++    """The simulator's toggle box of `label` (its position in the toggle list)."""
++    return sim.chk.boxes[[lab for lab, _ in sim._toggle_defs].index(label)]
++
++
++def feenstra_expected(sim, pts, emin, emax, width=0.0):
++    """
++    The I/V a 'Feenstra' display is divided by, computed here without feenstra.py: the total LDOS
++    at the tip positions `pts` on every DOSCAR sample from min(0, emin) to max(0, emax) (the
++    simulator's own GPU call, topo_only, with its Decay and 0-clamp), I(V) the trapezoid integral
++    from the 0 V sample (the synthetic DOSCAR has one) to each sample, I/V with the 0 V sample
++    interpolated from its neighbours, or with width > 0 the exponentially weighted mean of the
++    sm4_Browser's iv_broadened written out as a loop; returned at the samples in [emin, emax].
++    """
++    E = sim.energies
++    span = np.flatnonzero((E >= min(0.0, emin)) & (E <= max(0.0, emax)))
++    ld, _, _ = sim._calculate_ldos_at_points_gpu(np.asarray(pts, dtype=np.float64), E[span[0]], E[span[-1]],
++                                                 use_energy_decay=sim.use_decay, preserve_orbitals=False,
++                                                 topo_only=True, clamp_occupied=sim.t2_clamp)
++    L = np.asarray(ld, dtype=np.float64)
++    Es = E[span]
++    k0 = int(np.flatnonzero(Es == 0.0)[0])
++    I = np.zeros_like(L)
++    for j in range(len(Es)):
++        a, b = sorted((k0, j))
++        seg = np.trapezoid(L[:, a:b + 1], Es[a:b + 1], axis=1)
++        I[:, j] = seg if j >= k0 else -seg
++    nz = Es != 0.0
++    iv = np.zeros_like(I)
++    iv[:, nz] = I[:, nz] / Es[nz]
++    if width > 0:
++        out = np.zeros_like(iv)
++        for i in range(len(Es)):
++            w = np.exp(-np.abs(Es - Es[i]) / width) * nz
++            out[:, i] = (iv * w).sum(axis=1) / w.sum()
++        iv = out
++    else:
++        for p in range(len(iv)):
++            iv[p, ~nz] = np.interp(Es[~nz], Es[nz], iv[p, nz])
++    return iv[:, (Es >= emin) & (Es <= emax)]
++
++
++def marker_points(sim):
++    """The Single Point / Map markers' tip positions: each marker's z the nearest grid point's (wrapped into the cell), as the simulator takes it."""
++    inv_lv = np.linalg.inv(sim.lv)
++    pts = []
++    for x, y in np.asarray(sim.marker_coords, dtype=np.float64):
++        f = np.dot([x, y, 0.0], inv_lv)
++        f[:2] %= 1.0
++        w = np.dot(f, sim.lv)
++        k = int(np.argmin((sim.grid_xy[:, 0] - w[0]) ** 2 + (sim.grid_xy[:, 1] - w[1]) ** 2))
++        pts.append([x, y, float(sim.current_z_map[k])])
++    return np.array(pts)
++
++
++def spectra_match(sim, width, norm=False):
++    """
++    The marker curves of the spectrum panel (level 0) against the cached marker LDOS summed over
++    atoms and orbitals, divided by feenstra_expected's I/V (width None: the LDOS itself), and with
++    norm divided by their Simpson area as 'Norm' does.
++    """
++    from scipy.integrate import simpson
++    lines = {l.get_label(): np.asarray(l.get_ydata(), dtype=np.float64) for l in sim.ax_spec.get_lines()
++             if l.get_label().startswith('marker_')}
++    tot = np.asarray(sim.cached_spec_ldos, dtype=np.float64).sum(axis=(2, 3))
++    if width is not None:
++        tot = tot / feenstra_expected(sim, marker_points(sim), sim.s_emin.val, sim.s_emax.val, width)
++    if norm:
++        tot = tot / (simpson(tot, x=sim.cached_eg, axis=1)[:, None] + 1e-15)
++    return (len(lines) == len(tot)
++            and all(np.allclose(lines[f'marker_{i}'], tot[i], rtol=1e-4, atol=0.0) for i in range(len(tot))))
++
++
+ # ---------------------------------------------------------------------- #
+ #  The simulator                                                           #
+ # ---------------------------------------------------------------------- #
+@@ -367,6 +440,41 @@
+     check('Norm toggle normalizes the spectra', sim.normalize)
+     sim.chk.boxes[3].click()
+     rw.pump(30)
++    # Feenstra: the marker spectra divided by I/V, I the total LDOS integrated from 0 V (display only).
++    # The marker spectra recomputed first (a new E Min): the Topo h Rerun above leaves them at the
++    # previous topography, and the expected values here are taken at the current one.
++    type_into(sim.s_emin, '-2.900')
++    raw = sim.cached_spec_ldos
++    check("width (V) box hidden while 'broadened' is off", not sim.s_feen_width.qt.isVisible())
++    toggle(sim, 'Feenstra').click()
++    rw.pump(30)
++    check('Feenstra toggle is display only (the LDOS is not recomputed)', sim.feenstra and sim.cached_spec_ldos is raw)
++    check('Feenstra: the marker spectra are LDOS / (I/V)', spectra_match(sim, 0.0))
++    check('Feenstra: the spectrum axis reads (dI/dV)/(I/V)', sim.ax_spec.get_ylabel() == '(dI/dV)/(I/V)')
++    toggle(sim, 'broadened').click()
++    rw.pump(30)
++    check("'broadened' shows the width (V) box at 0.2 V", sim.s_feen_width.qt.isVisible() and abs(sim.s_feen_width.val - 0.2) < 1e-12)
++    check('broadened: I/V broadened by 0.2 V', spectra_match(sim, 0.2))
++    type_into(sim.s_feen_width, '0.5')
++    check('width (V) box applies 0.5 V', abs(sim.feenstra_width - 0.5) < 1e-12 and spectra_match(sim, 0.5))
++    type_into(sim.s_feen_width, '-1')
++    check('width (V) box clamps to its lower limit', sim.s_feen_width.val == 0.001 and sim.feenstra_width == 0.001)
++    type_into(sim.s_feen_width, '0.200')
++    toggle(sim, 'broadened').click()
++    rw.pump(30)
++    check("'broadened' off hides the box and divides by the plain I/V", not sim.s_feen_width.qt.isVisible() and spectra_match(sim, 0.0))
++    toggle(sim, 'Norm').click()
++    rw.pump(30)
++    check('Norm with Feenstra normalizes the ratio', spectra_match(sim, 0.0, norm=True))
++    toggle(sim, 'Norm').click()
++    rw.pump(30)
++    type_into(sim.s_emin, '0.1')
++    check('Feenstra with a window above 0 V integrates from 0 V', sim.cached_emin == 0.1 and spectra_match(sim, 0.0))
++    type_into(sim.s_emin, '-3.000')
++    check('Feenstra after a new window: the current follows the new spectra', spectra_match(sim, 0.0))
++    toggle(sim, 'Feenstra').click()
++    rw.pump(30)
++    check('Feenstra off shows the LDOS again', not sim.feenstra and spectra_match(sim, None) and sim.ax_spec.get_ylabel() == '')
+     sim.chk.boxes[1].click()          # Decay off: recompute with the other model
+     rw.pump(50)
+     check('Decay toggle off recomputes (decay_off model)', not sim.use_decay and sim.cached_d_ldos == 'decay_off')
+@@ -386,6 +494,23 @@
+           and heats[0] in sim.ax_line_topo._row)
+     check('heatmap title is the partition', heats[0].get_title() == 'Total')
+     check('colour bar exponent title', bars[0].get_title().startswith('1e'))
++    # Feenstra in the Line view: the marker curves (rows of the heatmap) divided by I/V at their line points
++    toggle(sim, 'Feenstra').click()
++    rw.pump(50)
++    check('Feenstra: cluster label (dI/dV)/(I/V)', sim._cluster_label.get_text() == '(dI/dV)/(I/V)')
++    v = sim.p2 - sim.p1
++    lines = {l.get_label(): np.asarray(l.get_ydata(), dtype=np.float64) for l in sim.ax_spec.get_lines() if l.get_label().startswith('marker_')}
++    ok = len(lines) == len(sim.marker_ratios)
++    for i, r in enumerate(sim.marker_ratios):
++        idx = int(r * (sim.npts - 1))
++        pt = np.append(sim.p1 + np.linspace(0, 1, sim.npts)[idx] * v, sim.current_z_line[idx])
++        want = np.asarray(sim.cached_ld_up[idx], dtype=np.float64).sum(axis=(1, 2)) / feenstra_expected(
++            sim, pt[None, :], sim.s_emin.val, sim.s_emax.val)[0]
++        ok = ok and np.allclose(lines[f'marker_{i}'], want, rtol=1e-4, atol=0.0)
++    check('Feenstra (Line): the curves are LDOS / (I/V) at their line points', ok)
++    toggle(sim, 'Feenstra').click()
++    rw.pump(50)
++    check('Feenstra off: cluster label LDOS', sim._cluster_label.get_text() == 'LDOS')
+     report(rw.check_window(fig, 'simulator_line', SHOTS))
+     # the endpoint drag
+     p1 = sim.p1.copy()
+@@ -436,10 +561,10 @@
+     sim._on_motion(motion(fig, sim.ax_map, float(nd[0]) + 0.2, float(nd[1]) - 0.2))
+     check('dragging a node moves it', abs(sim.path_nodes[1][0] - (nd[0] + 0.2)) < 1e-6)
+     sim.active_obj = None
+-    sim.chk.boxes[6].click()      # Extend
++    sim.chk.boxes[8].click()      # Extend
+     rw.pump(50)
+     check('Extend toggle recomputes the path', sim.path_extend and sim.cached_path_extend)
+-    sim.chk.boxes[6].click()
++    sim.chk.boxes[8].click()
+     rw.pump(50)
+     report(rw.check_window(fig, 'simulator_path', SHOTS))
+ 
+@@ -458,6 +583,26 @@
+     check('E Pts box rebuilds the map rows', len(sim.map_axes) == 3 and len(sim.map_e_targets) == 3)
+     em = [l for l in sim.ax_spec.get_lines() if l.get_label().startswith('emarker_')]
+     check('energy markers on the spectrum', len(em) == 3)
++    # Feenstra in the Map view: every map divided by I/V at the sample its LDOS is taken at (the maps' data captured as drawn)
++    toggle(sim, 'Feenstra').click()
++    rw.pump(50)
++    drawn = {}
++    draw_slice = sim._draw_map_slice
++
++    def capture(ax, data, *a, **k):
++        drawn[sim.map_axes.index(ax)] = np.array(data, dtype=np.float64)
++        return draw_slice(ax, data, *a, **k)
++    sim._draw_map_slice = capture
++    sim._update_all()
++    grid_pts = np.hstack([sim.grid_xy, np.asarray(sim.current_z_map, dtype=np.float64)[:, None]])
++
++    def map_matches(i):
++        k = min(int(np.searchsorted(sim.energies, sim.map_e_targets[i])), len(sim.energies) - 1)
++        Ek = sim.energies[k]
++        want = np.asarray(sim.cached_ld_up[:, i], dtype=np.float64).sum(axis=(1, 2)) / feenstra_expected(sim, grid_pts, Ek, Ek)[:, 0]
++        return i in drawn and np.allclose(drawn[i], want, rtol=1e-4, atol=0.0)
++    check('Feenstra (Map): every map is LDOS / (I/V) at its sample', all(map_matches(i) for i in range(len(sim.map_e_targets))))
++    check('Feenstra (Map): label and the marker spectra', sim._cluster_label.get_text() == '(dI/dV)/(I/V)' and spectra_match(sim, 0.0))
+     e1 = float(sim.map_e_targets[1])
+     # The press is in the band above the curves (the y limits leave 10 % over the highest curve): a
+     # press on the marker where a curve crosses it would descend a level as well, as it always did.
+@@ -477,6 +622,11 @@
+     check('release recomputes that slice and ends the drag', rel_ok and sim.active_obj is None and not np.array_equal(before, sim.cached_ld_up[:, 1]),
+           (rel_ok, sim.active_obj))
+     sim.active_obj = None
++    check('Feenstra (Map): the dragged map is divided at its new sample', map_matches(1))
++    del sim._draw_map_slice
++    toggle(sim, 'Feenstra').click()
++    rw.pump(50)
++    check('Feenstra off (Map): cluster label LDOS', not sim.feenstra and sim._cluster_label.get_text() == 'LDOS')
+     report(rw.check_window(fig, 'simulator_map', SHOTS))
+ 
+     # ---- back to Single Point: the window rebuilt without leaks ----
+diff -ruN '--exclude=__pycache__' '--exclude=_cache' orig/qtgui/widgets.py repo/qtgui/widgets.py
+--- orig/qtgui/widgets.py	2026-11-05 13:57:14.642598009 -0800
++++ repo/qtgui/widgets.py	2026-11-05 14:05:34.632036525 -0800
+@@ -88,6 +88,7 @@
+     'Topo h': _spec('value', 0.6, 0.24, vmin=0.0, vmax=None, decimals=3),      # tip heights (Å); the window passes vmax
+     'LDOS h': _spec('value', 0.6, 0.24, vmin=0.0, vmax=None, decimals=3),
+     'σ broad': _spec('value', 0.5, 0.22, fs=7, vmin=0.0, vmax=1.0, decimals=2),   # the simulator: extra broadening per atom type (eV), labelled 'σ <type>'
++    'width (V)': _spec('value', 0.6, 0.24, vmin=0.001, vmax=None, decimals=3),   # the simulator: the Feenstra I/V broadening width (V), > 0 as the sm4_Browser's
+     'σ (eV)': _spec('value', 0.6, 0.24, decimals=3),                           # SigmaBox: the window passes the limits
+     'γ': _spec('text', 0.45, 0.24, fs=7),                                      # GammaBox (plane slice)
+     'LDOS γ': _spec('text', 0.45, 0.24, fs=7),                                 # GammaBox (the simulator's heatmaps)
