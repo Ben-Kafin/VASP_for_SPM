@@ -16,9 +16,9 @@ What it holds:
 - The corners of an RGBA mesh with one quad per point, centred on it and tiled by cell offsets
   (mesh_corners).  The drawing itself is the caller's.
 
-Self-contained: it imports only the standard library and NumPy.  It imports nothing from the simulator and
-nothing from qtgui (the box builder is handed the controls module).  CuPy is used only through the arrays
-it is given: array_module never imports CuPy, so the module imports and runs where CuPy is not installed.
+Self-contained: it imports only the standard library, NumPy and CuPy.  It imports nothing from the simulator
+and nothing from qtgui (the box builder is handed the controls module).  The maths runs with the module of
+the arrays it is given (cupy.get_array_module): NumPy arrays on the CPU, CuPy arrays on the GPU.
 It is written to be copied into sm4_Browser as it is; each package keeps its own copy.
 
 The CET names ('CET-L3', 'CET-L6', 'CET-R1', 'CET-D1A', 'CET-L19', 'CET-I1', 'CET-D11', 'CET-I3') are the
@@ -32,8 +32,8 @@ the colours and the shading" (https://colorcet.com/userguide/index.html).
 """
 
 import math
-import sys
 
+import cupy
 import numpy as np
 
 
@@ -299,19 +299,12 @@ def build_box(fig, controls, on_change=None, state=None, title=BOX_TITLE, orient
 
 def array_module(*arrays):
     """
-    Machinery: the array module of the arguments, CuPy or NumPy, for code written once for both (`xp`).
-    When the cupy package is already imported (sys.modules), this is cupy.get_array_module(*arrays): "If at
-    least one of the arguments is a cupy.ndarray object, the cupy module is returned"
-    (https://docs.cupy.dev/en/stable/reference/generated/cupy.get_array_module.html).  Otherwise it is NumPy.
-    No CuPy array can exist before the cupy package is imported, because importing a submodule runs its
-    parent package first (https://docs.python.org/3/reference/import.html, "Regular packages").  So NumPy
-    is then the right answer, and this module never imports CuPy itself.
+    Machinery: the array module of the arguments, CuPy or NumPy, for code written once for both (`xp`):
+    cupy.get_array_module(*arrays), "If at least one of the arguments is a cupy.ndarray object, the cupy
+    module is returned" (https://docs.cupy.dev/en/stable/reference/generated/cupy.get_array_module.html),
+    otherwise NumPy.
     """
-    cp = sys.modules.get('cupy')
-    gam = getattr(cp, 'get_array_module', None) if cp is not None else None
-    if gam is None:
-        return np
-    return gam(*arrays)
+    return cupy.get_array_module(*arrays)
 
 
 def unique_points(values):

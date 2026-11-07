@@ -58,7 +58,7 @@ Branch: `claude/jolly-babbage-ppmbdj`. Base of part 1's work: b051547.
     and mplexport's rebuild take only scalar C through norm and colour map (K10); the energy maps are turned with
     the unit-cell panels (set_rotated), so "light from the upper right" needs a reading (K11).
     Claude's readings: the module is `cmap_shading.py`; its box builder takes the figure and the qtgui controls
-    module as arguments and its maths uses CuPy only when given CuPy arrays (no CuPy import needed in sm4_Browser);
+    module as arguments and its maths uses CuPy only when given CuPy arrays (superseded by ruling 14);
     one colour per unique grid point (the grid's duplicate edge left out), each point's quad centred on it, tiled
     by the cell offsets like the filled contours.
     The module (`cmap_shading.py`, workflow wf_4a9307b3-b2d: sources fetched, module written, reviewed by fidelity
@@ -89,6 +89,9 @@ Branch: `claude/jolly-babbage-ppmbdj`. Base of part 1's work: b051547.
     drawn, restored after (all three copies); N3 (a): TriContourSet.set_cmap / set_norm update `_args` (both package
     copies); N4: README rows for cmap_shading.py and _resolve.py. Applied after the follow-up workflow (wf_a3502bdb-787)
     finishes, since it is editing the same files.
+14. The shading module's CuPy check (owner, 2026-11-07, "3, skip the cheks"): `cmap_shading.py` imports cupy and
+    `array_module` is `cupy.get_array_module(*arrays)` itself, as the addendum wrote it; the sys.modules check is gone
+    (so the module needs CuPy installed wherever it is imported). The other four unlisted mechanisms stay.
 
 ## Conventions given to the implementing agents (part 1)
 
