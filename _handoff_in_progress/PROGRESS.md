@@ -57,7 +57,9 @@ Branch: `claude/jolly-babbage-ppmbdj`. Base of part 1's work: b051547.
 - [x] Owner's answers to `PART2_QUESTIONS.md`: `PART2_ANSWERS.md` (they override the plan; they also add three
       part-2 items: the synthetic DOSCAR removed, procar_dos.py moved to PROCAR_tools/, Map panels kept in
       increasing energy; and restate ruling 1)
-- [ ] Part 2 sections 2-11; py_compile; commit; per-file change list
+- [x] Part 2: the 'width (V)' spec line removed from the root qtgui/widgets.py and both copies (d5e08a4)
+- [~] Part 2 sections 2-11 + X1-X3: workflow running (base d5e08a4; decisions in `PART2_DECISIONS.md`)
+- [ ] Part 2: review, py_compile, commit, per-file change list
 - [ ] Delete this folder in the final commit
 
 ## Open questions for the owner
