@@ -45,6 +45,7 @@ from .locpot_manager import LocpotManager
 from . import contour
 from . import feenstra
 from . import quadrature
+from . import ldos_decomp
 
 
 # ==== THE DECAY MODEL (physics) ====
@@ -994,13 +995,16 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         self.m_colors = ['#1f77b4', '#2ca02c', '#9467bd', '#00ced1', '#e377c2',
                          '#17becf', '#bcbd22', '#7f7f7f', '#8c564b', '#d62728']
         self.marker_ratios = [0.25, 0.75]
+        # Line / Path: the markers in their order on the stripe, top to bottom, and each marker's kept colour
+        # (line_marker_colors, permuted with the markers): _form_marker_set.
+        self._form_marker_set()
         self.marker_coords = [[self.lv[0, 0] * 0.2, self.lv[1, 1] * 0.2],
                               [self.lv[0, 0] * 0.8, self.lv[1, 1] * 0.8]]
         self.active_obj = None
         self._drag_moved = False          # the dragged item moved since its press (_on_motion): its release work is due (_on_rel)
-        self.active_marker_idx = 0
-        self.plot_level = 0
-        self.active_element, self.active_atom = None, None
+        # The decomp's state (level 0, marker 0, no element), held by ldos_decomp.Decomp and read and set as
+        # plot_level, active_marker_idx and active_element.
+        self.decomp = ldos_decomp.Decomp()
         self._type_color_map = {'Au': 'orange', 'N': 'blue', 'C': 'brown', 'H': 'grey'}
         self.extra_broadening = {t: 0.0 for t in self.atomtypes}
         self._broadening_topo_dirty = False
@@ -1031,6 +1035,41 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         self._orient_pending = False      # an orientation decision waiting for the arrangement's first size
         self._extra_boxes = []            # control boxes another window adds to the left column (add_control_box)
 
+    # The decomp's state as the simulator's attributes, read and set on the decomp (ldos_decomp.Decomp); a set
+    # value is not checked, and the window's decomp line follows it (_decomp_changed).
+    @property
+    def plot_level(self):
+        """Machinery: the decomp's level (0 markers, 1 parts, 2 atom types, 3 orbitals): ldos_decomp.Decomp.level."""
+        return self.decomp.level
+
+    @plot_level.setter
+    def plot_level(self, value):
+        """Machinery: the decomp's level set (ldos_decomp.Decomp.level), then the window's decomp line."""
+        self.decomp.level = value
+        self._decomp_changed()
+
+    @property
+    def active_marker_idx(self):
+        """Machinery: the active marker's index (the marker levels 1 to 3 decompose): ldos_decomp.Decomp.marker."""
+        return self.decomp.marker
+
+    @active_marker_idx.setter
+    def active_marker_idx(self, value):
+        """Machinery: the active marker's index set (ldos_decomp.Decomp.marker), then the window's decomp line."""
+        self.decomp.marker = value
+        self._decomp_changed()
+
+    @property
+    def active_element(self):
+        """Machinery: the active element (the atom type level 3 shows the orbitals of), or None: ldos_decomp.Decomp.element."""
+        return self.decomp.element
+
+    @active_element.setter
+    def active_element(self, value):
+        """Machinery: the active element set (ldos_decomp.Decomp.element), then the window's decomp line."""
+        self.decomp.element = value
+        self._decomp_changed()
+
     def run_interactive(self, grid_res=64, topo_bias=0.2, topo_height=2.5,
                         ldos_bias_sign='neg', use_decay=True,
                         show_decay_toggle=True, reuse_cache=True,
@@ -1055,6 +1094,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
                 self.marker_ratios = [np.clip(np.dot(np.array(pt) - self.p1, v) / v_sq, 0, 1) for pt in marker_positions]
             else:
                 self.marker_ratios = list(np.linspace(0.1, 0.9, len(marker_positions)))
+            self._form_marker_set()                # top to bottom on the stripe, then coloured by index
         # The global topography's bias V_b: the energy of topo_bias's snapped DOS sample (a Python float, the
         # parser's float64 value); it replaces topo_bias everywhere (sim_wrapper reads it as the topography's bias).
         self.global_topo_bias = float(self.energies[_snap(self.energies, topo_bias, 'zero_side')])
@@ -1120,50 +1160,6 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         self._make_controls()
         self._build_ui()
         plt.show()
-
-    def _get_partitions(self, f_ldos_raw):
-        partitions = []
-        if f_ldos_raw is not None:
-            if self.plot_level == 0:
-                partitions.append(("Total", cp.sum(f_ldos_raw, axis=(2, 3))))
-            elif self.plot_level == 1:
-                atom_types_exp = np.repeat(self.atomtypes, self.atomnums)
-                au_idx = [i for i, t in enumerate(atom_types_exp) if t == 'Au']
-                mol_idx = [i for i, t in enumerate(atom_types_exp) if t != 'Au']
-                au_data = cp.sum(f_ldos_raw[:, :, au_idx, :], axis=(2, 3)) if au_idx else cp.zeros_like(f_ldos_raw[:, :, 0, 0])
-                mol_data = cp.sum(f_ldos_raw[:, :, mol_idx, :], axis=(2, 3)) if mol_idx else cp.zeros_like(f_ldos_raw[:, :, 0, 0])
-                partitions.extend([("Au", au_data), ("Molecule", mol_data)])
-            elif self.plot_level == 2:
-                atom_types_exp = np.repeat(self.atomtypes, self.atomnums)
-                for t in self.atomtypes:
-                    t_idx = [i for i, x in enumerate(atom_types_exp) if x == t]
-                    t_data = cp.sum(f_ldos_raw[:, :, t_idx, :], axis=(2, 3)) if t_idx else cp.zeros_like(f_ldos_raw[:, :, 0, 0])
-                    partitions.append((t, t_data))
-            elif self.plot_level == 3:
-                atom_types_exp = np.repeat(self.atomtypes, self.atomnums)
-                if getattr(self, 'active_element', None) is not None:
-                    e_idx = [i for i, x in enumerate(atom_types_exp) if x == self.active_element]
-                    for col_idx, orb in enumerate(self.orbitals):
-                        if e_idx:
-                            D = cp.sum(self.dos_up_gpu[e_idx, :, col_idx], axis=0)
-                            dD = cp.gradient(D)
-                            d2D = cp.gradient(dD)
-                            if not (float(cp.max(cp.abs(D))) < 1e-5 and float(cp.max(cp.abs(dD))) < 1e-5 and float(cp.max(cp.abs(d2D))) < 1e-5):
-                                orb_data = cp.sum(f_ldos_raw[:, :, e_idx, col_idx], axis=2)
-                                partitions.append((f"{self.active_element} {orb}", orb_data))
-            elif self.plot_level == 4:
-                atom_types_exp = np.repeat(self.atomtypes, self.atomnums)
-                if getattr(self, 'active_element', None) is not None:
-                    e_idx = [i for i, x in enumerate(atom_types_exp) if x == self.active_element]
-                    for col_idx, orb in enumerate(self.orbitals):
-                        if e_idx:
-                            D = cp.sum(self.dos_up_gpu[e_idx, :, col_idx], axis=0)
-                            dD = cp.gradient(D)
-                            d2D = cp.gradient(dD)
-                            if not (float(cp.max(cp.abs(D))) < 1e-5 and float(cp.max(cp.abs(dD))) < 1e-5 and float(cp.max(cp.abs(d2D))) < 1e-5):
-                                orb_data = cp.sum(f_ldos_raw[:, :, e_idx, col_idx], axis=2)
-                                partitions.append((f"{self.active_element} {orb}", orb_data))
-        return partitions
 
     # ------------------------------------------------------------------
     # 'Feenstra': the display divided by I/V (feenstra.py)
@@ -1428,6 +1424,8 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         self.fig.canvas.mpl_connect('motion_notify_event', self._on_motion)
         self.fig.canvas.mpl_connect('button_release_event', self._on_rel)
         self.fig.canvas.mpl_connect('button_press_event', self._on_press)
+        # The decomp's line in the new window's info panel (kept current by _decomp_changed).
+        self._decomp_changed()
 
     def add_control_box(self, widget):
         """
@@ -1586,6 +1584,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         self._map_cells = []
         # The spectrum's built curves (_draw_spectrum) and the Line / Path drag cache: none in the new view.
         self._spec_key, self._spec_lines, self._spec_emarkers, self._spec_title = None, [], [], None
+        self._spec_curves = []                     # the decomp's records of _spec_lines (ldos_decomp.Curve), in the same order
         self._line_disp = None
         if getattr(self, 'cursor', None) is not None:
             self.cursor.remove()
@@ -2320,8 +2319,11 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
             if new_count != len(self.marker_ratios):
                 if new_count > len(self.marker_ratios):
                     self.marker_ratios = list(np.linspace(0.1, 0.9, new_count))
+                    self._form_marker_set()        # every marker new: top to bottom, then coloured by index
                 else:
+                    # The first new_count kept (the markers lowest on the stripe go), with their colours.
                     self.marker_ratios = self.marker_ratios[:new_count]
+                    self.line_marker_colors = self.line_marker_colors[:new_count]
         else:
             if new_count != len(self.marker_coords):
                 if new_count > len(self.marker_coords):
@@ -2401,7 +2403,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
             self.line_art.set_data([self.p1[0], self.p2[0]], [self.p1[1], self.p2[1]])
             self.ends.set_offsets([self.p1, self.p2])
             self.marks.set_offsets(np.array([self.p1 + r * v for r in self.marker_ratios]))
-            self.marks.set_facecolors(self.m_colors[:len(self.marker_ratios)])
+            self.marks.set_facecolors(self.line_marker_colors)
         elif self.mode == 'Path':
             p_xy, p_dist, p_len, verts = self._build_path_xy()
             self._line_geom = (p_xy, p_dist, p_len)        # the path's points as drawn, kept for the drags (_on_motion, _place_line_markers)
@@ -2409,10 +2411,11 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
             self.path_pts.set_offsets(np.array(self.path_nodes))
             mark_idx = (np.array(self.marker_ratios) * (self.npts - 1)).astype(int)
             self.marks.set_offsets(p_xy[mark_idx])
-            self.marks.set_facecolors(self.m_colors[:len(self.marker_ratios)])
+            self.marks.set_facecolors(self.line_marker_colors)
         else:
             self.marks.set_offsets(self.marker_coords)
             self.marks.set_facecolors(self.m_colors[:len(self.marker_coords)])
+        self._markers_changed()                    # the markers' and the line's lines in the info panel
 
         if not self.is_running:
             self.fig.canvas.draw_idle()
@@ -2561,7 +2564,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
                 # 'Feenstra': every partition of a point divided by that point's total I/V at each energy
                 # (Map: at the sample each map's LDOS is taken at); 'Norm', when on, then acts on the ratio.
                 f_ldos_raw = feenstra.divide(f_ldos_raw, self._feenstra_iv('grid'))
-            partitions = self._get_partitions(f_ldos_raw)
+            partitions = self.decomp.partitions(f_ldos_raw, self.atomtypes, self.atomnums, self.orbitals, self.dos_up_gpu)
         else:
             f_ldos_raw = None
             partitions = []
@@ -2704,9 +2707,13 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         if self.mode in ('Line', 'Path'):
             active_idx = int(self.marker_ratios[min(self.active_marker_idx, len(self.marker_ratios) - 1)] * (self.npts - 1))
             active_ldos = f_ldos_raw[active_idx] if f_ldos_raw is not None else np.zeros_like(self.cached_spec_ldos[0])
+            # Every marker's spectrum in index order (level 0), at the marker's point on the line.
+            marker_spectra = ([f_ldos_raw[int(r * (self.npts - 1))] for r in self.marker_ratios]
+                              if f_ldos_raw is not None else None)
         else:
             active_idx = min(self.active_marker_idx, len(self.marker_coords) - 1)
             active_ldos = spec_disp[active_idx]
+            marker_spectra = [spec_disp[i] for i in range(len(self.marker_coords))]
 
         if self.mode == 'Map':
             if not hasattr(self, 'map_e_targets') or len(self.map_e_targets) != nepts or full_refresh:
@@ -2714,128 +2721,34 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
                 self.map_e_targets = self.energies[self.map_e_idx]
 
         n_marks = len(self.marker_ratios) if self.mode in ('Line', 'Path') else len(self.marker_coords)
-        key = (self.mode, self.plot_level, n_marks if self.plot_level == 0 else None,
-               self.active_element if self.plot_level >= 3 else None,
-               self.active_atom if self.plot_level == 4 else None, bool(self.feenstra),
+        # The level's curves (ldos_decomp: data, style, label, pickable), the markers' colours in index order.
+        marker_colors = (self.line_marker_colors if self.mode in ('Line', 'Path')
+                         else [self.m_colors[i % len(self.m_colors)] for i in range(n_marks)])
+        integral =(lambda y: quadrature.simpson(y, dx=self.e_step32)) if self.normalize else None
+        curves = self.decomp.curves(active_ldos, marker_spectra, marker_colors, self.atomtypes, self.atomnums,
+                                    self.orbitals, self.dos_up_gpu, self._type_color_map, self.cached_eg, integral)
+        key = (self.mode, self.plot_level, tuple(c.label for c in curves), bool(self.feenstra),
                len(self.map_e_targets) if self.mode == 'Map' else None)
         build = key != self._spec_key
         if build:
             self.ax_spec.clear()
             self._spec_lines, self._spec_emarkers, self._spec_title = [], [], None
-        drawn = iter(list(self._spec_lines))      # in place: the curves in the order they were drawn
-
-        def _curve(y, **kw):
-            """Machinery: one curve of the spectrum: plotted when the curves are drawn anew, else the next drawn curve given y."""
-            if build:
-                ln, = self.ax_spec.plot(self.cached_eg, cp.asnumpy(y), **kw)
+            for c in curves:
+                kw = dict(color=c.color, lw=c.linewidth, linestyle=c.linestyle, alpha=c.alpha, zorder=c.zorder,
+                          label=c.label, picker=c.picker)
+                if c.pickradius is not None:
+                    kw['pickradius'] = c.pickradius
+                ln, = self.ax_spec.plot(self.cached_eg, cp.asnumpy(c.y), **kw)
                 self._spec_lines.append(ln)
-                return ln
-            ln = next(drawn)
-            ln.set_data(self.cached_eg, cp.asnumpy(y))
-            return ln
-
-        def _orbit_base(orb):
-            if orb.endswith('_up'):
-                return orb[:-3]
-            elif orb.endswith('_down'):
-                return orb[:-5]
-            return orb
-
-        def _lighten_color(color, amount=0.3):
-            c = plt.to_rgb(color)
-            h, l, s = colorsys.rgb_to_hls(*c)
-            return colorsys.hls_to_rgb(h, min(1, l + amount * (1 - l)), s)
-
-        unique_bases = sorted(set(_orbit_base(o) for o in self.orbitals))
-        styles = ['-', '--', ':', '-.'] + [(0, (3 + i, 2)) for i in range(max(0, len(unique_bases) - 4))]
-        linestyle_map = dict(zip(unique_bases, styles))
-        S = 0.25
-
-        active_ldos_norm = active_ldos.copy()
-        if self.normalize:
-            total_for_norm = cp.sum(active_ldos_norm, axis=(1, 2))
-            norm_factor = (quadrature.simpson(total_for_norm, dx=self.e_step32) + 1e-15)
-            active_ldos_norm /= norm_factor
-
-        if self.plot_level == 0:
-            if self.mode in ('Line', 'Path'):
-                for i, r in enumerate(self.marker_ratios):
-                    idx = int(r * (self.npts - 1))
-                    c_ldos = f_ldos_raw[idx].copy()
-                    t_y = cp.sum(c_ldos, axis=(1, 2))
-                    if self.normalize:
-                        t_y /= (quadrature.simpson(t_y, dx=self.e_step32) + 1e-15)
-                    color = self.m_colors[i % len(self.m_colors)]
-                    _curve(t_y, color=color, lw=2.5, picker=True, pickradius=5, label=f'marker_{i}')
-            else:
-                for i, pt in enumerate(self.marker_coords):
-                    c_ldos = spec_disp[i].copy()
-                    t_y = cp.sum(c_ldos, axis=(1, 2))
-                    if self.normalize:
-                        t_y /= (quadrature.simpson(t_y, dx=self.e_step32) + 1e-15)
-                    color = self.m_colors[i % len(self.m_colors)]
-                    _curve(t_y, color=color, lw=2.5, picker=True, pickradius=5, label=f'marker_{i}')
-            if build:
-                self.ax_spec.legend(loc='upper right', frameon=False)
-        elif self.plot_level == 1:
-            _curve(cp.sum(active_ldos_norm, axis=(1, 2)), color='black', lw=1.5, alpha=0.1, zorder=1)
-            atom_types_exp = np.repeat(self.atomtypes, self.atomnums)
-            au_idx = [i for i, t in enumerate(atom_types_exp) if t == 'Au']
-            mol_idx = [i for i, t in enumerate(atom_types_exp) if t != 'Au']
-            au_y = cp.sum(active_ldos_norm[:, au_idx, :], axis=(1, 2)) if au_idx else np.zeros_like(self.cached_eg)
-            mol_y = cp.sum(active_ldos_norm[:, mol_idx, :], axis=(1, 2)) if mol_idx else np.zeros_like(self.cached_eg)
-            _curve(au_y, color='orange', lw=2, label='Au', picker=True, pickradius=5, zorder=2)
-            _curve(mol_y, color='black', lw=2, label='Molecule', picker=True, pickradius=5, zorder=2)
-            if build:
-                self.ax_spec.legend([plt.Line2D([0], [0], color='orange', lw=2), plt.Line2D([0], [0], color='black', lw=2)], ['Au', 'Molecule'], title="Partition", loc='upper right', frameon=False)
-        elif self.plot_level == 2:
-            atom_types_exp = np.repeat(self.atomtypes, self.atomnums)
-            for t in self.atomtypes:
-                t_idx = [i for i, x in enumerate(atom_types_exp) if x == t]
-                t_y = cp.sum(active_ldos_norm[:, t_idx, :], axis=(1, 2)) if t_idx else np.zeros_like(self.cached_eg)
-                _curve(t_y, color=self._type_color_map.get(t, 'grey'), lw=2, label=t, picker=True, pickradius=3)
-            if build:
-                self.ax_spec.legend([plt.Line2D([0], [0], color=self._type_color_map.get(t, 'grey'), lw=2) for t in self.atomtypes], self.atomtypes, title="Atom Types", loc='upper right', frameon=False)
-        elif self.plot_level == 3:
-            atom_types_exp = np.repeat(self.atomtypes, self.atomnums)
-            e_idx = [i for i, x in enumerate(atom_types_exp) if x == self.active_element]
-            e_y = cp.sum(active_ldos_norm[:, e_idx, :], axis=(1, 2)) if e_idx else np.zeros_like(self.cached_eg)
-            _curve(e_y, color=self._type_color_map.get(self.active_element, 'grey'), lw=2, alpha=0.15, zorder=1)
-            for a_idx, label in self.vesta_label_map.items():
-                if label.startswith(self.active_element):
-                    y_sum = cp.sum(active_ldos_norm[:, a_idx - 1, :], axis=1)
-                    _curve(y_sum, color=self._type_color_map.get(self.active_element, 'grey'), lw=2, label=label, picker=True, pickradius=3, zorder=2)
-            if build:
-                self.ax_spec.legend([plt.Line2D([0], [0], color=self._type_color_map.get(t, 'grey'), lw=2) for t in self.atomtypes], self.atomtypes, title="Atom Types", loc='upper right', frameon=False)
-        elif self.plot_level == 4:
-            for a_idx, label in self.vesta_label_map.items():
-                if label.startswith(self.active_element):
-                    y_sum = cp.sum(active_ldos_norm[:, a_idx - 1, :], axis=1)
-                    element_color = self._type_color_map.get(self.active_element, 'grey')
-                    if a_idx == self.active_atom:
-                        _curve(y_sum, color=element_color, lw=2.5, alpha=1.0, zorder=5)
-                        orb_artists = []
-                        for orb in self.orbitals:
-                            col_idx = self.orbitals.index(orb)
-                            y_orb = active_ldos_norm[:, a_idx - 1, col_idx]
-                            ls = linestyle_map[_orbit_base(orb)]
-                            p_color = _lighten_color(element_color, 0.3) if orb.endswith('_up') else element_color
-                            o_line = _curve(y_orb, color=p_color, linestyle=ls, lw=1.2, label=f"{label} – {orb}", zorder=10)
-                            orb_artists.append(o_line)
-                        if build:
-                            if getattr(self, 'cursor', None) is not None:
-                                self.cursor.remove()
-                            # The hover label of the orbital curves (their labels), on from the start as the old cursor was.
-                            self.cursor = widgets.HoverLabels(self.ax_spec, orb_artists, enabled=True, arm_by_click=False)
-                    else:
-                        orig = plt.to_rgb(element_color)
-                        lumi = 0.299 * orig[0] + 0.587 * orig[1] + 0.114 * orig[2]
-                        faded_color = (S * np.array(orig)) + ((1 - S) * lumi)
-                        _curve(y_sum, color=faded_color, lw=1.5, alpha=0.05, zorder=2)
-            if build:
-                leg1 = self.ax_spec.legend([plt.Line2D([0], [0], color=self._type_color_map.get(t, 'grey'), lw=2) for t in self.atomtypes], self.atomtypes, title="Atom Types", loc='upper right', frameon=False)
-                self.ax_spec.add_artist(leg1)
-                self.ax_spec.legend([plt.Line2D([0], [0], color='black', linestyle=linestyle_map[b], lw=1.5) for b in unique_bases], unique_bases, title="Orbitals", loc='upper left', frameon=False)
+            # The old hover labels removed; new ones on the orbital curves (level 3), on from the start.
+            self.cursor = ldos_decomp.hover_labels(self.ax_spec, self._spec_lines, curves, getattr(self, 'cursor', None))
+        else:
+            # In place: the curves in the order they were drawn take their data, and their colour where it differs.
+            for ln, c in zip(self._spec_lines, curves):
+                ln.set_data(self.cached_eg, cp.asnumpy(c.y))
+                if ln.get_color() != c.color:
+                    ln.set_color(c.color)
+        self._spec_curves = curves
 
         lines = self.ax_spec.get_lines()
         active_maxes = [np.max(l.get_ydata()) for l in lines if l.get_visible() and l.get_alpha() == 1.0]
@@ -3091,7 +3004,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         self._line_markers = []
         for i, r in enumerate(self.marker_ratios):
             idx = int(r * (self.npts - 1))
-            color = self.m_colors[i % len(self.m_colors)]
+            color = self.line_marker_colors[i]
             items = {'topo': None, 'prof': None, 'h': []}
             if self.ax_line_topo is not None:
                 items['topo'] = self.ax_line_topo.scatter([0], [r * p_len], c=color, edgecolors='black', s=80, zorder=10,
@@ -3133,13 +3046,64 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         """
         Machinery: a Line / Path marker dragged: every counterpart moved with it (_place_line_markers, running
         or not) and, while running, the marker spectra set from the display cache (_line_disp,
-        built once per data change by _update_all; _draw_spectrum in place).  Nothing is computed
-        again while the button is down.
+        built once per data change by _update_all; _draw_spectrum in place); the info panel's
+        markers line follows (_markers_changed).  Nothing is computed again while the button is down.
         """
         self._place_line_markers()
         if self.is_running and self._line_disp is not None and self._spec_key is not None:
             self._draw_spectrum(self._line_disp, None, self._line_geom[1])
+        self._markers_changed()
         self.fig.canvas.draw_idle()
+
+    @staticmethod
+    def _line_marker_order(ratios):
+        """
+        Machinery: the Line / Path markers' order on the stripe, top to bottom: the indices of `ratios` from
+        the largest ratio to the smallest (the stripe's distance runs from 0 at the bottom to the line's
+        length at the top), a stable sort, so markers at exactly equal ratios keep their order.
+        """
+        return sorted(range(len(ratios)), key=lambda i: -float(ratios[i]))
+
+    def _form_marker_set(self):
+        """
+        Machinery: a freshly formed set of Line / Path markers (marker_ratios as just formed: the constructor's,
+        run_interactive's, the Markers box's on an increase) put in its order on the stripe, top to bottom
+        (_line_marker_order), then coloured by index (line_marker_colors: index 0, the top marker, takes
+        m_colors[0]; a marker past the end of m_colors, with no free colour, m_colors[i % len(m_colors)]).
+        """
+        self.marker_ratios = [self.marker_ratios[j] for j in self._line_marker_order(self.marker_ratios)]
+        self.line_marker_colors = [self.m_colors[i % len(self.m_colors)] for i in range(len(self.marker_ratios))]
+
+    def _resort_line_markers(self):
+        """
+        Machinery: the Line / Path markers put back in their order on the stripe after a marker's release, top
+        to bottom (_line_marker_order).  The permutation is applied together to marker_ratios, the kept
+        colours (line_marker_colors) and the active marker's index (the same marker stays active); artist i
+        shows marker i, so each index's artists take their marker's colour in place (the placement topo's
+        markers, and the Line Topo's scatter and the Tip Height, heatmap and stripe lines), then every one is
+        moved and the spectrum's curves take their marker's data and colour in place (_move_line_markers):
+        one redraw, no rearrangement, no rebuild, nothing computed.  Nothing happens when the order is
+        unchanged.
+        """
+        order = self._line_marker_order(self.marker_ratios)
+        if order == list(range(len(order))):
+            return
+        active = order.index(min(self.active_marker_idx, len(order) - 1))
+        self.marker_ratios = [self.marker_ratios[j] for j in order]
+        self.line_marker_colors = [self.line_marker_colors[j] for j in order]
+        self.active_marker_idx = active
+        self.marks.set_facecolors(self.line_marker_colors)
+        for i, (items, j) in enumerate(zip(self._line_markers, order)):
+            if j == i:
+                continue
+            color = self.line_marker_colors[i]
+            if items['topo'] is not None:
+                items['topo'].set_facecolors(color)
+            if items['prof'] is not None:
+                items['prof'].set_color(color)
+            for line in items['h']:
+                line.set_color(color)
+        self._move_line_markers()
 
     def _build_map_block(self, num_p, nepts):
         """
@@ -3275,7 +3239,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         if self.feenstra:
             # 'Feenstra': every map divided by I/V at the sample its LDOS is taken at (as in _update_all).
             f_ldos_raw = feenstra.divide(f_ldos_raw, self._feenstra_iv('grid'))
-        partitions = self._get_partitions(f_ldos_raw)
+        partitions = self.decomp.partitions(f_ldos_raw, self.atomtypes, self.atomnums, self.orbitals, self.dos_up_gpu)
 
         mag_signed = self._mag_is_signed()
         has_mag = self._has_mag_channel()
@@ -3341,25 +3305,8 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
             # A Map marker on an energy map: dragged as on the Map Topo (all counterparts together).
             self.active_obj = ('mark_map', event.ind[0])
         elif getattr(event, 'mouseevent', None) and event.mouseevent.inaxes == self.ax_spec:
-            label = event.artist.get_label()
-            if label.startswith('emarker_'):
-                if self.plot_level == 0:
-                    self.active_obj = ('emarker', int(label.split('_')[1]))
-                return
-            if self.plot_level == 0:
-                if label.startswith('marker_'):
-                    self.active_marker_idx = int(label.split('_')[1])
-                self.plot_level = 1
-            elif self.plot_level == 1:
-                self.plot_level = 2
-            elif self.plot_level == 2:
-                self.active_element = label
-                self.plot_level = 3
-            elif self.plot_level == 3:
-                self.active_atom = next(k for k, v in self.vesta_label_map.items() if v == label)
-                self.active_element = self._get_element_by_index_helper(self.active_atom)
-                self.plot_level = 4
-            self._update_all()
+            # The spectrum's clicks (the decomp, Map's energy markers) are decided once, at the press (_on_press).
+            return
         elif (isinstance(event.artist, (plt.Line2D, plt._RefLine, plt.PathCollection))
               and event.artist.get_label().startswith('marker_')):
             # A Line / Path marker's line on the Tip Height profile, a heatmap or the stripe, or its
@@ -3369,18 +3316,75 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
             # Only what shows the active marker is updated: the spectrum, from the display cache.
             if self.is_running and self.mode in ('Line', 'Path') and self._line_disp is not None and self._spec_key is not None:
                 self._draw_spectrum(self._line_disp, None, self._line_geom[1])
+            self._markers_changed()                # the info panel's markers line stars the active marker
             self.fig.canvas.draw_idle()
 
     def _on_press(self, event):
         if event.inaxes == self.ax_spec:
-            if self.fig.canvas.manager.toolbar.mode == "" and not event.dblclick:
-                hit = any(l.contains(event)[0] for l in self.ax_spec.get_lines() if l.get_picker())
-                if not hit:
-                    level = max(0, self.plot_level - 1)
-                    if level != self.plot_level:
-                        # The spectrum's step-back click (the level decreased): the one press that updates the display.
-                        self.plot_level = level
-                        self._update_all()
+            # One decision per press, from the lines drawn at the press (before any redraw): the pickable line on
+            # top under it (the highest zorder, ties to the one drawn last).
+            hits = [l for l in self.ax_spec.get_lines() if l.pickable() and l.contains(event)[0]]
+            top = ldos_decomp.top_artist(hits)
+            if top is not None and top.get_label().startswith('emarker_') and event.button == plt.MouseButton.LEFT:
+                # A Map energy marker on top under a left press: its drag at level 0 (not on a double click's
+                # press; the toolbar's Pan / Zoom does not stop it), nothing at the other levels.
+                if self.plot_level == 0 and not event.dblclick:
+                    self.active_obj = ('emarker', int(top.get_label().split('_')[1]))
+                return
+            if self.fig.canvas.manager.toolbar.mode == "":
+                item = self._spec_curves[self._spec_lines.index(top)] if top in self._spec_lines else None
+                self._decomp_click(event.button, event.dblclick, item)
+
+    def _decomp_click(self, button, dblclick=False, item=None):
+        """
+        Machinery: the one entry point of the decomp's clicks: the spectrum's presses (_on_press), the legend
+        panel's and its Back button's.  The rules are ldos_decomp's (Decomp.press): a right click goes back one
+        level, a left click on a clickable curve or entry goes down one level with its option, a double click's
+        press, a middle click, a left click on neither and the two ends do nothing.  `item`: the
+        ldos_decomp.Curve or ldos_decomp.Entry under the click, or None; the Back button is a right click
+        (button plt.MouseButton.RIGHT, no item).  When the state changed: the window's decomp line, and one
+        redraw (_update_all); otherwise nothing is redrawn.
+        """
+        if self.decomp.press(button, dblclick, item):
+            self._decomp_changed()
+            self._update_all()
+
+    def _decomp_changed(self):
+        """
+        Machinery: the window's decomp line in the info panel (set_info_line, key 'decomp'): the level's full
+        word and the selection (ldos_decomp.Decomp.info), once the window exists.
+        """
+        if getattr(self, 'fig', None) is not None:
+            self.fig.set_info_line('decomp', f"decomp: {self.decomp.info()}")
+
+    def _markers_changed(self):
+        """
+        Machinery: the window's markers and line lines in the info panel (set_info_line), once the window
+        exists, from the state as it is: key 'markers', every marker in index order, the active one starred
+        (Single Point / Map 'k (x, y) Å'; Line / Path 'k at d Å', d the distance along the line of the
+        sample the marker's spectrum is taken at); key 'line', the Line's ends or the Path's nodes with the
+        length (none in Single Point / Map).
+        """
+        if getattr(self, 'fig', None) is None:
+            return
+        active = self.active_marker_idx
+        if self.mode in ('Line', 'Path'):
+            if self.mode == 'Line':
+                p_len = float(norm(self.p2 - self.p1))
+                points = f"ends ({self.p1[0]:.2f}, {self.p1[1]:.2f}), ({self.p2[0]:.2f}, {self.p2[1]:.2f}) Å"
+            else:
+                p_len = float(self._build_path_xy()[2])
+                points = "nodes " + ", ".join(f"({n[0]:.2f}, {n[1]:.2f})" for n in self.path_nodes) + " Å"
+            p_dist = np.linspace(0, p_len, self.npts)
+            marks = [f"{k} at {p_dist[int(r * (self.npts - 1))]:.2f} Å" + (" *" if k == active else "")
+                     for k, r in enumerate(self.marker_ratios)]
+            line = f"line: {points}, length {p_len:.2f} Å"
+        else:
+            marks = [f"{k} ({pt[0]:.2f}, {pt[1]:.2f}) Å" + (" *" if k == active else "")
+                     for k, pt in enumerate(self.marker_coords)]
+            line = ''
+        self.fig.set_info_line('markers', "markers: " + (", ".join(marks) if marks else "none"))
+        self.fig.set_info_line('line', line)
 
     def _get_element_by_index_helper(self, a):
         curr = 0
@@ -3490,6 +3494,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
             return
         else:
             return
+        self._markers_changed()                    # the info panel's markers and line lines follow the drag
         self._drag_moved = True
         self.fig.canvas.draw_idle()
 
@@ -3551,5 +3556,11 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
             # line, the heatmaps, stripe, profile, Line Topo and marker spectra; Single Point / Map:
             # the markers' spectrum), by the same computations (_update_all).
             self._update_all()
+        elif (self.active_obj is not None and self.mode in ('Line', 'Path')
+              and self.active_obj[0] in ('mark_map', 'mark_dynamic')):
+            # The release of a Line / Path marker: the markers put back in their order on the stripe, top to
+            # bottom, with their colours, the active marker and every counterpart (_resort_line_markers: one
+            # redraw when the order changed, nothing otherwise).
+            self._resort_line_markers()
         self._drag_moved = False
         self.active_obj = None
