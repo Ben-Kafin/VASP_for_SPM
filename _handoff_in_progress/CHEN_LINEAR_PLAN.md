@@ -35,9 +35,8 @@ numerics come with it, or its weight and one-walk design run under the package's
   `quadrature.integral_from_zero` (the stencil cubic around 0 V, the unequal pair, Simpson pairs; the current exact
   kernel already carries this rule in CUDA, per V: the walk takes the same steps once, cumulatively, giving every
   requested V), the snapped V_b, the same topography path as the exact option (frozen bias at V_b, integrated from 0 V).
-- **From the owner's file:** phi is the local barrier per tip point (phi_local, as the exact option); the model name
-  is the file's own 'decay_chen' (its caches end '_decay_chen_fold_f32', so the old '_decay_chen_f64' files never
-  match); no guard on phi (the file has none).
+- **From the owner's file:** phi is the local barrier per tip point (phi_local, as the exact option); no guard on phi
+  (the file has none).
 - **The control:** an indented row under Decay in the toggle list ('linearized'), off by default = exact (today's
   behaviour); run_interactive keyword `decay_linearized=False`; ignored while Decay is off (flipping it then changes
   no model, so nothing is recomputed); the info panel lists it with the other toggles.
@@ -46,3 +45,15 @@ numerics come with it, or its weight and one-walk design run under the package's
   compares models (not the Decay bool); `_on_rel` passes Map's kept model; the topography and LDOS calls pass the model.
 - **Texts:** the physics block and module docstring, the README's toggles / Decay / Feenstra / simulator rows, the
   run scripts' comments (Chen only, ruling 3).
+
+## Names (owner, 2026-11-07): "both the exact and linearized are chen's decay, so neither should have the name chen for only that decay"
+
+No name that tells the two Decay-on models apart contains "chen" (both are Chen's decay); texts may still say both are
+Chen's. The exact option's computation is unchanged; only its names change.
+- Model names (and cache suffixes): exact 'decay_tilt' (unchanged); linearized 'decay_linear'; off 'decay_k0'.
+- Physics functions: exact `gpu_chen_tunneling_factor` -> `gpu_tilt_factor`; linearized `gpu_linear_factor`; off
+  `gpu_decay_off_factor` (unchanged).
+- Kernels: exact `_CHEN_SWEEP_SRC` / `chen_sweep` / `_chen_sweep_kernel` (and its build cache) -> `_TILT_SWEEP_SRC` /
+  `tilt_sweep` / `_tilt_sweep_kernel`; linearized `_LINEAR_SWEEP_SRC` / `linear_sweep` / `_linear_sweep_kernel`.
+- Every reference outside simulator.py (stm_from_dft/__init__.py, quadrature.py, the stm README) follows; nothing in
+  wrong_decays/ is written (ruling 4).
