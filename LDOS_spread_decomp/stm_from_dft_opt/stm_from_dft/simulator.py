@@ -13,7 +13,7 @@ orbital-projected DOS weighted by the squared tunneling matrix element |M|^2 of 
 image of that atom, the tip DOS taken as constant (the s-wave tip of Tersoff and Hamann,
 Phys. Rev. B 31, 805 (1985)).  With Decay on, |M|^2 is the exact tilted barrier, exp(-S) with S
 the WKB exponent across a barrier rising linearly from phi - E at the sample to phi - E + V at
-the tip (gpu_chen_tunneling_factor); to first order in (E - V/2)/phi and V/phi it is Chen's
+the tip (gpu_exact_factor); to first order in (E - V/2)/phi and V/phi it is Chen's
 energy-dependent matrix element (C. J. Chen, Introduction to Scanning Tunneling Microscopy, 3rd
 ed., Oxford 2021, Sec. 2.2.3-2.2.4, Eqs. 2.34-2.41; Eq. 2.37: kappa ~ kappa0 (1 - eps / (2 phi)),
 eps the state's energy measured from the middle of the bias interval); with Decay off it is
@@ -58,7 +58,7 @@ from . import ldos_decomp
 # weight w(E, V), with phi the LOCPOT potential at the tip point minus E_F (eV) and
 # kappa0 = KAPPA0_PER_SQRT_EV sqrt(phi):
 #   Decay on:  w(E, V) = exp(-S(E, V)), the exact tilted barrier, with its V derivative dw/dV
-#              (gpu_chen_tunneling_factor, below);
+#              (gpu_exact_factor, below);
 #   Decay off: w = exp(-2 kappa0 d), the same weight without its energy and bias dependence (dw/dV = 0)
 #              (gpu_decay_off_factor, below).
 # As in a measurement (C. J. Chen, Introduction to Scanning Tunneling Microscopy, 3rd ed., Oxford University Press
@@ -75,7 +75,7 @@ _ME, _H, _Q = 9.1093837e-31, 6.62607015e-34, 1.60217663e-19
 KAPPA0_PER_SQRT_EV = float(np.sqrt(2.0 * _ME * _Q) / (_H / (2.0 * np.pi)) * 1e-10)
 
 
-def gpu_chen_tunneling_factor(E, V, phi, d, topo):
+def gpu_exact_factor(E, V, phi, d, topo):
     """
     Physics: the decay weight of a state at E (eV from E_F) of an atom image at distance d (Angstrom)
     from the tip, at bias V, with phi the local barrier (the LOCPOT potential at the tip point minus E_F,
@@ -97,7 +97,7 @@ def gpu_chen_tunneling_factor(E, V, phi, d, topo):
     topo (the bias frozen, the topography): returns w; otherwise (the bias swept, dI/dV): (w, dw/dV).
     E and V are scalars, the GPU energies of DOS samples (np.float32, e0 + (i - k0) step); phi and d are
     float32 CuPy arrays that broadcast (phi (1, n_pts), d (n_images, n_pts)); the result is float32.  The
-    chen_sweep kernel computes the same S and dS/dV with the same formulas (tilt_weight).
+    exact_sweep kernel computes the same S and dS/dV with the same formulas (exact_weight).
     """
     a = phi - E + V
     b = phi - E
@@ -118,12 +118,33 @@ def gpu_chen_tunneling_factor(E, V, phi, d, topo):
     return w, -dS * w
 
 
+def gpu_linearized_factor(E, V, phi, d, topo):
+    """
+    Physics: the linearized decay weight of a state at E (eV from E_F) of an atom image at distance d
+    (Angstrom) from the tip, at bias V, with phi the local barrier (the LOCPOT potential at the tip point
+    minus E_F, eV):
+        w(E, V) = exp(-2 kappa0 d + kappa0 (E - V/2) d / phi),   kappa0 = KAPPA0_PER_SQRT_EV sqrt(phi),
+        dw/dV = -(kappa0 d / (2 phi)) w,
+    kappa expanded to first order in eps / phi, eps = E - V/2 the state's energy from the middle of the
+    bias window (C. J. Chen, Introduction to Scanning Tunneling Microscopy, 3rd ed. (2021), Eqs. 2.34,
+    2.37-2.40).
+    topo (the bias frozen, the topography): returns w; otherwise (the bias swept, dI/dV): (w, dw/dV).
+    E and V are scalars, the GPU energies of DOS samples (np.float32, e0 + (i - k0) step); phi and d are
+    float32 CuPy arrays that broadcast (phi (1, n_pts), d (n_images, n_pts)); the result is float32.
+    """
+    kappa0 = KAPPA0_PER_SQRT_EV * cp.sqrt(phi)
+    w = cp.exp(-2.0 * kappa0 * d + kappa0 * (E - np.float32(0.5) * V) * d / phi)
+    if topo:
+        return w
+    return w, -0.5 * kappa0 * d / phi * w
+
+
 def gpu_decay_off_factor(phi, d):
     """
     Physics: the decay weight with Decay off of an atom image at distance d (Angstrom) from the tip, with phi
     the local barrier (the LOCPOT potential at the tip point minus E_F, eV):
         w = exp(-2 kappa0 d),   kappa0 = KAPPA0_PER_SQRT_EV sqrt(phi)   (Chen Eq. 2.38),
-    the weight of gpu_chen_tunneling_factor without its energy and bias dependence (dw/dV = 0): every state
+    the weight of gpu_exact_factor without its energy and bias dependence (dw/dV = 0): every state
     of the image, at every bias, carries the same w.
     phi: (n_pts,) float32 CuPy, one per tip point; d: (n_images, n_pts) float32 CuPy; the result is
     (n_images, n_pts) float32.
@@ -134,10 +155,10 @@ def gpu_decay_off_factor(phi, d):
 
 # ==== NUMERICS AND GPU (no physics) ====
 # --- CORE UTILITIES ---
-# The chen_sweep kernel (Decay on, the bias swept): dI/dV_o(V) and I(V) as THE DECAY MODEL (physics) defines them,
+# The exact_sweep kernel (Decay on, the bias swept): dI/dV_o(V) and I(V) as THE DECAY MODEL (physics) defines them,
 # at chosen DOSCAR samples V, dI/dV per tip point, atom and orbital (out) and I per tip point and atom (cur,
 # want_cur = 1), each summed over the atom's images, with w(E, V) = exp(-S(E, V)) the exact tilted barrier and
-# dw/dV = -(dS/dV) w (gpu_chen_tunneling_factor; the kernel's tilt_weight computes the same S and dS/dV with the
+# dw/dV = -(dS/dV) w (gpu_exact_factor; the kernel's exact_weight computes the same S and dS/dV with the
 # same formulas, in its three branches).
 # The exact tilt is not separable in E and V (no w(E, 0) w(0, V) / w(0, 0) factor, no single walk from 0 V for
 # every V), so each requested V is integrated on its own, in one pass that gives dI/dV and the current: for that
@@ -151,7 +172,7 @@ def gpu_decay_off_factor(phi, d):
 # through E-1, 0, E1, E2 (below: E-2, E-1, 0, E1) for k odd and the Simpson pair from the 0 V sample for k even;
 # then the equal-step Simpson pairs outward to V, summed as they are walked.  A requested V at a sample at 0 V
 # gives rho_o(0) w(0, 0) and current 0.  Nothing per sample is stored; the outputs hold only the requested samples.
-# Which lines are which: the lines marked 'Physics' in the source transcribe the physics: tilt_weight's
+# Which lines are which: the lines marked 'Physics' in the source transcribe the physics: exact_weight's
 # S and dS/dV (and w, dw/dV), the two integrands, and the sums that make dI/dV and I.  Everything else is
 # machinery: one thread per (tip point, atom), looping over the atom's images and the requested samples; out
 # (n_p, n_t, n_atoms, N_ORB) += dI/dV; cur (n_p, n_t, n_atoms) += the current, each thread in its own atom's slot
@@ -160,12 +181,12 @@ def gpu_decay_off_factor(phi, d):
 # sample's energy formed from its span index j as e0 + (j - kz) step in float32 (step, e0 and kz, the span index of
 # k0, passed in; no energy array); float for every value, pointer and output, expf / sqrtf and the f suffix on
 # every literal; the launch chunked by the caller by the (requested V, sample) pairs per tip point.
-_CHEN_SWEEP_SRC = r'''
-// Physics: the exact tilted barrier (gpu_chen_tunneling_factor): a = phi - E + V, b = phi - E, kd = k d;
+_EXACT_SWEEP_SRC = r'''
+// Physics: the exact tilted barrier (gpu_exact_factor): a = phi - E + V, b = phi - E, kd = k d;
 // w = exp(-S), dw/dV = -(dS/dV) w.  Three branches: under the barrier at both ends (the forms with no division
 // by V), above it at both ends (S = dS/dV = 0), above one end only (V != 0 there).
-__device__ __forceinline__ void tilt_weight(const float E, const float V, const float ph, const float kd,
-                                            float* w, float* dw)
+__device__ __forceinline__ void exact_weight(const float E, const float V, const float ph, const float kd,
+                                             float* w, float* dw)
 {
     const float a = ph - E + V;
     const float b = ph - E;
@@ -235,7 +256,7 @@ __device__ __forceinline__ float first_piece(const Rule& R, const bool exact0, c
               : -(R.hd * (f0 * R.pd[0] + F2 * R.pd[1] + F1 * R.pd[2]));                            // over (0, E-1, E-2), oriented
 }
 
-extern "C" __global__ void chen_sweep(
+extern "C" __global__ void exact_sweep(
     const float* __restrict__ dos,      // (n_atoms, n_e_all, N_ORB): the DOS of each atom
     const float* __restrict__ dists,    // (n_shift * n_atoms, n_pts_all): image-tip distances (Angstrom), shift-major
     const float* __restrict__ phi,      // (n_pts_all): the local barrier at each tip point (eV)
@@ -287,7 +308,7 @@ extern "C" __global__ void chen_sweep(
             // w(E, V) and dw(E, V)/dV at the stencil, once per sample.
             float ws[5] = {0.0f, 0.0f, 0.0f, 0.0f, 0.0f}, dws[5] = {0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
             for (int m = m_lo; m < 5; ++m)
-                tilt_weight(e0 + (float)(m - 2) * step, V, ph, kd, &ws[m], &dws[m]);
+                exact_weight(e0 + (float)(m - 2) * step, V, ph, kd, &ws[m], &dws[m]);
             // The side of 0 V, and k, the intervals from 0 V to V: the sample n intervals out (E+-n) is at span
             // index z + dir n.
             const bool up = (t >= t_split);
@@ -333,8 +354,8 @@ extern "C" __global__ void chen_sweep(
                 const int j1 = j0 + dir, j2 = j0 + 2 * dir;
                 float w1, dw1, w2, dw2;
                 if (n + 1 <= 2) { w1 = ws[j1 - kz + 2]; dw1 = dws[j1 - kz + 2]; }
-                else tilt_weight(e0 + (float)(j1 - kz) * step, V, ph, kd, &w1, &dw1);
-                tilt_weight(e0 + (float)(j2 - kz) * step, V, ph, kd, &w2, &dw2);
+                else exact_weight(e0 + (float)(j1 - kz) * step, V, ph, kd, &w1, &dw1);
+                exact_weight(e0 + (float)(j2 - kz) * step, V, ph, kd, &w2, &dw2);
                 const float* r0 = rho + (long long)j0 * N_ORB;
                 const float* r1 = rho + (long long)j1 * N_ORB;
                 const float* r2 = rho + (long long)j2 * N_ORB;
@@ -358,15 +379,15 @@ extern "C" __global__ void chen_sweep(
     }
 }
 '''
-_CHEN_SWEEP_KERNELS = {}
+_EXACT_SWEEP_KERNELS = {}
 
 
-def _chen_sweep_kernel(n_orb):
-    """Machinery: the chen_sweep kernel compiled for n_orb DOS columns per atom (one build per column count)."""
-    kern = _CHEN_SWEEP_KERNELS.get(n_orb)
+def _exact_sweep_kernel(n_orb):
+    """Machinery: the exact_sweep kernel compiled for n_orb DOS columns per atom (one build per column count)."""
+    kern = _EXACT_SWEEP_KERNELS.get(n_orb)
     if kern is None:
-        kern = cp.RawKernel(f"#define N_ORB {int(n_orb)}\n" + _CHEN_SWEEP_SRC, 'chen_sweep')
-        _CHEN_SWEEP_KERNELS[n_orb] = kern
+        kern = cp.RawKernel(f"#define N_ORB {int(n_orb)}\n" + _EXACT_SWEEP_SRC, 'exact_sweep')
+        _EXACT_SWEEP_KERNELS[n_orb] = kern
     return kern
 
 
@@ -414,11 +435,12 @@ class Unified_STM_Simulator:
         self.dev = cp.cuda.Device(0)
         print("--- INITIALIZING GPU TENSOR SIMULATOR ---")
 
-    def _topo_current(self, tip_positions, v_b, use_decay, samples=None):
+    def _topo_current(self, tip_positions, v_b, decay_model, samples=None):
         """
         Machinery: the topography's current at the frozen bias V_b at the tip positions (n, 3), the
         integral from 0 V to V_b of the weighted total LDOS (every state weighted at that frozen bias),
-        taken positive as before (the integral from min(0, V_b) to max(0, V_b)).
+        taken positive as before (the integral from min(0, V_b) to max(0, V_b)), under the decay model
+        decay_model ('decay_exact', 'decay_linearized' or 'decay_k0': _effective_decay_model).
         v_b: V_b, the bias end's DOS sample energy (a Python float, the parser's float64 value); its sample
         index i_b is that sample's own (_snap 'zero_side' of a sample's energy returns that sample).  The
         sample list: the stencil E-2, E-1, E1, E2 (DOS samples k0 - 1 .. k0 + 2, or k0 - 2 .. k0 + 2 with a
@@ -435,23 +457,23 @@ class Unified_STM_Simulator:
         s0 = int(samples[0])
         v_b32 = self.e032 + np.float32(i_b - self.k0) * self.e_step32
         ld_1, _, _ = self._calculate_ldos_at_points_gpu(
-            tip_positions, None, None, use_energy_decay=use_decay, preserve_orbitals=False, topo_only=True,
+            tip_positions, None, None, decay_model=decay_model, preserve_orbitals=False, topo_only=True,
             v_bias=v_b32, samples=samples)
         # Topography always uses total LDOS — ld_1 is already combined for POL when topo_only=True.
         cur = quadrature.integral_from_zero(ld_1, self.k0 - s0, self.e_step32, self.e032)[:, i_b - s0]
         return (cur if v_b > 0 else -cur), samples
 
     def _converge_tip_height(self, z_map_gpu, grid_xy_gpu, samples, v_b, target_ldos,
-                             target_threshold=0.01, topo_gain=0.5, max_iter=1000, use_decay=True):
+                             target_threshold=0.01, topo_gain=0.5, max_iter=1000, decay_model='decay_exact'):
         """Machinery: Exhaustive Point-Wise Convergence Engine: the tip height at each point is moved
         until the current at the frozen bias v_b (V_b; _topo_current: the weighted total LDOS at the
         sample list `samples`, E-2 .. E2 and every sample from 0 V to V_b, integrated from 0 V to V_b,
-        taken positive) is target_ldos."""
+        taken positive) is target_ldos, under the decay model decay_model (_effective_decay_model's names)."""
         t_start = time()
         print("--- INITIALIZING TIP CONVERGENCE ENGINE ---")
         for i in range(max_iter):
             t0 = time()
-            cur_ldos, _ = self._topo_current(cp.hstack([grid_xy_gpu, z_map_gpu[:, None]]), v_b, use_decay,
+            cur_ldos, _ = self._topo_current(cp.hstack([grid_xy_gpu, z_map_gpu[:, None]]), v_b, decay_model,
                                              samples=samples)
             rat = cp.maximum(cur_ldos, 1e-20) / target_ldos
 
@@ -702,9 +724,13 @@ class Unified_STM_Simulator:
 
     def _effective_decay_model(self):
         """Machinery: the decay model's name, in the cache names and the in-memory recompute keys.
-        'decay_tilt' = Decay on: the exact tilted barrier (gpu_chen_tunneling_factor);
-        'decay_k0' = Decay off: exp(-2 kappa0 d), the same weight without its energy and bias dependence."""
-        return 'decay_tilt' if getattr(self, 'use_decay', True) else 'decay_k0'
+        'decay_exact' = Decay on, 'exact': the exact tilted barrier (gpu_exact_factor);
+        'decay_linearized' = Decay on, 'linearized': the linearized weight (gpu_linearized_factor);
+        'decay_k0' = Decay off: exp(-2 kappa0 d), the same weight without its energy and bias dependence
+        ('exact' / 'linearized' then make no difference)."""
+        if not getattr(self, 'use_decay', True):
+            return 'decay_k0'
+        return 'decay_linearized' if getattr(self, 'decay_linearized', False) else 'decay_exact'
 
     def _decay_cache_suffix(self):
         # Converged topographies depend on the decay model used to produce them, so the model name
@@ -733,7 +759,8 @@ class Unified_STM_Simulator:
 
     def _calculate_ldos_at_points_gpu(self, tip_positions, emin, emax,
                                       use_energy_decay=False, preserve_orbitals=False,
-                                      topo_only=False, v_bias=None, with_current=False, samples=None, progress=''):
+                                      topo_only=False, v_bias=None, with_current=False, samples=None, progress='',
+                                      decay_model=None):
         """
         Machinery: the LDOS at the tip positions on the displayed DOSCAR samples of the window [emin, emax]
         (_display_indices: each end snapped to a sample by _snap; an end of exactly 0.0 is 0 V and adds no
@@ -743,9 +770,13 @@ class Unified_STM_Simulator:
         is the samples' energies, the parser's float64 values as a CuPy array (cp.asarray(energies[idx])).
         The weights, I and dI/dV are those of the block THE DECAY MODEL (physics); everything computed here on
         the GPU is float32 (the tip positions, the distances, phi, the weights, the outputs).
+        decay_model: 'decay_exact', 'decay_linearized' or 'decay_k0' (_effective_decay_model's names; ValueError
+        for another); None: from the Decay bool use_energy_decay ('decay_exact' when True, 'decay_k0' when False).
 
-        Decay off: every image of every atom weighted by exp(-2 kappa0 d), which depends on neither E nor V.
-        Decay on (the exact tilted barrier, gpu_chen_tunneling_factor):
+        Decay off ('decay_k0'): every image of every atom weighted by exp(-2 kappa0 d), which depends on neither E
+        nor V.
+        Decay on ('decay_exact': the exact tilted barrier, gpu_exact_factor; 'decay_linearized': the linearized
+        weight, gpu_linearized_factor):
           v_bias given (topography, from _topo_current): the bias is frozen at v_bias (V_b's GPU energy), each
             state, at its sample's GPU energy e0 + (i - k0) step, weighted by w(E, v_bias); the caller
             integrates the result from 0 V to V_b (quadrature.integral_from_zero), the current at that bias.
@@ -754,9 +785,9 @@ class Unified_STM_Simulator:
             [0, V], the integral from 0 V to V of rho(E) dw(E, V)/dV, by quadrature.integral_from_zero's rule
             (the value at 0 V and the piece next to it from the stencil E-2, E-1, E1, E2 around 0 V, Simpson
             pairs outward to V).  That integral always starts at 0 V, so the DOS from the stencil to the
-            samples is used whether or not they reach 0 V.  Computed by the chen_sweep kernel
-            (_CHEN_SWEEP_SRC), each requested V on its own, the launches chunked by the (requested V, sample)
-            pairs per tip point.
+            samples is used whether or not they reach 0 V.  Computed, for 'decay_exact', by the exact_sweep
+            kernel (_EXACT_SWEEP_SRC), each requested V on its own, the launches chunked by the (requested V,
+            sample) pairs per tip point.
         with_current=True (used only with v_bias None and topo_only False): a fourth element is returned, the
           total current I(V) at the requested samples, in the order requested, (num_pts, num_e) float32 CuPy:
           the integral from 0 V to V of the total DOS weighted at that V, oriented (negative below 0 V for a
@@ -772,6 +803,14 @@ class Unified_STM_Simulator:
         (Decay on) or once (Decay off), led by `progress` (what is computed) and the channel; the topography
         calls print nothing here.
         """
+        # The decay model (decay_model, or the Decay bool's), and from it Decay on or off and the frozen-bias weight.
+        if decay_model is None:
+            decay_model = 'decay_exact' if use_energy_decay else 'decay_k0'
+        if decay_model not in ('decay_exact', 'decay_linearized', 'decay_k0'):
+            raise ValueError(f"decay_model must be 'decay_exact', 'decay_linearized' or 'decay_k0', not {decay_model!r}")
+        use_energy_decay = decay_model != 'decay_k0'
+        linearized = decay_model == 'decay_linearized'
+        frozen_factor = gpu_linearized_factor if linearized else gpu_exact_factor
         if samples is None:
             idx_np = self._display_indices(emin, emax)
             estart, eend = int(idx_np[0]), int(idx_np[-1]) + 1
