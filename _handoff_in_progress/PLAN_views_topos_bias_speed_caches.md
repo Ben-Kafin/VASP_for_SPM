@@ -1,6 +1,6 @@
 # Plan: the views-layout decisions, the bias toggles, the topos, the LDOS speed-up, |m| and m on demand, the caches folder, the console lines and the shading
 
-Draft of 2026-11-07, for Benjamin's approval. Nothing in it is implemented. The open questions are in section 11. Each one names the sections it decides. Section 12 is filled from the text-only check of the briefs against your other documents, which is still running.
+Draft of 2026-11-07, for Benjamin's approval. Nothing in it is implemented. The open questions are in section 11. Each one names the sections it decides. Section 12 holds what the check of the briefs against your other documents found still missing.
 
 ## 0. Sources
 
@@ -481,9 +481,50 @@ Each answer is written into its section as part of the plan, and its question re
 **Order of work**
 29. Sections 2 to 5 first, then 7 and 8, then 9, 6 and 10? **R: yes.**
 
+**Gaps from your other documents**
+30. **12.3:** while Pan or Zoom is on, should the decomp clicks be ignored, as now, or act as your rules say? Ignoring them stops a pan or zoom drag that starts on a curve from also changing the decomp level. **R: keep ignoring them**, if you approve that exception. Otherwise they act, as your rules say.
+
 ## 12. Gaps from your other documents
 
-Filled from the text-only check of the briefs against your other seven documents (running). Anything a brief dropped or changed, and that no later ruling of yours removed, goes here as a numbered item for approval.
+**How these were found:**
+- A text-only check of every brief and workflow prompt against your other seven documents covered 616 requirements in all.
+- Each flag was then checked against your later rulings, including your mid-turn messages, and against the code.
+- Ruled out:
+  - the Rejali citation and the README's `wrong_decays/` row: your own ruling of 05:08Z;
+  - the matcher's `qtgui` copy, the commits and the `qtgui/__init__.py` docstring: done by hand outside the briefs;
+  - Map's legend panel and "one click, one step" with RUN off: done in the follow-up;
+  - the shading on the GPU, the 720-dpi SVG and the README's DOSCAR tolerance: in the code.
+
+**What remains:**
+
+12.1 **The DOS plotter's window lines** (response document, part 3 Q6, for every `qtgui` window).
+- **Your rule:** "every setting the window makes with the mouse, each as one of the window's own lines (`set_info_line`), updated whenever it changes."
+- **Now:** `plot_dos_cursors_levels.py` has no window lines. Its plot level, active element and active atom reach the info panel nowhere.
+- **Change:** one `set_info_line` each for the plot level, the active element and the active atom, updated when they change.
+
+12.2 **A right click on the spectrum panel** (part 3 handoff section 2, "The clicks").
+- **Your rule:** "Right click anywhere in the spectrum panel or the legend panel (on a curve, on an entry, or on empty space): goes back one level."
+- **Now:** only a right click inside the spectrum's plot box goes back. One on its tick labels, axis labels or title does nothing.
+- **Change:** a right click anywhere in the spectrum's panel cell goes back one level.
+
+12.3 **The decomp clicks while Pan or Zoom is on** (Q30).
+- **Now:** the code ignores the spectrum's and the legend panel's decomp clicks while the toolbar's Pan or Zoom is on. Your rules have no such exception; your K8 (a) keeps only the legend stack out of Pan and Zoom. It came from the part 3 brief, not from you.
+- **Change:** per Q30.
+
+12.4 **The legend panel's wheel** (response document, part 3 Q1).
+- **Your rule:** "a Qt vertical scroll bar at the panel's right edge, shown only when the entries don't fit, plus the mouse wheel over the panel."
+- **Now:** the wheel scrolls only over the entry stack, not over the panel's title or its Back row.
+- **Change:** the wheel scrolls anywhere over the legend panel.
+
+12.5 **One window line per mouse-made setting** (response document, part 3 Q6).
+- **Your rule:** "each as one of the window's own lines".
+- **Now:** the simulator groups several settings into one line. The decomp level, the active marker and the active element share the `decomp` line, and every marker position shares the `markers` line. Every value is shown; the form differs.
+- **Change:** one line per setting: the decomp level, the active marker, the active element, and each marker's position (with the Line ends and the Path nodes as now).
+
+12.6 **The DOSCAR guard's tolerance** (part 2 answers, A1).
+- **Your rule:** "half a unit of the last decimal the printed energy column carries, read from the file's own text, plus 1e-6 eV."
+- **Now:** the tolerance is computed per printed energy, from that entry's own decimals. It is the same for VASP's fixed 3-decimal column, and would differ only if entries in one column had different numbers of decimals.
+- **Change:** one tolerance for the column, from the decimals the column carries.
 
 ## 13. Files
 
@@ -493,3 +534,4 @@ Filled from the text-only check of the briefs against your other seven documents
 - `stm_from_dft/locpot_manager.py` (Q18).
 - `stm_from_dft_opt/README.md` and `run_DFT_STM.py` (comments and docs).
 - `mo_ldos_decomp/mo_ldos_projection/sim_wrapper.py` (Q15).
+- `stm_from_dft/plot_dos_cursors_levels.py` (12.1), `stm_from_dft/doscar_parser.py` (12.6), and the simulator's decomp clicks, legend panel and window lines (12.2 to 12.5).
