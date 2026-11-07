@@ -79,8 +79,9 @@ Branch: `claude/jolly-babbage-ppmbdj`. Base of part 1's work: b051547.
       part-2 items: the synthetic DOSCAR removed, procar_dos.py moved to PROCAR_tools/, Map panels kept in
       increasing energy; and restate ruling 1)
 - [x] Part 2: the 'width (V)' spec line removed from the root qtgui/widgets.py and both copies (d5e08a4)
-- [~] Part 2 sections 2-11 + X1-X3: workflow running (base d5e08a4; decisions in `PART2_DECISIONS.md`)
-- [ ] Part 2: review, py_compile, commit, per-file change list
+- [x] Part 2 sections 2-11 + X1-X3: implemented, reviewed (completeness, scope, formulas), fixed, integration-reviewed
+      (workflow wf_23c47f8c-7d0, base d5e08a4); py_compile 12 files pass; per-file list `PART2_CHANGES.md`
+- [ ] Part 2 open items O1-O18 (`PART2_OPEN.md`): owner's rulings, then apply (simulator ones with part 3)
 - [x] Part 3 handoff received: `handoff_part3_spectrum_decomp.md` (the decomp, the legend panel, Line/Path marker
       order and colours, sm4_browser's info panel and saves in every qtgui window); owner's ruling 8 on its info panel
 - [~] Part 3 pre-flight (read-only mapping): workflow wf_e2476f62-5f5; its mapping goes to `PART3_PREFLIGHT.md` as the

@@ -2506,7 +2506,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
                 eg = self.energies[self._display_indices(self.s_emin.val, self.s_emax.val)]
                 # Every map energy in one call: the LDOS at each grid point, at each map energy's sample, and the
                 # current at those samples only (one column per map).
-                grid_z = cp.hstack([self.grid_xy_gpu, cp.array(self.current_z_map)[:, None]])
+                grid_z = cp.hstack([self.grid_xy_gpu, cp.asarray(self.current_z_map, dtype=cp.float32)[:, None]])
                 ld_up, ld_dn, _, cur = self._calculate_ldos_at_points_gpu(
                     grid_z, None, None, use_energy_decay=self.use_decay, preserve_orbitals=True, with_current=True,
                     samples=self.map_e_idx)
@@ -3505,7 +3505,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
             for line in self.ax_spec.get_lines():
                 if line.get_label() == f'emarker_{idx}':
                     line.set_xdata([self.map_e_targets[idx], self.map_e_targets[idx]])
-            grid_z = cp.hstack([self.grid_xy_gpu, cp.array(self.current_z_map)[:, None]])
+            grid_z = cp.hstack([self.grid_xy_gpu, cp.asarray(self.current_z_map, dtype=cp.float32)[:, None]])
             t_up, t_dn, _, t_cur = self._calculate_ldos_at_points_gpu(
                 grid_z, None, None, use_energy_decay=self.use_decay, preserve_orbitals=True, with_current=True,
                 samples=[e_idx])
