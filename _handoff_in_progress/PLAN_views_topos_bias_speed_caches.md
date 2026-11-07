@@ -426,7 +426,9 @@ Draft of 2026-11-07, for Benjamin's approval. Nothing in it is implemented. The 
 - **Redraw:** the energy maps are shaded again while the light is dragged (Q23).
 - **Height mode:** the two light panels are shown greyed and take no drags, since Height uses no light (Q24).
 - **The shading sub-section, Map only:**
-  - One row at the bottom of Map's panel area, under the energy maps and above the bottom strip, level with the left column's RUN / toggles box.
+  - One row at the bottom of Map's panel area, under the energy maps and above the bottom strip.
+  - **Its bottom edge lines up with the bottom edge of the left column's RUN / STOP and toggles box** (your rule). The two need not be the same height: only their bottoms line up.
+  - It is part of Map's arrangement, so its panels can be a map panel's size, but its slot is pinned to the bottom of the panel area. Any height the window leaves over goes above it, between the energy maps and it, never below it (Q29).
   - From the left: the Contour / Shading box (moved there from the strip), the darkness box, the top view panel, the side view panel (Q25).
   - Its panels are a map panel's size. It joins 3.6's size limits and the window's minimum size as Map's fourth sub-section (Q28).
 - **Where the code goes:** the light's state, the two panels' drawing and their drag rules go in `cmap_shading.py` with the box, so sm4_Browser can take them as it is meant to take the module. The simulator places them (Q26).
@@ -462,6 +464,7 @@ Draft of 2026-11-07, for Benjamin's approval. Nothing in it is implemented. The 
 26. **10:** the light panels' code in `cmap_shading.py`, so sm4_Browser gets them with the module? **R: yes.**
 27. **10, the top view's background:** only the centre, the guide circle and the light, or the shaded LDOS topo behind them as a preview? **R: only the centre, the circle and the light,** unless you want the preview.
 28. **10 with 3.6:** the shading row is Map's last row, under the energy maps however many rows they wrap to? **R: yes.**
+29. **10, leftover height:** with the shading row's bottom pinned to the RUN / toggles box's bottom, any height the window leaves goes between the energy maps and the shading row. Or should the energy maps sit directly on the shading row, with the leftover above the top row instead? **R: between the maps and the shading row,** so the top row and the maps stay where 3.6 puts them.
 
 ## 12. Gaps from your other documents
 
