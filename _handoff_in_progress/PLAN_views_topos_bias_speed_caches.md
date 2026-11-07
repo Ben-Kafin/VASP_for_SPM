@@ -14,7 +14,7 @@ Draft of 2026-11-07, for Benjamin's approval. Nothing in it is implemented. The 
 - Implement exactly what is approved. If anything needs changing outside it, stop and ask. Every delivery lists the approved changes and any additional ones separately, and stops if the additional list is not empty.
 - Nothing in `wrong_decays/` is touched.
 - Agents read files and run only `python -m py_compile`: no tests, no windows. Every agent is Opus 5.5 or higher.
-- The two package `qtgui` copies (`stm_from_dft/qtgui` and `matcher/qtgui`) stay byte-identical. Whether the root `qtgui/` follows is Q20.
+- The two package `qtgui` copies (`stm_from_dft/qtgui` and `matcher/qtgui`) stay byte-identical. Whether the root `qtgui/` follows is Q6.
 - Work on the branch `claude/jolly-babbage-ppmbdj`. `main` is fast-forwarded only on your OK.
 - README rows, docstrings and comments follow every change. The Physics / Machinery tags stay. Chen is the only citation.
 - Work starts only after your answers and an explicit "begin".
@@ -53,10 +53,10 @@ Draft of 2026-11-07, for Benjamin's approval. Nothing in it is implemented. The 
 
 **Titles:**
 - The global topo keeps "Global Topo: bias … V, height … Å".
-- The LDOS topo becomes "LDOS Topo: bias … V, height … Å" (Q13).
+- The LDOS topo becomes "LDOS Topo: bias … V, height … Å" (Q1).
 
 **Prints:**
-- "[*] Map Local Setpoint LDOS: …" and "[*] Path Setpoint LDOS: …" become "[*] LDOS Topo Setpoint LDOS: …" (Q13).
+- "[*] Map Local Setpoint LDOS: …" and "[*] Path Setpoint LDOS: …" become "[*] LDOS Topo Setpoint LDOS: …" (Q1).
 - "Map Topo" and "Line Topo" in comments and docstrings become "LDOS topo"; the README follows.
 - Outside the simulator, `sim_wrapper` reads `global_z_map`, which keeps its name. Nothing outside reads the other renamed names.
 
@@ -93,7 +93,7 @@ Draft of 2026-11-07, for Benjamin's approval. Nothing in it is implemented. The 
 **Change:**
 - A right-aligned label at the window's top right in `qtgui` (`qtplot.py`, both package copies).
 - It is set on mouse motion from the axes under the mouse, in that axes' data coordinates, and cleared when the mouse is over no axes.
-- It is on in every simulator view. Q14: also the other `qtgui` windows?
+- It is on in every simulator view. Q2: also the other `qtgui` windows?
 
 ### 3.3 The topo sub-section (every view)
 
@@ -232,7 +232,7 @@ Draft of 2026-11-07, for Benjamin's approval. Nothing in it is implemented. The 
 
 **Change:**
 - **State:** `self.bias_end` ∈ {`'emin'`, `'emax'`}, starting at `'emin'` for `ldos_bias_sign` 'neg' and `'emax'` for 'pos'.
-- **Controls:** one toggle beside each of the E Min and E Max boxes in the bottom strip (`chk_bias_emin`, `chk_bias_emax`; label Q12), in every view, mutually exclusive as 'exact' / 'linearized' are.
+- **Controls:** one toggle beside each of the E Min and E Max boxes in the bottom strip (`chk_bias_emin`, `chk_bias_emax`; label Q5), in every view, mutually exclusive as 'exact' / 'linearized' are.
 - **A box edited to 0.0 while it is the bias end:** `bias_end` moves to the other end and the toggles follow. A click on the toggle of an end at 0.0 leaves it off.
 - **Computing V_b:** `_bias_sample()` takes the end from `bias_end`. Its snapping, V_b and the both-zero `ValueError` stay.
 - **Recomputes:** a toggle switch runs `_on_ui_change` as a change of that end's value does.
@@ -279,7 +279,7 @@ Draft of 2026-11-07, for Benjamin's approval. Nothing in it is implemented. The 
 
 **Now:** one in-place line per channel, "x/n spectra calculated", rewritten after each launch.
 
-**Change** (format and timing per Q1 to Q5):
+**Change** (format and timing per Q7 to Q16):
 ```
 --- LDOS: Map energy maps, 2500 spectra ---
    Spectrum 0001/2500 | Time = 0.012s
@@ -287,8 +287,8 @@ Draft of 2026-11-07, for Benjamin's approval. Nothing in it is implemented. The 
 --- LDOS COMPLETE: Total Time = 30.512s ---
 ```
 - Each time runs from a GPU synchronize before its launch to the one after it (`time()`, as the Iter line uses).
-- A launch that finishes several spectra gives each the launch's time divided by their number (Q1).
-- Decay off has one product for all spectra (Q4).
+- A launch that finishes several spectra gives each the launch's time divided by their number (Q7).
+- Decay off has one product for all spectra (Q10).
 - With |m| / m on demand (section 8), a run prints one set of lines for the total. While Mag is on, a second set follows for |m| or m, with the channel in its header.
 
 ### 6.2 What the topography lines say
@@ -300,7 +300,7 @@ Draft of 2026-11-07, for Benjamin's approval. Nothing in it is implemented. The 
 - The global recompute prints "with broadening" whatever the cause.
 - Line prints "Path Setpoint LDOS".
 
-**Change** (wording in Q15):
+**Change** (wording in Q11):
 - The header names what is converged: "--- TIP CONVERGENCE: global topo | LDOS topo | Line stripe | Path stripe, bias … V, height … Å, n points ---".
 - "with broadening" is dropped.
 - The setpoint prints follow section 2.
@@ -323,10 +323,10 @@ Draft of 2026-11-07, for Benjamin's approval. Nothing in it is implemented. The 
 
 **Change:**
 - The thread index runs over (tip point, requested V) pairs. Each thread does, for its one V, exactly what today's thread does for that V: the same images in the same order, the same stencil, pieces and pairs.
-- It writes the same output slot (no atomics). Each output gets the same arithmetic in the same order, so the results should be identical (Q8 for the check).
+- It writes the same output slot (no atomics). Each output gets the same arithmetic in the same order, so the results should be identical (Q12 for the check).
 - The launch chunking and the Python side (`_sweep`) are unchanged, apart from the grid size.
 
-### 7.2 The linearized kernel (Q7)
+### 7.2 The linearized kernel (Q13)
 
 - Its single walk outward from 0 V is what makes it fast, so it can't be split by V. The two sides of 0 V are independent and could run as two threads.
 - It is already one walk per (tip point, atom, image).
@@ -351,13 +351,13 @@ Draft of 2026-11-07, for Benjamin's approval. Nothing in it is implemented. The 
 - **The total by default:** `_calculate_ldos_at_points_gpu` computes the total channel in one pass. NCL uses `dos_up_*` (already the total), POL uses `dos_total_*` (up + down, already built for the topography), unpolarized its one channel.
 - **The magnetization channel** (new argument `want_mag`) is computed only while Mag is on, for what is shown: the Line / Path LDOS, Map's maps, the marker spectra, and the dragged map.
   - NCL: |m| from `dos_dn_*`, as now.
-  - POL: m from one pass on `dos_up − dos_dn` (Q9).
+  - POL: m from one pass on `dos_up − dos_dn` (Q14).
 - **Kept:** it is kept in memory under its LDOS's key and saved in `caches/` (section 9). Turning Mag off and on again, or returning to the same settings, reuses it.
 - **The current (Feenstra)** comes from the total's pass, as now.
 - **Renames:**
   - `cached_ld_up` / `cached_ld_dn` become `cached_ld_total` / `cached_ld_mag`, and `map_ld_up` / `map_ld_dn` become `map_ld_total` / `map_ld_mag` (with their GPU copies).
   - `_combine_ldos_display(total, mag, show_mag)` returns the total, or the mag channel while Mag is on.
-- **`sim_wrapper`** (`mo_ldos_decomp`) reads `cached_ld_dn` and calls `_combine_ldos_display`. It follows the renames (Q10).
+- **`sim_wrapper`** (`mo_ldos_decomp`) reads `cached_ld_dn` and calls `_combine_ldos_display`. It follows the renames (Q15).
 
 ## 9. Caches (chat, 2026-11-07)
 
@@ -370,14 +370,14 @@ Draft of 2026-11-07, for Benjamin's approval. Nothing in it is implemented. The 
 - It covers:
   - `global_topo_*.npy` and `ldos_topo_*.npy` (`simulator.py`);
   - the new LDOS and |m| / m caches (9.2);
-  - `LOCPOT.npy` (`locpot_manager.py`, Q11).
+  - `LOCPOT.npy` (`locpot_manager.py`, Q18).
 - `reuse_cache` keeps its meaning.
 
 ### 9.2 Line and Path LDOS caches, per decay model
 
 **Your rule:** if the speed-up can't make it fast without losing accuracy, the Line and Path LDOS are cached so they open at once when the decay method is changed. Their |m| / m caches likewise.
 
-**Change** (Q5, Q6):
+**Change** (Q16, Q17):
 - **What is kept:** the LDOS of a Line or Path run (its total, and its mag channel when computed) together with its energies and current.
 - **The key:**
   - the view and its geometry: the line ends, or the path nodes and Extend, and the point count;
@@ -387,9 +387,9 @@ Draft of 2026-11-07, for Benjamin's approval. Nothing in it is implemented. The 
 - **Where:**
   - in memory, one entry per decay model, so a switch and a switch back cost nothing;
   - on disk in `caches/` as `line_ldos_<hash>.npz` / `path_ldos_<hash>.npz` (and `_mag`). `<hash>` is the SHA-1 of the key's text; the key is stored in the file and checked on load.
-- **The stripe's heights:** a cached LDOS is only usable with the heights it was computed at, but your topo rules say the stripes have no cache. Q6 asks whether the heights are stored inside the LDOS cache.
+- **The stripe's heights:** a cached LDOS is only usable with the heights it was computed at, but your topo rules say the stripes have no cache. Q17 asks whether the heights are stored inside the LDOS cache.
 - **Size:** points × energies × atoms × orbitals × 4 bytes. For example, 72 × 350 × 300 × 9 × 4 B ≈ 270 MB per Line run.
-- **Map's energy maps:** Q5.
+- **Map's energy maps:** Q16.
 
 ## 10. The shading (chat, 2026-11-07)
 
@@ -411,60 +411,75 @@ Draft of 2026-11-07, for Benjamin's approval. Nothing in it is implemented. The 
 - **The window:** the RUN / STOP button and the toggles are one box at the bottom of the left column. The panel area is to its right, and the bottom strip runs under both.
 
 **Change:**
-- **Darkness, both modes:** a number box 'darkness' (0 to 1) in the shading sub-section. The floor passed to `shaded_rgba` is 1 − darkness: darkness 1 is today's (the darkest point black), 0 is no shading. The start value is Q21.
+- **Darkness, both modes:** a number box 'darkness' (0 to 1) in the shading sub-section. The floor passed to `shaded_rgba` is 1 − darkness: darkness 1 is today's (the darkest point black), 0 is no shading. The start value is Q20.
 - **The light (Relief):**
   - `BoxState` gains `az` (degrees; 0 up, increasing clockwise, Kovesi's convention) and `el` (degrees, 0 to 90), both starting at 45°.
   - `shade_field` receives them, and the shade cache's key includes them.
 - **The top view panel** (`ax_light_top`, a map panel's size):
   - It shows the plane from above, its centre point, a guide circle of radius R and the light as a dot.
   - Dragging the dot sets the azimuth: the dot's angle around the centre.
-  - The dot is drawn at R cos(el) from the centre, so it shows the light as seen from above (Q22).
+  - The dot is drawn at R cos(el) from the centre, so it shows the light as seen from above (Q21).
 - **The side view panel** (`ax_light_side`, the same size):
   - The plane is seen edge-on, as a horizontal line through the centre point. The view is at right angles to the light's azimuth, so the light lies in the drawn plane.
   - The light is a dot on the arc of radius R around the centre point, at the elevation angle above the line, with a line from it to the centre point (its focus).
   - Dragging it up or down sets the elevation, from 0° to 90°. The dot stays on the arc.
-- **Redraw:** the energy maps are shaded again while the light is dragged (Q23).
-- **Height mode:** the two light panels are shown greyed and take no drags, since Height uses no light (Q24).
+- **Redraw:** the energy maps are shaded again while the light is dragged (Q22).
+- **Height mode:** the two light panels are shown greyed and take no drags, since Height uses no light (Q23).
 - **The shading sub-section, Map only:**
   - One row at the bottom of Map's panel area, under the energy maps and above the bottom strip.
   - **Its bottom edge lines up with the bottom edge of the left column's RUN / STOP and toggles box** (your rule). The two need not be the same height: only their bottoms line up.
-  - It is part of Map's arrangement, so its panels can be a map panel's size, but its slot is pinned to the bottom of the panel area. Any height the window leaves over goes above it, between the energy maps and it, never below it (Q29).
-  - From the left: the Contour / Shading box (moved there from the strip), the darkness box, the top view panel, the side view panel (Q25).
-  - Its panels are a map panel's size. It joins 3.6's size limits and the window's minimum size as Map's fourth sub-section (Q28).
-- **Where the code goes:** the light's state, the two panels' drawing and their drag rules go in `cmap_shading.py` with the box, so sm4_Browser can take them as it is meant to take the module. The simulator places them (Q26).
+  - It is part of Map's arrangement, so its panels can be a map panel's size, but its slot is pinned to the bottom of the panel area. Any height the window leaves over goes above it, between the energy maps and it, never below it (Q28).
+  - From the left: the Contour / Shading box (moved there from the strip), the darkness box, the top view panel, the side view panel (Q24).
+  - Its panels are a map panel's size. It joins 3.6's size limits and the window's minimum size as Map's fourth sub-section (Q27).
+- **Where the code goes:** the light's state, the two panels' drawing and their drag rules go in `cmap_shading.py` with the box, so sm4_Browser can take them as it is meant to take the module. The simulator places them (Q25).
 - **The info panel:** lists the darkness, the azimuth and the elevation with the other settings.
 
-## 11. Open questions (each with my recommendation)
+## 11. Open questions
 
-1. **6.1, the per-spectrum time.** (a) Keep the launches, and each spectrum gets its launch's time divided by its spectra; when a launch holds one spectrum, the time is its own. (b) One spectrum per launch, always its own time, but light runs slow down. (c) One line per launch. **R: (a).** With 7.1, heavy runs already have one spectrum per launch.
-2. **6.1, header and footer:** one pair per LDOS call, as above? **R: yes.**
-3. **6.1, the caller label** ("Map energy maps", "Line points", "marker spectra", "dragged map") in the header? **R: yes.**
-4. **6.1, Decay off:** n lines, each with the product's time divided by n, or one line? **R: n lines, as Decay on.**
-5. **9.2:** cache the Line and Path LDOS in memory, on disk, or both? Map's energy maps too? **R: both; Map's too, same key scheme.**
-6. **9.2:** store the stripe's heights inside the Line / Path LDOS cache, so a cached run opens without converging? Or converge the stripe and load only the LDOS? **R: inside the LDOS cache.** They are then never kept on their own, only with the LDOS they belong to.
-7. **7.2:** split the linearized kernel by side of 0 V? **R: no, not unless 7.1 alone isn't enough.**
-8. **7.1, the check:** I write a short comparison of the old and new exact kernels on your data, kept outside the repository. You run it once to confirm identical outputs and see the speed-up. **R: yes.**
-9. **8, POL:** the total in one pass on up + down, and m in one pass on up − down. These differ from today's two-pass sums only by float32 rounding. Accept? **R: yes.**
-10. **8:** may `sim_wrapper.py` (outside `stm_from_dft_opt`) change, for the renamed channels? **R: yes,** only those lines.
-11. **9.1:** move `LOCPOT.npy` into `caches/` too? **R: yes**, since you said all caches. The matcher's `.h5` results are outputs, not the simulator's caches, and stay where they are.
-12. **4:** the bias toggles' label: "bias" beside each box? **R: "bias".**
-13. **2:** the LDOS topo's title "LDOS Topo: bias … V, height … Å", and the setpoint print "[*] LDOS Topo Setpoint LDOS: …" for both the LDOS topo and the stripes? **R: yes.**
-14. **3.2:** the cursor readout only in the simulator's windows, or in every `qtgui` window? **R: the simulator's,** as your rule says.
-15. **6.2:** the convergence header's wording as written in 6.2? **R: yes.**
-16. **Cache names, an observation:** a height passed as 2 is written "2A", but "2.0A" after a Rerun, so the same height can get two cache names. Fix it, which renames such files, or leave it? **R: leave it unless you want it.** It isn't part of your rules.
-17. **3.6, the map grid "in a full 16:9 window":** read as "the columns that make each map largest in the window as it is, chosen again on every resize"? **R: yes.**
-18. **3.9:** the dot size counted is the drawn size (`s=10`, points²) at the screen's DPI? **R: yes.**
-19. **Order of work:** sections 2 to 5 (the views) first, then 7 and 8, then 9, 6 and 10? **R: yes,** since 9's keys depend on 5 and 8, and 10's row joins the Map layout of 3.6.
-20. **The root `qtgui/`:** follows the package copies for 3.2 and 3.6? **R: yes,** as it did for `widgets.py`.
-21. **10, the darkness's start value.** **R: 0.5,** so the darkest point is at half its colour's L*. Yours to set.
-22. **10, the top view:** does its drag set only the azimuth, with the side view alone setting the elevation as you described? Or does the dot's distance from the centre set the elevation too? **R: azimuth only.**
-23. **10:** shade the maps again live while the light is dragged, or on release? **R: live.** The shade is on the cell's grid, a few thousand points.
-24. **10, Height mode:** the light panels greyed, with no drags? **R: yes.**
-25. **10, the sub-section's order:** the Contour / Shading box, darkness, top view, side view, from the left? **R: yes.**
-26. **10:** the light panels' code in `cmap_shading.py`, so sm4_Browser gets them with the module? **R: yes.**
-27. **10, the top view's background:** only the centre, the guide circle and the light, or the shaded LDOS topo behind them as a preview? **R: only the centre, the circle and the light,** unless you want the preview.
-28. **10 with 3.6:** the shading row is Map's last row, under the energy maps however many rows they wrap to? **R: yes.**
-29. **10, leftover height:** with the shading row's bottom pinned to the RUN / toggles box's bottom, any height the window leaves goes between the energy maps and the shading row. Or should the energy maps sit directly on the shading row, with the leftover above the top row instead? **R: between the maps and the shading row,** so the top row and the maps stay where 3.6 puts them.
+Each answer is written into its section as part of the plan, and its question removed, once you give it.
+
+**Views and names**
+1. **2:** the LDOS topo's title "LDOS Topo: bias … V, height … Å", and one setpoint print "[*] LDOS Topo Setpoint LDOS: …" for both the LDOS topo and the stripes? **R: yes.**
+2. **3.2:** the cursor readout in the simulator's windows only, or in every `qtgui` window? **R: the simulator's.**
+3. **3.6:** "in a full 16:9 window" read as "the columns that make each map largest in the window as it is, chosen again on every resize"? **R: yes.**
+4. **3.9:** the atom dots counted at their drawn size (`s=10`, points²) at the screen's DPI? **R: yes.**
+5. **4:** the bias toggles' label "bias"? **R: "bias".**
+6. **3.2, 3.6, 3.9:** the root `qtgui/` follows the package copies? **R: yes.**
+
+**Console lines**
+7. **6.1, the per-spectrum time:** (a) each spectrum gets its launch's time divided by the spectra in it, which is its own time when a launch holds one; (b) one spectrum per launch, always its own time, light runs slower; (c) one line per launch. **R: (a).**
+8. **6.1:** one header and footer pair per LDOS calculation? **R: yes.**
+9. **6.1:** the caller label in the header? **R: yes.**
+10. **6.1, Decay off:** n lines, each the product's time divided by n, or one line? **R: n lines.**
+11. **6.2:** the convergence header's wording as written? **R: yes.**
+
+**Speed-up**
+12. **7.1:** a short comparison of the old and new exact kernels on your data, outside the repository, that you run once? **R: yes.**
+13. **7.2:** split the linearized kernel by side of 0 V now? **R: only if 7.1 isn't enough.**
+
+**|m| and m**
+14. **8, POL:** the total in one pass on up + down and m in one pass on up − down (float32 rounding only)? **R: yes.**
+15. **8:** `sim_wrapper.py` follows the renamed channels? **R: yes, those lines only.**
+
+**Caches**
+16. **9.2:** the Line / Path LDOS cached in memory, on disk, or both, and Map's energy maps too? **R: both; Map too.**
+17. **9.2:** the stripe's heights stored inside the LDOS cache? **R: yes.**
+18. **9.1:** `LOCPOT.npy` into `caches/`? **R: yes.**
+19. **Cache names:** the "2A" / "2.0A" spelling of one height: fix or leave? **R: leave.**
+
+**Shading**
+20. **10:** the darkness's start value? **R: 0.5.**
+21. **10:** the top view sets the azimuth only? **R: yes.**
+22. **10:** the maps shaded again live while dragging? **R: yes.**
+23. **10:** the light panels greyed in Height? **R: yes.**
+24. **10:** the sub-section's order (box, darkness, top view, side view)? **R: yes.**
+25. **10:** the light panels' code in `cmap_shading.py`? **R: yes.**
+26. **10:** the top view without a preview behind it? **R: yes.**
+27. **10:** the shading row Map's last row, under however many rows of maps? **R: yes.**
+28. **10:** leftover height between the maps and the shading row? **R: yes.**
+
+**Order of work**
+29. Sections 2 to 5 first, then 7 and 8, then 9, 6 and 10? **R: yes.**
 
 ## 12. Gaps from your other documents
 
@@ -474,7 +489,7 @@ Filled from the text-only check of the briefs against your other seven documents
 
 - `stm_from_dft/simulator.py` (sections 2 to 10).
 - `stm_from_dft/cmap_shading.py` (section 10).
-- `stm_from_dft/qtgui/qtplot.py` and `controls.py`, with `matcher/qtgui` identical (3.1, 3.2, 3.6, 3.9, 4 if the toggles need a control). The root `qtgui/` per Q20.
-- `stm_from_dft/locpot_manager.py` (Q11).
+- `stm_from_dft/qtgui/qtplot.py` and `controls.py`, with `matcher/qtgui` identical (3.1, 3.2, 3.6, 3.9, 4 if the toggles need a control). The root `qtgui/` per Q6.
+- `stm_from_dft/locpot_manager.py` (Q18).
 - `stm_from_dft_opt/README.md` and `run_DFT_STM.py` (comments and docs).
-- `mo_ldos_decomp/mo_ldos_projection/sim_wrapper.py` (Q10).
+- `mo_ldos_decomp/mo_ldos_projection/sim_wrapper.py` (Q15).
