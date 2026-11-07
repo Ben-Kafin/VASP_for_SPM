@@ -6,7 +6,7 @@ and LSORBIT/LNONCOLLINEAR (non-collinear SOC) calculations.
 
 wrong_decays/ holds four UNUSED reference files (fully commented out) whose
 decay factor is the WKB average over a linearly tilted barrier, the expression
-of simulator.py's Decay-on weight (gpu_chen_tunneling_factor) applied within
+of simulator.py's Decay-on weight (gpu_exact_factor) applied within
 the earlier models those files hold; they are not imported here.
 
 Author: Benjamin Kafin

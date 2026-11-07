@@ -868,9 +868,11 @@ class Unified_STM_Simulator:
         def _sweep(phi_c, dos3, p0, n_p, out, cur):
             """Machinery: the decay model's sweep kernel over tip points p0 .. p0 + n_p: out (n_p, n_unique, atoms,
             columns) += dI/dV, and, unless cur is None (want_cur = 0), cur (n_p, n_unique, atoms) += the current;
-            'decay_exact': exact_sweep; 'decay_linearized': its own kernel, launched here."""
+            'decay_exact': exact_sweep; 'decay_linearized': the linearized_sweep kernel, whose launch belongs here
+            (NotImplementedError until it is)."""
             if linearized:
-                # 'decay_linearized': the launch of its sweep kernel goes here, into the same out and cur.
+                # 'decay_linearized': the launch of linearized_sweep (_linearized_sweep_kernel) goes here, into the
+                # same out and cur.
                 raise NotImplementedError("the swept LDOS of 'decay_linearized' has no sweep kernel here yet")
             _exact_sweep_kernel(dos3.shape[2])(
                 ((n_p + 63) // 64, self.num_total_atoms), (64,),
@@ -3197,11 +3199,11 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
                 p_xy_gpu = cp.array(p_xy, dtype=cp.float32)
                 l_cur, l_samples = self._topo_current(
                     cp.hstack([p_xy_gpu, cp.full((self.npts, 1), self.z_highest_atom + self.ldos_height, dtype=cp.float32)]),
-                    v_b, self.use_decay)
+                    v_b, decay_model)
                 target = cp.max(l_cur)
                 print(f"[*] Path Setpoint LDOS: {float(target):.6e}")
                 z_line = self._converge_tip_height(cp.full(self.npts, self.z_highest_atom + self.ldos_height, dtype=cp.float32), p_xy_gpu, l_samples, v_b, target,
-                                                   use_decay=self.use_decay)
+                                                   decay_model=decay_model)
                 # Into the view's own record, with its key and the bias and decay model they were converged at.
                 if self.mode == 'Line':
                     self.current_z_line = cp.asnumpy(z_line)
@@ -3222,11 +3224,11 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
                     print(f"[*] Cache not found. Calculating LDOS Topography: {ldos_cache_name}")
                     z_fixed = cp.full(self.grid_xy_gpu.shape[0], self.z_highest_atom + self.ldos_height, dtype=cp.float32)
                     init_cur, t_samples = self._topo_current(cp.hstack([self.grid_xy_gpu, z_fixed[:, None]]),
-                                                             v_b, self.use_decay)
+                                                             v_b, decay_model)
                     target_setp = cp.max(init_cur)
                     print(f"[*] Map Local Setpoint LDOS: {float(target_setp):.6e}")
                     z_map_gpu = self._converge_tip_height(z_fixed, self.grid_xy_gpu, t_samples, v_b, target_setp,
-                                                          use_decay=self.use_decay)
+                                                          decay_model=decay_model)
                     self.current_z_map = cp.asnumpy(z_map_gpu)
                     np.save(ldos_cache_name, self.current_z_map)
                 self.cached_bias_energy_map, self.cached_d_topo_map = v_b, decay_model
@@ -3249,7 +3251,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
             # spectra, below).
             grid_z = cp.hstack([self.grid_xy_gpu, cp.asarray(self.current_z_map, dtype=cp.float32)[:, None]])
             ld_up, ld_dn, _, cur = self._calculate_ldos_at_points_gpu(
-                grid_z, None, None, use_energy_decay=self.use_decay, preserve_orbitals=True, with_current=True,
+                grid_z, None, None, decay_model=decay_model, preserve_orbitals=True, with_current=True,
                 samples=self.map_e_idx, progress='Map energy maps')
             self.map_ld_up = cp.asnumpy(ld_up)
             self.map_ld_dn = cp.asnumpy(ld_dn) if ld_dn is not None else None
@@ -3292,7 +3294,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
                 ld_up, ld_dn, eg, cur = self._calculate_ldos_at_points_gpu(
                     np.hstack([p_xy, z_view[:, None]]),
                     None, None,
-                    use_energy_decay=self.use_decay, preserve_orbitals=True, with_current=True,
+                    decay_model=decay_model, preserve_orbitals=True, with_current=True,
                     samples=l_idx, progress=f"{self.mode} points")
                 # The current from the same pass, stored with its samples' GPU energies e0 + (i - k0) step.
                 self.cached_current = cur
@@ -3329,7 +3331,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
             spec_idx = self._display_indices(self.s_emin.val, self.s_emax.val)
             s_up, s_dn, _, s_cur = self._calculate_ldos_at_points_gpu(
                 pt_gpu, None, None,
-                use_energy_decay=self.use_decay, preserve_orbitals=True, with_current=True,
+                decay_model=decay_model, preserve_orbitals=True, with_current=True,
                 samples=spec_idx, progress='marker spectra')
 
             spec_ldos = self._combine_ldos_display(s_up, s_dn, self.show_mag)
@@ -4460,6 +4462,9 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         self.fig.canvas.draw_idle()
 
     def _on_rel(self, event):
+        """Machinery: a mouse release: a Map energy marker's map computed again at its snapped sample under Map's
+        kept model; a moved line end, path node or Single Point / Map marker, its work done once (_update_all); a
+        Line / Path marker, the markers put back in their order (_resort_line_markers)."""
         if self.active_obj is not None and self.active_obj[0] == 'emarker':
             idx = self.active_obj[1]
             target_e = self.map_e_targets[idx]
@@ -4475,7 +4480,8 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
                     line.set_xdata([self.map_e_targets[idx], self.map_e_targets[idx]])
             # The dragged map by the same call and at the same tip heights as the full Map computation: Map's kept
             # LDOS-topo heights (map_z, not the shared current_z_map), under Map's kept model: its decay model
-            # (map_d_ldos; 'decay_tilt' is Decay on: _effective_decay_model) and its broadening (map_broadening).
+            # (map_d_ldos: 'decay_exact', 'decay_linearized' or 'decay_k0', _effective_decay_model's names) and its
+            # broadening (map_broadening).
             # While the window's broadening differs from Map's (changed since, while stopped or in another view), the
             # DOS is rebuilt at Map's for this one call (_apply_extra_broadening) and then at the window's again.
             kept_broad = self.map_broadening is not None and self.map_broadening != self.extra_broadening
@@ -4485,7 +4491,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
             try:
                 grid_z = cp.hstack([self.grid_xy_gpu, cp.asarray(self.map_z, dtype=cp.float32)[:, None]])
                 t_up, t_dn, _, t_cur = self._calculate_ldos_at_points_gpu(
-                    grid_z, None, None, use_energy_decay=self.map_d_ldos == 'decay_tilt', preserve_orbitals=True,
+                    grid_z, None, None, decay_model=self.map_d_ldos, preserve_orbitals=True,
                     with_current=True, samples=[e_idx], progress='dragged map')
             finally:
                 if kept_broad:
