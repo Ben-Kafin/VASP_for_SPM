@@ -95,8 +95,13 @@ Branch: `claude/jolly-babbage-ppmbdj`. Base of part 1's work: b051547.
 15. Relief at the cell edges (owner, 2026-11-07): "wrap at the cell edges" — the simulator passes `periodic=True` (as the
     follow-up brief already has it). The slope: the true slope (height per length, as implemented); the owner: "whatever
     is best" (recommended: resolution-independent, as matplotlib's LightSource with dx, dy and GDAL's gdaldem do).
-16. F1-F5 (owner, 2026-11-07): "a is fine for everything except I don't understand f5". F2 (a), F3 (a), F4 (a) taken.
-    F1's (a) is "as now" (the recommendation was (b)): asked to confirm. F5 explained; waiting.
+16. F1-F5 (owner, 2026-11-07): "a for all5". F1 (a): the RUN-off redraw keeps the current geometry with the last run's
+    data, as now (no change). F2 (a): Map's LDOS-topo branch also redraws the Map Topo's title, atoms and unit cell.
+    F3 (a): mplexport's _turned sets the offset transform only for a scatter and the artist's transform for every other
+    collection, in all three copies. F4 (a): every record keeps its own energies; Map keeps its own marker spectra
+    with their energies and the LDOS-topo heights its maps were computed at (for its contour slice and shading);
+    Line / Path keep their energies with their data; sim_wrapper sends each with its own. F5 (a): a Line window too
+    narrow for the two rows is Line's minimum width (no fallback; no change).
 
 ## Conventions given to the implementing agents (part 1)
 
@@ -142,8 +147,8 @@ Branch: `claude/jolly-babbage-ppmbdj`. Base of part 1's work: b051547.
       owner's questions F1-F3 and the settled list `FINAL_OPEN.md`
 - [x] Last workflow: wf_2b54edf1-9c3 (base 2083aa3): N1-N4 and FINAL_OPEN.md's settled list; reviewed, fixed; py_compile
       10 files pass; matcher qtgui = package copy; changes `LAST_CHANGES.md`
-- [ ] F1-F5 (FINAL_OPEN.md) once answered, with the settled list after the last pass; then final checks, this folder
-      deleted, main fast-forwarded (owner's OK)
+- [~] Final workflow: F2-F4 (ruling 16) and FINAL_OPEN.md's settled list after the last pass
+- [ ] Final checks, this folder deleted, main fast-forwarded (owner's OK)
 - [x] (was) Part 3 implementation, with the response document's sections 2-4 (every qtgui copy, the root included) and 6
       (the colour-map sets): simulator.py and mo_ldos_projection edits wait until part 2's workflow has finished
       (one workflow edits a file at a time)
