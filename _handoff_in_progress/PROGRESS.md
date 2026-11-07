@@ -61,6 +61,17 @@ Branch: `claude/jolly-babbage-ppmbdj`. Base of part 1's work: b051547.
     module as arguments and its maths uses CuPy only when given CuPy arrays (no CuPy import needed in sm4_Browser);
     one colour per unique grid point (the grid's duplicate edge left out), each point's quad centred on it, tiled
     by the cell offsets like the filled contours.
+12. The owner's answers to O1-O18 and K1-K11 (2026-11-07): `RESPONSE_PARTS2_3.md` (this folder). In short: O1 (a); O2 the
+    owner's rule (Map's energy markers and maps kept through every toggle and view change; only E Min / E Max / E Pts
+    rebuild them; LDOS-altering changes recompute at the kept energies; display-only toggles redraw; every decomp step
+    and reset shown at once in every view from the stored orbital LDOS; stop and report if a panel rebuild keeps a
+    step from showing at once); O3 (a); O4-O6 accept; O7 (a); O8, O9 leave; O10 (b); O11, O12 keep; O13 keep scipy
+    (the integration reviewer was wrong: the package qtgui's tricontourf imports scipy.interpolate.LinearNDInterpolator,
+    verified at qtplot.py ~2981); O14-O16 as listed; O17 (b) README only; O18 leave. K1 (a); K2 (a); K3 (a); K4 (a);
+    K5 (a); K6 (b): every window's info panel lists each panel's view limits while panned or zoomed, and forces.py's
+    3D view; K7 (d): with RUN off a decomp step redraws the spectrum, legend, maps and heatmaps from the last run's
+    data; K8 (a); K9 update, the `qtgui/__init__.py` mplexport line in all three copies as an exception to ruling 1;
+    K10 (a), package copies only; K11 (a). These are applied after part 3's workflow (a follow-up workflow).
 
 ## Conventions given to the implementing agents (part 1)
 
@@ -108,7 +119,6 @@ Branch: `claude/jolly-babbage-ppmbdj`. Base of part 1's work: b051547.
 
 ## Open questions for the owner
 
-- `PART2_OPEN.md` O1-O18 (part 2's open items)
-- `PART3_OPEN.md` K1-K9 (part 3's)
+- (answered: `PART2_OPEN.md` O1-O18 and `PART3_OPEN.md` K1-K11, ruling 12)
 - Relief shading (owner, 2026-11-07): asked whether the topo could relief-shade the topo panels and Map energy maps
   (Kovesi's colour x hillshade); then said not to pursue it for now. Research stopped; nothing implemented.
