@@ -1,6 +1,6 @@
 # Plan: the views-layout decisions, the bias toggles, the topos, the LDOS speed-up, |m| and m on demand, the caches folder, the console lines and the shading
 
-Draft of 2026-11-07, for Benjamin's approval. Nothing in it is implemented. Your answers to the questions are written into the sections. One question is still open, in section 11. Section 12 holds what the check of the briefs against your other documents found still missing.
+Draft of 2026-11-07, for Benjamin's approval. Nothing in it is implemented. Your answers to the questions are written into the sections. Two questions are still open, in section 11. Section 12 holds what the check of the briefs against your other documents found still missing.
 
 ## 0. Sources
 
@@ -89,12 +89,14 @@ Draft of 2026-11-07, for Benjamin's approval. Nothing in it is implemented. Your
 - One set of coordinates only, for the panel under the mouse.
 - When the mouse is on no panel, the readout goes away. No artist value.
 
-**Now:** none.
+**Now** (corrected: an earlier draft said there was none):
+- Every `qtgui` window has a toolbar across its top: Home, Pan, Zoom, Save, and at its right end a coordinates label (`qtplot.py` `NavigationToolbar.coords`, `show_coords`). It has been there since before this session.
+- On mouse motion the label shows "x=…  y=…" for the panel under the mouse, in that panel's data coordinates (turned back for a rotated panel). Off every panel it is blank.
+- It is also blank over a colour bar.
 
 **Change:**
-- A right-aligned label at the window's top right in `qtgui` (`qtplot.py`, both package copies).
-- It is set on mouse motion from the axes under the mouse, in that axes' data coordinates, and cleared when the mouse is over no axes.
-- It is on in the simulator's windows only, in every view. The other `qtgui` windows don't show it.
+- The label's text becomes "(x, y) = (…, …)", matplotlib's form, which your rule names.
+- Everything else of your rule is already true. Whether it should also show over colour bars is in section 11.
 
 ### 3.3 The topo sub-section (every view)
 
@@ -437,13 +439,14 @@ Draft of 2026-11-07, for Benjamin's approval. Nothing in it is implemented. Your
 - **Where the code goes:** the light's state, the two panels' drawing and their drag rules go in `cmap_shading.py` with the box, so sm4_Browser can take them as it is meant to take the module. The simulator places them.
 - **The info panel:** lists the darkness, the azimuth and the elevation with the other settings.
 
-## 11. Open question
+## 11. Open questions
 
 1. **12.3, the decomp clicks while Pan or Zoom is on.**
    - **The tools:** Pan and Zoom are buttons in the toolbar at the top of every `qtgui` window (Home, Pan, Zoom, Save). With Pan on, a drag in a panel slides its view. With Zoom on, a drag draws a rectangle to zoom into. With both off, the normal state, the mouse does the window's own clicks.
    - **Now:** while Pan or Zoom is on, a left or right click on the spectrum or the legend panel doesn't change the decomp level. With both off, the decomp clicks act as your rules say.
    - **The choice:** keep this exception, or remove it so the decomp clicks also act while Pan or Zoom is on. In that case a pan or zoom drag that starts on a curve also changes the level.
    - **R: keep it.** It came from the part 3 brief, not from your rules, so it stays only with your approval.
+2. **3.2, the readout over colour bars:** today the toolbar's coordinates go blank over a colour bar, but your rule says "any panel". Show them over colour bars too? **R: yes**, since a colour bar is a panel of the window.
 
 ## 12. Gaps from your other documents
 
