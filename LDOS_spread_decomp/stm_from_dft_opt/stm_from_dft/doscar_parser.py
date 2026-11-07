@@ -40,7 +40,11 @@ class SpinAwareDosParser:
     spin_mode : SpinMode
         Detected spin configuration.
     energies : ndarray, shape (nedos,)
-        Energy grid relative to Fermi level.
+        Energy grid relative to Fermi level (eV, float64), rebuilt from
+        DOSCAR line 6 as the even grid E min + i * step, i = 0 .. NEDOS - 1,
+        minus E_F.  The printed energy column is only checked against it.
+    step : float
+        Grid step (E max - E min) / (NEDOS - 1) (eV, float64).
     ef : float
         Fermi energy (eV).
     spin_up_dos : ndarray
@@ -68,14 +72,34 @@ class SpinAwareDosParser:
 
     # ------------------------------------------------------------------
     def _parse(self):
+        """
+        Machinery: reads the DOSCAR.  Line 6 gives E max, E min, NEDOS and
+        E_F.  The energies are rebuilt from it as the even grid
+        E min + i * step, step = (E max - E min) / (NEDOS - 1), in float64:
+        VASP prints the energy column rounded (to 3 decimals), so the printed
+        values lie off the grid by up to half a unit of their last decimal.
+        NEDOS < 2 raises ValueError.  The printed energies of the first block
+        are read only to check the grid: each is compared, absolute as
+        printed, with E min + i * step; a difference larger than half a unit
+        of the last decimal that printed energy carries (read from its text)
+        plus 1e-6 eV raises ValueError naming the largest difference and its
+        file line.  The DOS columns are read as printed.
+        """
         with open(self.filepath, "r") as f:
             atomnum = int(f.readline().split()[0])
             for _ in range(4):
                 f.readline()
             header = f.readline().split()
+            emax, emin = float(header[0]), float(header[1])
             nedos, self.ef = int(header[2]), float(header[3])
+            if nedos < 2:
+                raise ValueError(
+                    f"DOSCAR {self.filepath}: NEDOS = {nedos} in line 6; "
+                    f"the energy grid needs at least 2 samples."
+                )
 
             energies_list = []
+            energies_text = []
             total_dos = []
             site_dos = []
 
@@ -84,16 +108,39 @@ class SpinAwareDosParser:
                     f.readline()  # skip atom header line
                 block = []
                 for _ in range(nedos):
-                    line = [float(x) for x in f.readline().split()]
+                    tokens = f.readline().split()
+                    line = [float(x) for x in tokens]
                     if i == 0:
                         energies_list.append(line[0])
+                        energies_text.append(tokens[0])
                         total_dos.append(line[1:])
                     else:
                         block.append(line[1:])
                 if i > 0:
                     site_dos.append(block)
 
-        self.energies = np.array(energies_list) - self.ef
+        step = (emax - emin) / (nedos - 1)
+        energies = emin + step * np.arange(nedos)        # float64, absolute
+
+        # Guard: each printed first-block energy (absolute, as printed) may
+        # differ from its grid value by at most half a unit of the last
+        # decimal it carries plus 1e-6 eV.  Block-0 row i is file line 7 + i.
+        decimals = np.array([len(t.partition(".")[2]) for t in energies_text])
+        tol = 0.5 * 10.0 ** (-decimals) + 1e-6
+        diff = np.abs(np.array(energies_list) - energies)
+        if np.any(diff > tol):
+            i = int(np.argmax(diff))
+            raise ValueError(
+                f"DOSCAR {self.filepath}: the printed energies are not the "
+                f"even grid of line 6, E min + i (E max - E min)/(NEDOS - 1). "
+                f"The largest difference is {diff[i]:.6g} eV, at line {7 + i} "
+                f"(printed {energies_text[i]}, grid {energies[i]:.8f}); "
+                f"the tolerance is half a unit of the last printed decimal "
+                f"plus 1e-6 eV."
+            )
+
+        self.step = step
+        self.energies = energies - self.ef
         site_dos = np.array(site_dos)  # (atoms, nedos, num_cols)
         num_cols = site_dos.shape[2]
 
