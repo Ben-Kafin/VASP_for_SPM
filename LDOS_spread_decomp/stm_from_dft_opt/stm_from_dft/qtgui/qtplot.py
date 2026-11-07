@@ -54,7 +54,7 @@ Colour maps: wherever the package takes a colour map (the if-main inputs
 cmap / cmap_map, line_window_kwargs['cmap'], ...), a matplotlib name
 ('jet', 'viridis', 'RdBu_r', ...), a matplotlib Colormap object, or a
 pyqtgraph ColorMap may be given; to_cmap converts it once (cached) into the
-lookup tables pyqtgraph draws with.  matplotlib, when installed, is used
+lookup tables pyqtgraph draws with.  matplotlib is used
 only to read the colour values of a map given by name or object and, in
 mplexport, to write the publication files; it never draws on screen.
 
@@ -2046,8 +2046,16 @@ class _Axis(pg.AxisItem):
         return _tick_strings(vals, spacing)
 
 
+# Set while a view box handles a drag or the wheel (_ViewBox): a view whose range changes meanwhile was
+# changed with the toolbar's Pan or Zoom (Axes._nav_follow), the views linked to it included.
+_NAVIGATING = [0]
+
+
 class _ViewBox(pg.ViewBox):
-    """A ViewBox without its context menu; navigation only while the toolbar's pan or zoom mode is on."""
+    """
+    A ViewBox without its context menu; navigation only while the toolbar's pan or zoom mode is on;
+    the views its drags and its wheel change are marked as changed with the toolbar (_NAVIGATING).
+    """
 
     def __init__(self, axes):
         super().__init__(enableMenu=False, defaultPadding=0.05)
@@ -2056,6 +2064,22 @@ class _ViewBox(pg.ViewBox):
 
     def resizeEvent(self, ev):
         super().resizeEvent(ev)
+
+    def mouseDragEvent(self, ev, axis=None):
+        """pyqtgraph's drag (Pan: pan with the left button, zoom with the right; Zoom: the rectangle), under _NAVIGATING."""
+        _NAVIGATING[0] += 1
+        try:
+            super().mouseDragEvent(ev, axis)
+        finally:
+            _NAVIGATING[0] -= 1
+
+    def wheelEvent(self, ev, axis=None):
+        """pyqtgraph's wheel zoom (Pan), under _NAVIGATING."""
+        _NAVIGATING[0] += 1
+        try:
+            super().wheelEvent(ev, axis)
+        finally:
+            _NAVIGATING[0] -= 1
 
 
 # ---------------------------------------------------------------------- #
@@ -2783,7 +2807,11 @@ class AxesImage(Artist):
 
 
 class QuadMesh(Artist):
-    """pcolormesh: filled quads (QuadItem) coloured from the norm and the colour map."""
+    """
+    pcolormesh: filled quads (QuadItem) coloured from the norm and the colour map, or, for an
+    (M, N, 3) RGB or (M, N, 4) RGBA C (as matplotlib's pcolormesh takes one), painted with its
+    colours as given, with no norm or colour map (_take_c; the colours kept as _rgba).
+    """
 
     zorder_default = 1.0
 
@@ -2795,8 +2823,8 @@ class QuadMesh(Artist):
         self._alpha = alpha
         X = np.asarray(X, dtype=np.float64)
         Y = np.asarray(Y, dtype=np.float64)
-        C = np.asarray(np.ma.filled(np.ma.asarray(C, dtype=np.float64), np.nan), dtype=np.float64)
-        nr, nc = C.shape
+        C, self._rgba = self._take_c(C, alpha)
+        nr, nc = C.shape[:2]
         # matplotlib's shading: 'flat' takes X and Y as the cells' edges (one more than C each
         # way); 'nearest' (and 'auto' when X and Y have C's shape) takes them as the cells'
         # centres and puts the edges halfway between neighbours, extrapolated at the borders
@@ -2815,7 +2843,7 @@ class QuadMesh(Artist):
         if Y.ndim == 1:
             Y = np.broadcast_to(Y[:, None], (nr + 1, nc + 1))
         self._X, self._Y, self._C = X, Y, C
-        if not self.norm.scaled():
+        if self._rgba is None and not self.norm.scaled():
             self.norm.autoscale_None(C)
         q = np.stack([np.stack([X[:-1, :-1], Y[:-1, :-1]], -1), np.stack([X[:-1, 1:], Y[:-1, 1:]], -1),
                       np.stack([X[1:, 1:], Y[1:, 1:]], -1), np.stack([X[1:, :-1], Y[1:, :-1]], -1)], axis=2)
