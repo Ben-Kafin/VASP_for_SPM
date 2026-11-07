@@ -1079,8 +1079,19 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         self.cached_ld_up_gpu, self.cached_ld_dn_gpu = None, None      # the GPU copies the display works from
         self.cached_marker_coords, self.cached_spec_ldos = None, None
         self.cached_spec_ldos_gpu = None                                # the GPU copy the display works from
-        self.cached_current, self.cached_current_E = None, None              # Line / Path points or the Map grid
+        self.cached_spec_window = None                                  # the window's snapped ends the marker spectra were computed over
+        self.cached_current, self.cached_current_E = None, None              # the Line / Path points
         self.cached_spec_current, self.cached_spec_current_E = None, None    # the Single Point / Map markers
+        # Map's own energies, data and caches, apart from Line / Path's and kept through every toggle and view
+        # change (_update_all): the snapped Map energies (map_e_idx, their energies map_e_targets) and the typed
+        # ends and count they were last formed from (map_typed: E Min, E Max, E Pts); the grid's LDOS at them
+        # (map_ld_*, with the GPU copies the display works from) and its current (map_current at map_current_E);
+        # the window's displayed energies (map_eg) and snapped ends (map_window) and the decay model
+        # (map_d_ldos) they were computed with.
+        self.map_e_idx, self.map_e_targets, self.map_typed = None, None, None
+        self.map_ld_up, self.map_ld_dn, self.map_ld_up_gpu, self.map_ld_dn_gpu = None, None, None, None
+        self.map_current, self.map_current_E = None, None
+        self.map_eg, self.map_window, self.map_d_ldos = None, None, None
 
         # --- Path mode state ---
         self.path = None                  # initial seed: all atom-index lists [[154],...] OR all [x,y] coords; no mix
@@ -1269,12 +1280,15 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         """
         Machinery: the I/V the display is divided by, feenstra.iv_ratio(E, I) (the plain I(V)/V) of the
         current stored with the displayed LDOS (the display run's own pass, with_current=True) and the GPU
-        energies of its samples: which = 'grid' for the Line / Path points or the Map grid (cached_current
-        at cached_current_E; in Map one column per map, at the Map energies), 'spec' for the Single Point /
-        Map markers (cached_spec_current at cached_spec_current_E).  (n_pts, n_samples) float32 CuPy.
+        energies of its samples: which = 'grid' for the Line / Path points (cached_current at
+        cached_current_E), 'map' for the Map grid (Map's own map_current at map_current_E, one column per
+        map, at the Map energies), 'spec' for the Single Point / Map markers (cached_spec_current at
+        cached_spec_current_E).  (n_pts, n_samples) float32 CuPy.
         """
         if which == 'grid':
             return feenstra.iv_ratio(self.cached_current_E, self.cached_current)
+        if which == 'map':
+            return feenstra.iv_ratio(self.map_current_E, self.map_current)
         return feenstra.iv_ratio(self.cached_spec_current_E, self.cached_spec_current)
 
     def _build_path_xy(self):
@@ -2712,16 +2726,21 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
             self.cached_p1 = self.cached_p2 = None
             self.cached_path_nodes = None
             self.cached_emin = self.cached_emax = None
-            self.cached_d_topo_line = self.cached_d_topo_map = None
+            self.cached_d_topo_line = None
             self.cached_d_ldos = None
-            self.cached_bias_energy_line = self.cached_bias_energy_map = None
-            self.cached_marker_coords = self.cached_spec_ldos = None
-            self.cached_spec_ldos_gpu = None
+            self.cached_bias_energy_line = None
             self.cached_ld_up = self.cached_ld_dn = None
             self.cached_ld_up_gpu = self.cached_ld_dn_gpu = None
             # Only a decay-model change alters the global topo (recompute, or
-            # load the model-tagged cache); path-extend does not.
+            # load the model-tagged cache); path-extend does not.  Nor does
+            # path-extend alter Map's topo and maps or the markers' spectra:
+            # only a decay-model change has them computed again (Map's maps at
+            # its kept energies).
             if decay_model_changed:
+                self.cached_d_topo_map = None
+                self.cached_bias_energy_map = None
+                self.cached_marker_coords = self.cached_spec_ldos = None
+                self.cached_spec_ldos_gpu = None
                 self._broadening_topo_dirty = True
                 if self.is_running:
                     self._recompute_global_topo()
@@ -2769,11 +2788,17 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
 
         self._update_all(full_refresh=True)
 
-    def _update_all(self, full_refresh=False):
+    def _update_all(self, full_refresh=False, last_run=False):
         """
         Machinery: the window redrawn for its state: the maps (full_refresh), the markers, then, while
         running, the computations the state asks for (needs_topo / needs_ldos / needs_spec, the
-        same functions as before) and the panels of the view.  The Line / Path cluster and the Map
+        same functions as before) and the panels of the view.  With RUN off and `last_run` (a decomp step:
+        _decomp_click) the panels of the view (the spectrum, the legend panel, the heatmaps, the maps) are
+        drawn from the data of the last run, nothing computed, when the view has them (_has_last_run);
+        otherwise, with RUN off, nothing more is drawn.  Map's energies, data and caches are its own (map_*,
+        map_e_idx): kept through every toggle and view change and shown from what is kept; its energies are
+        formed again from the typed ends only after an edit of E Min, E Max or E Pts (map_typed), and its
+        maps are computed again, at the kept energies, only when the LDOS they show changes.  The Line / Path cluster and the Map
         rows are built again as cells of their own PanelRows in the rest pane (automatic layout: the
         one rule for every window; rule 11: the rows size themselves from the panels) only when
         their panel count changes (_build_heat_row, _build_map_block), after which the panels are
