@@ -1029,13 +1029,15 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
     per view (_build_ui): the window's title (the spin mode), a left column with the view radio,
     the 'cmap set' choice, the broadening box, the boxes other windows add (add_control_box: the
     decomposition wrapper's σ box and its 'Send to decomp' buttons) and the RUN button with the
-    toggles; the panel area of the view (Single Point: Global Topo | Topo h | Partitioned LDOS;
-    Line / Path: the top row Global Topo | Topo h | LDOS h | the cluster (Topo box, stripe, one
-    heatmap per partition, colour bar) over the tip-height profile and the spectrum; Map: Global
-    Topo | Topo h | LDOS h | Map Topo | Partitioned LDOS over the rows of energy maps); the bottom
-    strip of number boxes (Cells, Path Pts, Markers, E Pts, E Min, E Max, LDOS γ) and Map's
-    Contour / Shading box.  Every slider of the old figure is a number box (the arrow keys step
-    its digits); the orbital hover labels are widgets.HoverLabels.
+    toggles; the panel area of the view (Single Point: Global Topo | Topo h | Partitioned LDOS,
+    its legend panel at its right; Line / Path: the top row Global Topo | Topo h | LDOS h | the
+    cluster (Topo box, stripe, one heatmap per partition, colour bar) over the tip-height profile
+    and the spectrum, its legend panel at its right; Map: Global Topo | Topo h | LDOS h | Map Topo
+    over the rows of energy maps, the Partitioned LDOS one cell of the map block, its legend
+    panel at its right); the bottom strip of number boxes (Cells, Path Pts, Markers, E Pts,
+    E Min, E Max, LDOS γ) and Map's 'cmap norm' and Contour / Shading boxes.  Every slider of
+    the old figure is a number box (the arrow keys step its digits); the orbital hover labels
+    are widgets.HoverLabels.
     The physics and the caches are Unified_STM_Simulator's, called as before.
     """
 
@@ -1102,6 +1104,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         self.cached_marker_coords, self.cached_spec_ldos = None, None
         self.cached_spec_ldos_gpu = None                                # the GPU copy the display works from
         self.cached_spec_window = None                                  # the window's snapped ends the marker spectra were computed over
+        self.cached_spec_eg = None                                      # the marker spectra's energies, kept with them (sim_wrapper reads them)
         self.cached_current, self.cached_current_E = None, None              # the Line / Path points
         self.cached_spec_current, self.cached_spec_current_E = None, None    # the Single Point / Map markers
         # Map's own energies, data and caches, apart from Line / Path's and kept through every toggle and view
@@ -1414,7 +1417,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         # 'cmap norm' (Map): each energy map its own colour scale and bar, or one scale and bar for all.
         self.chk_cmap_norm = controls.make(fig, 'cmap norm', value=self.cmap_norm)
         self.chk_cmap_norm.on_change(self._on_cmap_norm)
-        # The Contour / Shading box (Map): the Contour and Shading toggles and the Height / Relief radio ('Shading
+        # The Contour / Shading box (Map): the Contour and Shading toggles and the Height / Relief radio ('shading
         # by'), made by cmap_shading.build_box with this figure and the controls module, at the window's box state
         # (shade_state); untitled, as the 'cmap norm' box.  A click applies the box's rules (at most one on, both
         # may be off) and redraws the energy maps only (_on_shade_box).
@@ -1461,7 +1464,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         self._cursor_artists, self._shade_artists = [], []
         self._crop_ax = None                       # the placement topo's axes (the cursors live on it)
         self._crop_panel = None                    # its CropPanel (the bands the boxes ride in)
-        # The label over the Line / Path cluster and the Map rows ('LDOS', or 'LDOS: <element>' at the atom levels).
+        # The label over the Line / Path cluster and the Map rows ('LDOS', or 'LDOS: <element>' at level 3 (the orbitals)).
         self._cluster_label = controls.Label(fig, text='LDOS', fs=10)
         # The legend panel's Back button (Single Point, Line, Path, Map; kept across views, as the tip-height boxes):
         # gray, back one level as a right click (_legend_back: ignored while Pan or Zoom is on); hidden at level 0
@@ -1834,7 +1837,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
             QtCore.QTimer.singleShot(0, self._legend_rezoom)
 
     def _legend_rezoom(self):
-        """Machinery: the legend panel at the window's new text zoom: its sizes (_legend_size) and its stack drawn again with the same entries, the scroll kept (clamped); in Map, when its fixed width changed, the map block placed again (MapBlock.rearrange), which counts the new width (a width change alone does not place the block)."""
+        """Machinery: the legend panel at the window's new text zoom: its sizes (_legend_size) and its stack drawn again with the same entries, the scroll kept (clamped); in Map, when its fixed width changed, the map block placed again (MapBlock.rearrange: its cells measured anew, the new width with them; a width change alone does not place the block), then the window arranged again (_rearrange: a resize-driven change), so the block's slot counts the new width at once."""
         self._legend_rezoom_pending = False
         ax = self._legend_ax
         if ax is None or ax not in self.fig.axes or float(self.fig.font_zoom) == self._legend_draw_zoom:
@@ -1844,6 +1847,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         self._legend_draw(self._legend_entries, False)
         if self.mode == 'Map' and self._map_block is not None and self._legend_panel.minimumWidth() != w0:
             self._map_block.rearrange()
+            self._rearrange()
 
     def _legend_follow(self):
         """Machinery: the legend panel spans the spectrum's plot box: its top and bottom margins follow the box in the spectrum's cell (ax_spec's placement), as controls.UnderPanel._follow does sideways (the panel and the cell share their row's top and height)."""
@@ -2032,7 +2036,8 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         the window (maximizing included); the unit-cell panels' orientation (as drawn, or turned 90 degrees: the way the
         window fits better, _choose_orientation) is decided when the view is built and on Crop /
         Uncrop.  The controls of the view are shown and the others hidden, then
-        _update_all(full_refresh=True).  Called at the first show and on every view change; the
+        _update_all(full_refresh=True), in Map with last_run (with RUN off too, Map's kept maps, energy
+        markers and spectrum are drawn from what is kept).  Called at the first show and on every view change; the
         controls themselves are made once (_make_controls).  automatic layout: the one rule for
         every window (nothing placed by hand).
         """
@@ -2116,10 +2121,14 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         # is a first-class panel beside the placement topo (Arrangement free_min / free_scored / group_cap).
         # In Line / Path the heatmap row, sized and scored with each heatmap counted as square, is then
         # placed in its whole slot and its heatmaps fill it (fill_slot; PanelCell.fill_as, _build_heat_row).
+        # Line allows only its two rows (layouts: row_top): the placement topo and the heatmap row across the
+        # top, as large at their shapes as the width allows (the curve panels keep their readable height),
+        # and the curve panels under them in the height that row leaves.
         self._arrangement = controls.Arrangement(groups, free, spacing=8, free_min=self._curves_readable,
                                                  free_scored=mode == 'Single Point',
                                                  group_cap=self._topo_cap(mode, groups),
-                                                 fill_slot=cluster if mode in ('Line', 'Path') else None)
+                                                 fill_slot=cluster if mode in ('Line', 'Path') else None,
+                                                 layouts=['row_top'] if mode == 'Line' else None)
         self._arrangement.on_arranged(self._on_arranged)
         self._panel_area.addWidget(self._arrangement, 1)
         self._box_topo_h.setVisible(True)
@@ -2132,7 +2141,8 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         self._contour_level_changed()
 
         self.cached_emin, self.cached_emax = None, None
-        self._update_all(full_refresh=True)
+        # Into Map, with RUN off too: its kept maps, energy markers and spectrum drawn from what is kept (last_run).
+        self._update_all(full_refresh=True, last_run=mode == 'Map')
         self._rearrange(orient=True)             # the view built: the unit-cell panels' orientation decided
 
     CURVE_BOX_MIN_PX = (220, 140)      # a curve panel's readable plot box at text zoom 1 (its labels come on top), in pixels at the old fixed 100 DPI (converted by em_px where used, _curves_readable)
@@ -2309,7 +2319,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
             self._contour_artists.append(lc)
 
     def _rearrange(self, orient=False):
-        """Machinery: the arrangement chosen again for the panels as they now are, at the window's size (rule 11): called when their number changes (the view built; the heatmap row or the Map block built again) and when a crop changes a panel's shape (a resize arranges by itself); the window is never trimmed to them (no Figure.fit_window).  With `orient` the unit-cell panels' orientation is decided first (_choose_orientation)."""
+        """Machinery: the arrangement chosen again for the panels as they now are, at the window's size (rule 11): called when their number changes (the view built; the heatmap row or the Map block built again), when a crop changes a panel's shape (a resize arranges by itself) and in Map after a text zoom changed the legend panel's fixed width (_legend_rezoom: a resize-driven change); the window is never trimmed to them (no Figure.fit_window).  With `orient` the unit-cell panels' orientation is decided first (_choose_orientation)."""
         if orient:
             self._choose_orientation()
         if self._arrangement is not None:
@@ -2908,7 +2918,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         Machinery: the window redrawn for its state: the maps (full_refresh), the markers, then, while
         running, the computations the state asks for (needs_topo / needs_ldos / needs_spec, the
         same functions as before) and the panels of the view.  With RUN off and `last_run` (a decomp step:
-        _decomp_click) the panels of the view (the spectrum, the legend panel, the heatmaps, the maps) are
+        _decomp_click; a view change into Map: _build_ui) the panels of the view (the spectrum, the legend panel, the heatmaps, the maps) are
         drawn from the data of the last run, nothing computed, when the view has them (_has_last_run);
         otherwise, with RUN off, nothing more is drawn.  Map's energies, data and caches are its own (map_*,
         map_e_idx): kept through every toggle and view change and shown from what is kept; its energies are
@@ -2991,8 +3001,8 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
             self.marks.set_facecolors(self.m_colors[:len(self.marker_coords)])
         self._markers_changed()                    # the markers' and the line's lines in the info panel
 
-        # RUN off: nothing more is drawn, except for a decomp step (last_run), whose panels are drawn below from the
-        # last run's data when the view has them, with nothing computed (compute False).
+        # RUN off: nothing more is drawn, except for a decomp step or a view change into Map (last_run), whose panels are
+        # drawn below from the last run's data when the view has them, with nothing computed (compute False).
         if not self.is_running and not (last_run and self._has_last_run()):
             self.fig.canvas.draw_idle()
             return
@@ -3156,6 +3166,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
             self.cached_spec_ldos = cp.asnumpy(spec_ldos)
             self.cached_marker_coords = np.array(self.marker_coords).copy()
             self.cached_spec_window = (e_lo, e_hi)
+            self.cached_spec_eg = self.energies[spec_idx]      # their energies, kept with them
             # The markers' current from the same pass, stored with its samples' GPU energies e0 + (i - k0) step.
             self.cached_spec_current = s_cur
             self.cached_spec_current_E = cp.asarray((spec_idx - self.k0).astype(np.float32)) * self.e_step32 + self.e032
@@ -3179,9 +3190,6 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         else:
             f_ldos_raw = None
             partitions = []
-        if self.mode == 'Map' and self.map_eg is not None:
-            # Map's spectrum over Map's own displayed energies (cached_eg: the energies of the spectrum shown).
-            self.cached_eg = self.map_eg
 
         # The marker spectra as shown (Single Point, Map): divided by their I/V under 'Feenstra', else as cached.
         spec_disp = self.cached_spec_ldos_gpu
@@ -3320,7 +3328,8 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         (_spec_key: the view, the level, the curves' labels (the marker count at level 0, the element
         and its shown orbitals at level 3), 'Feenstra', the Map energy markers' count); otherwise the
         same curves take their new data in place (Line2D.set_data, the energy markers
-        _RefLine.set_xdata), with the limits and the title.  f_ldos_raw: the displayed LDOS of
+        _RefLine.set_xdata), with the limits and the title.  The curves are drawn over the displayed
+        energies: in Map Map's own (map_eg), in the other views cached_eg.  f_ldos_raw: the displayed LDOS of
         the Line / Path points (in a drag the cache, _line_disp); spec_disp: the displayed marker
         spectra (Single Point, Map); p_dist: the Line / Path distances; the Map energy markers at
         Map's kept energies (map_e_targets, never formed again here); line_norm: in a Line / Path drag or a
@@ -3347,12 +3356,14 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
             marker_spectra = [spec_disp[i] for i in range(len(self.marker_coords))]
 
         n_marks = len(self.marker_ratios) if self.mode in ('Line', 'Path') else len(self.marker_coords)
+        # The spectrum's energies: Map's own displayed energies (map_eg) in Map, else cached_eg.
+        eg = self.map_eg if self.mode == 'Map' else self.cached_eg
         # The level's curves (ldos_decomp: data, style, label, pickable), the markers' colours in index order.
         marker_colors = (self.line_marker_colors if self.mode in ('Line', 'Path')
                          else [self.m_colors[i % len(self.m_colors)] for i in range(n_marks)])
         integral =(lambda y: quadrature.simpson(y, dx=self.e_step32)) if self.normalize and line_norm is None else None
         curves = self.decomp.curves(active_ldos, marker_spectra, marker_colors, self.atomtypes, self.atomnums,
-                                    self.orbitals, self.dos_up_gpu, self._type_color_map, self.cached_eg, integral)
+                                    self.orbitals, self.dos_up_gpu, self._type_color_map, eg, integral)
         key = (self.mode, self.plot_level, tuple(c.label for c in curves), bool(self.feenstra),
                len(self.map_e_targets) if self.mode == 'Map' else None)
         build = key != self._spec_key
@@ -3364,14 +3375,14 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
                           label=c.label, picker=c.picker)
                 if c.pickradius is not None:
                     kw['pickradius'] = c.pickradius
-                ln, = self.ax_spec.plot(self.cached_eg, cp.asnumpy(c.y), **kw)
+                ln, = self.ax_spec.plot(eg, cp.asnumpy(c.y), **kw)
                 self._spec_lines.append(ln)
             # The old hover labels removed; new ones on the orbital curves (level 3), on from the start.
             self.cursor = ldos_decomp.hover_labels(self.ax_spec, self._spec_lines, curves, getattr(self, 'cursor', None))
         else:
             # In place: the curves in the order they were drawn take their data, and their colour where it differs.
             for ln, c in zip(self._spec_lines, curves):
-                ln.set_data(self.cached_eg, cp.asnumpy(c.y))
+                ln.set_data(eg, cp.asnumpy(c.y))
                 if ln.get_color() != c.color:
                     ln.set_color(c.color)
         self._spec_curves = curves
@@ -3592,7 +3603,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
             self._heat_cmaps[p_idx] = cmap
 
             # The panel's short title is the partition itself (the cluster's label row says
-            # 'LDOS' and, at the atom levels, the element).
+            # 'LDOS' and, at level 3 (the orbitals), the element).
             title = p_label.split()[-1] if self.plot_level >= 3 else p_label
             if title != self._heat_titles[p_idx]:
                 ax_l.set_title(title, fontsize=10)
@@ -4035,7 +4046,12 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         (button plt.MouseButton.RIGHT, no item).  When the state changed: the window's decomp line, and one
         redraw (_update_all), running or not: with RUN off the spectrum, the legend panel, the heatmaps and the
         maps are drawn from the last run's data, nothing computed (last_run); otherwise nothing is redrawn.
+        With RUN off and without the last run's data (_has_last_run: dropped by a change made while stopped,
+        or no run in the view yet) a click does nothing: the decomp's state is kept, so no step is taken
+        without its redraw.
         """
+        if not self.is_running and not self._has_last_run():
+            return
         if self.decomp.press(button, dblclick, item):
             self._decomp_changed()
             self._update_all(last_run=True)

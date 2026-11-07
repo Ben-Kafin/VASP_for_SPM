@@ -12,7 +12,7 @@ layout, with every 3D interaction unchanged (left drag rotates, right drag pans,
 zooms).  The window-start slider is the one slider kept (rule 8 of the guide: it scrubs the list
 of ionic steps); the time marker on the convergence panel steps the 3D view (click or drag), the
 arrow keys step one frame at a time.  The toolbar's Save button writes the 2D panel as PDF / EPS
-/ SVG / PNG / TIFF through matplotlib.
+/ SVG through matplotlib, or the window at 720 dpi as PNG / TIFF.
 """
 
 import sys
@@ -177,11 +177,13 @@ def forces(outcar,poscar,**args):
 
     def view_line():
         #the 3D view (its rotation and zoom) as a window line of the information panel: the
-        #elevation and azimuth (degrees) and the axis limits as the panel shows them; called
-        #whenever they may have changed (the line is rewritten only when its text changes)
+        #elevation, azimuth and roll (degrees; matplotlib's default arcball rotation changes the
+        #roll too) and the axis limits as the panel shows them; called whenever they may have
+        #changed (the line is rewritten only when its text changes)
         (x0,x1),(y0,y1),(z0,z1)=ax.get_xlim3d(),ax.get_ylim3d(),ax.get_zlim3d()
-        fig.set_info_line('3d view','view of the 3D panel: elevation {:.5g}°, azimuth {:.5g}°, x {:.5g} to {:.5g}, '
-                          'y {:.5g} to {:.5g}, z {:.5g} to {:.5g}'.format(ax.elev,ax.azim,x0,x1,y0,y1,z0,z1))
+        fig.set_info_line('3d view','view of the 3D panel: elevation {:.5g}°, azimuth {:.5g}°, roll {:.5g}°, '
+                          'x {:.5g} to {:.5g}, y {:.5g} to {:.5g}, z {:.5g} to {:.5g}'.format(
+                              ax.elev,ax.azim,ax.roll,x0,x1,y0,y1,z0,z1))
 
     def apply_limits():
         #zoomed limits persist in state so redraws (stepping, window changes) keep the current zoom

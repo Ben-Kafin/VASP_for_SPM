@@ -804,7 +804,7 @@ def to_cmap(c):
     """
     Any colour-map specification as a Colormap: a qtplot Colormap as it is;
     a matplotlib colour-map name or Colormap object (its colours read through
-    matplotlib when installed); a pyqtgraph ColorMap; a list of colours.  None
+    matplotlib); a pyqtgraph ColorMap; a list of colours.  None
     gives matplotlib's default, viridis.  Names are converted once (cached).
     """
     if c is None:
@@ -834,7 +834,7 @@ def to_cmap(c):
             try:
                 cm = _builtin_cmap(c)
             except Exception as exc:
-                raise ValueError(f"unknown colour map {c!r} (install matplotlib to use every matplotlib name)") from exc
+                raise ValueError(f"unknown colour map {c!r}") from exc
         _cmap_cache[c] = cm
         return cm
     if callable(c) and hasattr(c, 'N'):               # a matplotlib Colormap object
@@ -2019,7 +2019,7 @@ class _ViewBox(pg.ViewBox):
             _NAVIGATING[0] -= 1
 
     def wheelEvent(self, ev, axis=None):
-        """pyqtgraph's wheel zoom (Pan), under _NAVIGATING."""
+        """pyqtgraph's wheel zoom (Pan or Zoom), under _NAVIGATING."""
         _NAVIGATING[0] += 1
         try:
             super().wheelEvent(ev, axis)
@@ -7685,6 +7685,68 @@ def _render_scene(fig, painter):
             it.setCacheMode(mode)
 
 
+@contextlib.contextmanager
+def _pixel_fonts(fig):
+    """
+    While the block runs, every font of the saved part of the window given as a pixel size equal to
+    its size on screen; afterwards every font as it was, so the window is unchanged (export_vector's
+    SVG).  The fonts: those of export_root() and of every widget in it, and in the scene of every
+    graphics view among them the text items' fonts (QGraphicsTextItem, QGraphicsSimpleTextItem: the
+    titles, texts, axis labels and legend entries) and the tick axes' tick fonts.  Qt lays a
+    point-size font out at qRound(points * dpi / 72) pixels of the device it lays it out for, and its
+    SVG writer writes it as points * resolution / 72 (qfontToSvg), so in a 720 dpi file every such
+    text would come out about 7.5 times its size beside the panels; a pixel-size font is laid out
+    and written at its pixel size on every device.  Its size on screen: QFontInfo's pixel size of
+    the font where it is drawn on screen, a widget's font as Qt keeps it (at the widget's screen
+    resolution), a text item's font as it is (its document lays the text out at the font's own
+    resolution), a tick font at the view's viewport (the device its painter draws on).  A font
+    already given in pixels is left as it is; a widget whose font was inherited inherits it again
+    afterwards (setFont(QFont())).
+    """
+    def in_px(f, device=None):
+        g = QtGui.QFont(f)
+        g.setPixelSize(max(1, int(QtGui.QFontInfo(QtGui.QFont(f, device) if device is not None else f).pixelSize())))
+        return g
+
+    root = fig.export_root()
+    own = Qt.WidgetAttribute.WA_SetFont
+    widgets, texts, ticks, scenes = [], [], [], []
+    # Every font is read before any is changed (a widget's new font reaches the children that inherit it).
+    for w in [root] + root.findChildren(QtWidgets.QWidget):
+        f = QtGui.QFont(w.font())
+        if f.pixelSize() <= 0:
+            widgets.append((w, f, w.testAttribute(own), in_px(f)))
+    for v in [root] + root.findChildren(QtWidgets.QGraphicsView):
+        sc = v.scene() if isinstance(v, QtWidgets.QGraphicsView) else None
+        if sc is None or any(sc is s for s in scenes):
+            continue
+        scenes.append(sc)
+        for it in sc.items():
+            if isinstance(it, (QtWidgets.QGraphicsTextItem, QtWidgets.QGraphicsSimpleTextItem)):
+                f = QtGui.QFont(it.font())
+                if f.pixelSize() <= 0:
+                    texts.append((it, f, in_px(f)))
+            elif isinstance(it, pg.AxisItem):
+                f = it.style.get('tickFont')
+                if f is not None and f.pixelSize() <= 0:
+                    ticks.append((it, f, in_px(f, v.viewport())))
+    try:
+        for w, f, mine, g in widgets:
+            w.setFont(g)
+        for it, f, g in texts:
+            it.setFont(g)
+        for it, f, g in ticks:
+            it.setTickFont(g)
+        yield
+    finally:
+        for w, f, mine, g in widgets:
+            w.setFont(f if mine else QtGui.QFont())
+        for it, f, g in texts:
+            it.setFont(f)
+        for it, f, g in ticks:
+            it.setTickFont(f)
+
+
 def _have_matplotlib():
     """Whether matplotlib is installed (without importing it: the Save dialog's publication formats)."""
     try:
@@ -7710,7 +7772,9 @@ def export_vector(fig, path):
     'qt-svg'): export_root() (its saved part, fig._export_rect(): the canvas with its controls and
     the info panel as shown) rendered through Qt's own vector writers (_render_scene), nothing
     added below it, so the page is the saved part's size, W / DPI by H / DPI inches, the physical
-    size of the window images (window_image).  SVG (QSvgGenerator), PDF (QPdfWriter: the window
+    size of the window images (window_image).  SVG (QSvgGenerator at WINDOW_IMAGE_DPI, as the window
+    images, with every font drawn as its pixel size on screen, _pixel_fonts, so the text keeps its
+    size beside the panels), PDF (QPdfWriter: the window
     recorded in a QPicture first and the picture played into the PDF, since Qt paints widgets into
     a pixmap when they are rendered straight into a printer-type device), or EPS (the PDF
     converted by Ghostscript, which must be installed; without it a PDF is written beside the
@@ -7724,15 +7788,17 @@ def export_vector(fig, path):
         from pyqtgraph.Qt import QtSvg
         gen = QtSvg.QSvgGenerator()
         gen.setFileName(path)
-        gen.setSize(QtCore.QSize(int(round(W)), int(round(H))))
+        k = float(WINDOW_IMAGE_DPI) / DPI          # the window images' pixels per logical pixel (window_image)
+        gen.setSize(QtCore.QSize(int(round(W * k)), int(round(H * k))))
         gen.setViewBox(QtCore.QRectF(0, 0, W, H))
-        gen.setResolution(int(DPI))
+        gen.setResolution(int(WINDOW_IMAGE_DPI))
         gen.setTitle(fig.manager.get_window_title() if fig.manager is not None else 'figure')
-        p = QtGui.QPainter(gen)
-        try:
-            _render_scene(fig, p)
-        finally:
-            p.end()
+        with _pixel_fonts(fig):
+            p = QtGui.QPainter(gen)
+            try:
+                _render_scene(fig, p)
+            finally:
+                p.end()
         return path
     pic = QtGui.QPicture()
     p = QtGui.QPainter(pic)

@@ -132,7 +132,7 @@ def make_cmap(spec, to_cmap, from_list, name='cmap_shading'):
 
 CONTOUR = 'Contour'          # the toggle of the contour slice (its traces on the energy maps, its level line)
 SHADING = 'Shading'          # the toggle of the energy maps' shading
-SHADE_BY = 'Shading by'      # the Height / Relief radio
+SHADE_BY = 'shading by'      # the Height / Relief radio
 HEIGHT = 'Height'
 RELIEF = 'Relief'
 SHADE_MODES = (HEIGHT, RELIEF)

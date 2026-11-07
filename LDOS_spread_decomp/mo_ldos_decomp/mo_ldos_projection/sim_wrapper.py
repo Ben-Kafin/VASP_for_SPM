@@ -207,12 +207,7 @@ class StmDecompSession:
                   "turn the Decay toggle off, rerun, and press again "
                   "(nothing was sent).")
             return None
-        if sim.cached_eg is None:
-            print("[WRAPPER] no computed spectra yet — press RUN first "
-                  "(nothing was sent).")
-            return None
 
-        eg = np.asarray(sim.cached_eg, dtype=np.float64)
         curves = []
         markers = []
         colors = []
@@ -221,6 +216,9 @@ class StmDecompSession:
                 print("[WRAPPER] no per-marker spectra cached — press RUN "
                       "first (nothing was sent).")
                 return None
+            # The marker spectra's own energies, which the simulator keeps
+            # with them (cached_spec_eg).
+            eg = np.asarray(sim.cached_spec_eg, dtype=np.float64)
             for i, pt in enumerate(sim.marker_coords):
                 c_ldos = sim.cached_spec_ldos[i].copy()
                 t_y = np.sum(c_ldos, axis=(1, 2))
@@ -230,10 +228,15 @@ class StmDecompSession:
                 markers.append((float(pt[0]), float(pt[1])))
                 colors.append(sim.m_colors[i % len(sim.m_colors)])
         else:  # Line / Path: the spectra panel samples the line LDOS
+            if sim.cached_eg is None:
+                print("[WRAPPER] no computed spectra yet — press RUN first "
+                      "(nothing was sent).")
+                return None
             if sim.cached_ld_up is None:
                 print("[WRAPPER] no line LDOS cached — press RUN first "
                       "(nothing was sent).")
                 return None
+            eg = np.asarray(sim.cached_eg, dtype=np.float64)
             f_raw = sim._combine_ldos_display(
                 sim.cached_ld_up.copy(),
                 (sim.cached_ld_dn.copy()

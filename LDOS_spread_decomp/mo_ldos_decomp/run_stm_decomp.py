@@ -101,7 +101,7 @@ mo_area_threshold = MO_AREA_NOISE_THRESHOLD   # decomp-window noise filter
 # curves over sorted([0, topo_bias]).
 topo_decomp_offsets = [-2, -1, 0, 1]
 
-erange = [-2.425, -1.225]               # initial energy slider range
+erange = [-2.425, -1.225]               # initial energy box range
 ldos_height = 1.0                 # Å above highest atom for LDOS sampling
 unit_cell_num = 2
 
@@ -109,7 +109,7 @@ sim_kwargs = dict(
     grid_res=128,                   # NxN topography grid
     topo_bias=-2.0,                 # V for constant-current topography
     topo_height=5,               # initial tip height above highest atom (Å)
-    ldos_bias_sign="neg",          # 'pos' or 'neg' — which slider sets the bias
+    ldos_bias_sign="neg",          # 'pos' or 'neg' — which box sets the bias
     use_decay=True,                # the exact tilted barrier for topography
                                    # convergence and LDOS together (turn OFF
                                    # before sending to decomposition — the

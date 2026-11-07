@@ -70,3 +70,48 @@ R: (a).
   that view's LDOS, as the brief has it); an E Min / E Max / E Pts edit is counted by comparing the boxes with the
   energies Map last formed; the 'contour level' line stays while Contour is off (the level is kept); `colorsys` and
   `_lighten_color` stay though nothing calls them now.
+
+## After the last pass (wf_2b54edf1-9c3): two more for the owner
+
+N1 to N4 and the settled list above are implemented, reviewed and fixed (`LAST_CHANGES.md`). The reviews found these.
+
+**F4. Map's kept state still shares records with the other views (a crash on the new RUN-off return to Map).** Map
+keeps its own maps and energies now, but three things it shows are still shared: the marker spectra (Single Point
+computes them again for its own window), the heights its contour slice and shading are drawn from (`current_z_map`,
+which a Topo h rerun, a broadening or a Decay change in any view replaces with the global topo), and the model (a
+Decay or broadening change in another view leaves Map's maps from the old model). So after, for example, a run in
+Map, an E Max change in Single Point with RUN on, then STOP and back to Map, the spectrum (new window) is drawn over
+Map's energies (old window): pyqtgraph raises on the unequal lengths and the Map view is left without maps. A RUN-off
+decomp click in Map hits the same pairing. The same kind of gap exists on the Line side (older): Single Point writes
+the energy record Line / Path's data are sent with, so a Line send after a Single Point window change pairs Line's
+curves with Single Point's energies.
+- (a) Every record keeps its own energies, and Map keeps its own copies: Map's marker spectra with their energies
+  and the LDOS-topo heights its maps were computed at (used for its contour slice and shading); Line / Path's data
+  with their energies (sim_wrapper sends each with its own). Returning to Map then shows Map exactly as last plotted;
+  with RUN on, a model change made elsewhere recomputes Map at the kept energies, as O2 says.
+- (b) Minimal: a RUN-off return to Map draws only when the shared records still match Map's (the spectra's window,
+  the LDOS-topo records, the model); otherwise nothing, as before. And each spectrum is drawn over its own energies,
+  so nothing raises.
+- (c) Leave it.
+
+R: (a), the full reading of "Map's energies, data and caches are kept apart".
+
+**F5. N1: a Line window too narrow for the two rows places nothing.** With Line allowed only `row_top`, a window too
+narrow for the placement topo and the heatmap row to share a row at any height (a narrow or portrait window, or a large
+text zoom) has no layout: at the first show nothing is placed, and on a resize the old placement stays and runs past
+the window. Before, a stacked layout was taken.
+- (a) Leave it: a minimum width for Line.
+- (b) When the allowed layouts give none at the window's size, choose from every layout (as before) until the two rows
+  fit again.
+
+R: (b).
+
+## Settled under rules already given (next pass, with F1 to F5)
+
+- **P2's two rows:** Line's Tip Height and spectrum stay side by side (P2: "Second row: the topo path 1D plot and the
+  LDOS 1D plots"); today the FlipBox stacks them in a tall slot, giving three rows. Path unchanged.
+- **The fill row's height (N1):** cached per width and layout pass, so the arrangement does not repeat the bisection;
+  the results are the same. (N1's rule is general, so Path's heat row follows it too.)
+- **K9's rule:** the mo_ldos_decomp README's intro and `_imports.py` row (the resolvers are `_resolve.py`'s, re-exported
+  by `_imports.py`); convergence/README.md's save sentence (as forces.py's); `_choose_orientation`'s "the shaded energy
+  maps" becomes "the Relief-shaded energy maps".

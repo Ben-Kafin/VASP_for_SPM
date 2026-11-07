@@ -2335,7 +2335,9 @@ class Arrangement(QtWidgets.QWidget):
     a candidate that breaks it is sized again with A limited (_candidates).  `fill_slot`: a shaped
     group (the simulator's Line / Path heatmap row) sized and scored as every group, then placed in
     its whole slot of the chosen candidate instead of its shaped size at the slot's top left
-    (_slot), its fill panels stretching to it (qtplot.PanelCell.fill_as).  `best_score()` is
+    (_slot), its fill panels stretching to it (qtplot.PanelCell.fill_as).  `layouts`: the
+    candidates the window allows (a list of their names, below), every one when None (the
+    default); the simulator's Line view allows only `row_top`, its two rows.  `best_score()` is
     the best candidate's score at the widget's size, nothing placed (the simulator compares its
     unit-cell panels' two orientations with it).  The candidate arrangements for two groups A, B and the free widget F:
 
@@ -2346,8 +2348,8 @@ class Arrangement(QtWidgets.QWidget):
         abf_row   A, B and F side by side
         abf_col   A, B and F stacked
 
-    and for one group: `h` (A at the left, F at the right) and `v` (A on top, F below).  Each is
-    sized at the widget's size and scored: every group's scale is its size against the size it
+    and for one group: `h` (A at the left, F at the right) and `v` (A on top, F below).  Each
+    allowed one is sized at the widget's size and scored: every group's scale is its size against the size it
     would have alone in the whole window (the square root of the area ratio), and the score is the
     smallest scale less the blank fraction, so that no group is squeezed for another and blank
     space costs; the best score is taken (the current arrangement kept unless another scores
@@ -2360,11 +2362,12 @@ class Arrangement(QtWidgets.QWidget):
     """
 
     def __init__(self, shaped, free=None, spacing=8, hysteresis=0.05, free_min=None, free_cap=None,
-                 free_scored=False, group_cap=None, fill_slot=None):
+                 free_scored=False, group_cap=None, fill_slot=None, layouts=None):
         super().__init__()
         self.shaped = [w for w in shaped if w is not None]
         self.free = free
         self._fill_slot = fill_slot       # the group placed in its whole slot once a candidate is chosen (_slot)
+        self._layouts = None if layouts is None else tuple(layouts)    # the candidates allowed, None: every one (_candidates_at)
         for w in self.shaped + ([free] if free is not None else []):
             w.setParent(self)
             w.show()
@@ -2582,8 +2585,8 @@ class Arrangement(QtWidgets.QWidget):
         return out
 
     def _candidates_at(self, W, H, only=None, fmin=None):
-        """[(name, blank, {widget: (x, y, w, h)}, valid)] at the size W x H, the groups within their limits (_lim); `only`: that candidate alone (two groups); `fmin`: the free widget's minimum, measured by the caller."""
-        want = lambda name: only is None or only == name
+        """[(name, blank, {widget: (x, y, w, h)}, valid)] at the size W x H, the groups within their limits (_lim), the allowed candidates only (layouts); `only`: that candidate alone (two groups); `fmin`: the free widget's minimum, measured by the caller."""
+        want = lambda name: (only is None or only == name) and (self._layouts is None or name in self._layouts)
         sp = self._sp
         fw, fh = self._free_min(W, H) if fmin is None else fmin
         F = self.free
@@ -2591,6 +2594,8 @@ class Arrangement(QtWidgets.QWidget):
         R = QtCore.QRectF
 
         def put(name, rects, blank, valid=True):
+            if not want(name):
+                return                                            # a candidate the window does not allow (layouts)
             rects, blank = self._capped(rects, blank, fw, fh)
             out.append((name, float(blank), rects, bool(valid)))
 
