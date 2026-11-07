@@ -1,12 +1,12 @@
-# Plan: the views-layout decisions, the bias toggles, the topos, the LDOS speed-up, |m| and m on demand, the caches folder and the console lines
+# Plan: the views-layout decisions, the bias toggles, the topos, the LDOS speed-up, |m| and m on demand, the caches folder, the console lines and the shading
 
-Draft of 2026-11-07, for Benjamin's approval. Nothing in it is implemented. The open questions are in section 10. Each one names the sections it decides. Section 11 is filled from the text-only check of the briefs against your other documents, which is still running.
+Draft of 2026-11-07, for Benjamin's approval. Nothing in it is implemented. The open questions are in section 11. Each one names the sections it decides. Section 12 is filled from the text-only check of the briefs against your other documents, which is still running.
 
 ## 0. Sources
 
 - **Sections 2 to 5:** your simulator-views layout decisions document (`PART3_simulator_views_layout_decisions.md`, uploaded 2026-11-07 06:29Z). None of it was implemented. Its rules are quoted or closely transcribed here, each followed by what the code does now and the change.
-- **Sections 6 to 9:** your chat after the close-out (2026-11-07, from about 22:15Z): the per-spectrum console line, the topo console labels, the speed-up, |m| and m, the caches.
-- **Where they differ:** the decisions document wins over this plan unless you answer a question in section 10 otherwise.
+- **Sections 6 to 10:** your chat after the close-out (2026-11-07, from about 22:15Z): the per-spectrum console line, the topo console labels, the speed-up, |m| and m, the caches, the shading.
+- **Where they differ:** the decisions document wins over this plan unless you answer a question in section 11 otherwise.
 - **One statement in the decisions document doesn't match the code.** It says Path's LDOS topo panel is "already sized for what it shows (… Path's turned rectangle with 1/8 margins)". Neither your copy from before part 1 nor the current code has a Path LDOS topo panel (`ax_line_topo` is `None` outside Line). It is new here, built by the Path rules in 3.5.
 
 ## 1. Rules for the job (standing)
@@ -391,7 +391,48 @@ Draft of 2026-11-07, for Benjamin's approval. Nothing in it is implemented. The 
 - **Size:** points × energies × atoms × orbitals × 4 bytes. For example, 72 × 350 × 300 × 9 × 4 B ≈ 270 MB per Line run.
 - **Map's energy maps:** Q5.
 
-## 10. Open questions (each with my recommendation)
+## 10. The shading (chat, 2026-11-07)
+
+**Your requests:**
+- The shading is far too dark at its darkest point, in both Height and Relief. The methods need altering.
+- A way to adjust the shading's darkness, in the shading sub-section.
+- A way to drag the light around:
+  - **A top-down panel** the size of a map panel: a centre point, and a light that moves around it in x and y.
+  - **A side-view panel:** the camera faces the centre point of the plane, seen from the side. There the light moves only up or down. It keeps its focus on the centre point, so up or down changes the light's angle.
+- **A shading sub-section in the Map window:** the last row before the controls, in line with the RUN / STOP button and the toggles box (Decay, Atoms, Norm, …).
+
+**Now:**
+- **The darkness:**
+  - `_draw_shaded_slice` calls `cmap_shading.shaded_rgba` with its default floor of 0, the addendum's reading of Kovesi's `minval` default.
+  - `lstar_stretch` scales each point's L* by a factor that runs from the floor, at the lowest shade value over the maps, to 1 at the highest.
+  - With floor 0 the lowest value is L* 0, black. It is the same in Height (the lowest height) and in Relief (the darkest slope).
+- **The light:** fixed at Kovesi's defaults, azimuth 45° and elevation 45° (`shade_field` is called without az / el). Only Relief uses it; Height shades by the heights alone.
+- **The Contour / Shading box:** in the bottom strip, after 'cmap norm'.
+- **The window:** the RUN / STOP button and the toggles are one box at the bottom of the left column. The panel area is to its right, and the bottom strip runs under both.
+
+**Change:**
+- **Darkness, both modes:** a number box 'darkness' (0 to 1) in the shading sub-section. The floor passed to `shaded_rgba` is 1 − darkness: darkness 1 is today's (the darkest point black), 0 is no shading. The start value is Q21.
+- **The light (Relief):**
+  - `BoxState` gains `az` (degrees; 0 up, increasing clockwise, Kovesi's convention) and `el` (degrees, 0 to 90), both starting at 45°.
+  - `shade_field` receives them, and the shade cache's key includes them.
+- **The top view panel** (`ax_light_top`, a map panel's size):
+  - It shows the plane from above, its centre point, a guide circle of radius R and the light as a dot.
+  - Dragging the dot sets the azimuth: the dot's angle around the centre.
+  - The dot is drawn at R cos(el) from the centre, so it shows the light as seen from above (Q22).
+- **The side view panel** (`ax_light_side`, the same size):
+  - The plane is seen edge-on, as a horizontal line through the centre point. The view is at right angles to the light's azimuth, so the light lies in the drawn plane.
+  - The light is a dot on the arc of radius R around the centre point, at the elevation angle above the line, with a line from it to the centre point (its focus).
+  - Dragging it up or down sets the elevation, from 0° to 90°. The dot stays on the arc.
+- **Redraw:** the energy maps are shaded again while the light is dragged (Q23).
+- **Height mode:** the two light panels are shown greyed and take no drags, since Height uses no light (Q24).
+- **The shading sub-section, Map only:**
+  - One row at the bottom of Map's panel area, under the energy maps and above the bottom strip, level with the left column's RUN / toggles box.
+  - From the left: the Contour / Shading box (moved there from the strip), the darkness box, the top view panel, the side view panel (Q25).
+  - Its panels are a map panel's size. It joins 3.6's size limits and the window's minimum size as Map's fourth sub-section (Q28).
+- **Where the code goes:** the light's state, the two panels' drawing and their drag rules go in `cmap_shading.py` with the box, so sm4_Browser can take them as it is meant to take the module. The simulator places them (Q26).
+- **The info panel:** lists the darkness, the azimuth and the elevation with the other settings.
+
+## 11. Open questions (each with my recommendation)
 
 1. **6.1, the per-spectrum time.** (a) Keep the launches, and each spectrum gets its launch's time divided by its spectra; when a launch holds one spectrum, the time is its own. (b) One spectrum per launch, always its own time, but light runs slow down. (c) One line per launch. **R: (a).** With 7.1, heavy runs already have one spectrum per launch.
 2. **6.1, header and footer:** one pair per LDOS call, as above? **R: yes.**
@@ -411,16 +452,25 @@ Draft of 2026-11-07, for Benjamin's approval. Nothing in it is implemented. The 
 16. **Cache names, an observation:** a height passed as 2 is written "2A", but "2.0A" after a Rerun, so the same height can get two cache names. Fix it, which renames such files, or leave it? **R: leave it unless you want it.** It isn't part of your rules.
 17. **3.6, the map grid "in a full 16:9 window":** read as "the columns that make each map largest in the window as it is, chosen again on every resize"? **R: yes.**
 18. **3.9:** the dot size counted is the drawn size (`s=10`, points²) at the screen's DPI? **R: yes.**
-19. **Order of work:** sections 2 to 5 (the views) first, then 7 and 8, then 9 and 6? **R: yes,** since 9's keys depend on 5 and 8.
+19. **Order of work:** sections 2 to 5 (the views) first, then 7 and 8, then 9, 6 and 10? **R: yes,** since 9's keys depend on 5 and 8, and 10's row joins the Map layout of 3.6.
 20. **The root `qtgui/`:** follows the package copies for 3.2 and 3.6? **R: yes,** as it did for `widgets.py`.
+21. **10, the darkness's start value.** **R: 0.5,** so the darkest point is at half its colour's L*. Yours to set.
+22. **10, the top view:** does its drag set only the azimuth, with the side view alone setting the elevation as you described? Or does the dot's distance from the centre set the elevation too? **R: azimuth only.**
+23. **10:** shade the maps again live while the light is dragged, or on release? **R: live.** The shade is on the cell's grid, a few thousand points.
+24. **10, Height mode:** the light panels greyed, with no drags? **R: yes.**
+25. **10, the sub-section's order:** the Contour / Shading box, darkness, top view, side view, from the left? **R: yes.**
+26. **10:** the light panels' code in `cmap_shading.py`, so sm4_Browser gets them with the module? **R: yes.**
+27. **10, the top view's background:** only the centre, the guide circle and the light, or the shaded LDOS topo behind them as a preview? **R: only the centre, the circle and the light,** unless you want the preview.
+28. **10 with 3.6:** the shading row is Map's last row, under the energy maps however many rows they wrap to? **R: yes.**
 
-## 11. Gaps from your other documents
+## 12. Gaps from your other documents
 
 Filled from the text-only check of the briefs against your other seven documents (running). Anything a brief dropped or changed, and that no later ruling of yours removed, goes here as a numbered item for approval.
 
-## 12. Files
+## 13. Files
 
-- `stm_from_dft/simulator.py` (sections 2 to 9).
+- `stm_from_dft/simulator.py` (sections 2 to 10).
+- `stm_from_dft/cmap_shading.py` (section 10).
 - `stm_from_dft/qtgui/qtplot.py` and `controls.py`, with `matcher/qtgui` identical (3.1, 3.2, 3.6, 3.9, 4 if the toggles need a control). The root `qtgui/` per Q20.
 - `stm_from_dft/locpot_manager.py` (Q11).
 - `stm_from_dft_opt/README.md` and `run_DFT_STM.py` (comments and docs).
