@@ -720,13 +720,19 @@ class Unified_STM_Simulator:
         return (cur if v_b > 0 else -cur), samples
 
     def _converge_tip_height(self, z_map_gpu, grid_xy_gpu, samples, v_b, target_ldos,
-                             target_threshold=0.01, topo_gain=0.5, max_iter=1000, decay_model='decay_exact'):
+                             target_threshold=0.01, topo_gain=0.5, max_iter=1000, decay_model='decay_exact',
+                             *, what, height):
         """Machinery: Exhaustive Point-Wise Convergence Engine: the tip height at each point is moved
         until the current at the frozen bias v_b (V_b; _topo_current: the weighted total LDOS at the
         sample list `samples`, E-2 .. E2 and every sample from 0 V to V_b, integrated from 0 V to V_b,
-        taken positive) is target_ldos, under the decay model decay_model (_effective_decay_model's names)."""
+        taken positive) is target_ldos, under the decay model decay_model (_effective_decay_model's names).
+        The console header names what is converged (what: 'global topo', 'LDOS topo', 'Line stripe' or
+        'Path stripe'), with its bias v_b, its tip height height (Å: Topo h for the global topo, LDOS h for
+        the LDOS topo and the stripes) and its point count: '--- TIP CONVERGENCE: <what>, bias ... V, height
+        ... Å, n points ---'.  The Iter lines and the footer are unchanged."""
         t_start = time()
-        print("--- INITIALIZING TIP CONVERGENCE ENGINE ---")
+        print(f"--- TIP CONVERGENCE: {what}, bias {float(v_b):.3f} V, height {height} Å, "
+              f"{int(z_map_gpu.shape[0])} points ---")
         for i in range(max_iter):
             t0 = time()
             cur_ldos, _ = self._topo_current(cp.hstack([grid_xy_gpu, z_map_gpu[:, None]]), v_b, decay_model,
@@ -1441,9 +1447,10 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
     sub-section in a tall window; Line / Path: the top row, the topo sub-section | the cluster (the
     stripe 'Topo', one heatmap per partition, colour bar), over the tip-height profile and the spectrum,
     its legend panel at its right; Map: the top row, the topo sub-section | Partitioned LDOS, its legend
-    panel at its right, over the rows of energy maps); the bottom strip of number boxes (Cells, Path Pts, Markers, E Pts,
-    E Min and E Max, each with its 'bias' toggle beside it, LDOS γ) and Map's 'cmap norm' and
-    Contour / Shading boxes.  Every slider of
+    panel at its right, over the rows of energy maps, and under them, its last row, the shading row (the
+    Contour / Shading box | the darkness box | the light's top view | its side view), its bottom edge on
+    the left column's RUN / toggles box's); the bottom strip of number boxes (Cells, Path Pts, Markers, E Pts,
+    E Min and E Max, each with its 'bias' toggle beside it, LDOS γ) and Map's 'cmap norm' box.  Every slider of
     the old figure is a number box (the arrow keys step its digits); the orbital hover labels
     are widgets.HoverLabels.
     The physics and the caches are Unified_STM_Simulator's, called as before.
@@ -1464,11 +1471,21 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         self.cmap_set = cmap_set
         self.cmap_norm = False
         # The Map view's Contour / Shading box's state (cmap_shading.BoxState: at most one of Contour and Shading
-        # on, both may be off; the shading by Height or Relief), kept through every view change: it starts with
-        # Contour on, Shading off and Height (_on_shade_box).  The energy maps' shade while Shading is on, kept
-        # with what it was made from (_map_shade).
+        # on, both may be off; the shading by Height or Relief; the Relief shade's light, its azimuth az and its
+        # elevation el in degrees, which the two light panels show and set), kept through every view change: it
+        # starts with Contour on, Shading off, Height and the light at azimuth 45 and elevation 45 (_on_shade_box,
+        # _light_motion).  The energy maps' shade while Shading is on, kept with what it was made from (_map_shade).
         self.shade_state = cmap_shading.BoxState()
         self._shade_cache = None
+        # The shading's darkness (the 'darkness' box in Map's shading row, 0 to 1; _on_darkness): the floor of the
+        # L* stretch is 1 - darkness, in Height and Relief alike (_draw_shaded_slice): 1 makes the darkest point
+        # black, 0 shades nothing.  It starts at 0.5, the darkest point at half its colour's L*.
+        self.darkness = 0.5
+        # Map's shading row (_shading_row): the light's top view and side view axes (ax_light_top, ax_light_side, a
+        # map panel's size) and their cmap_shading.LightPanel (light_top, light_side), sharing shade_state; None
+        # outside Map.
+        self.ax_light_top = self.ax_light_side = None
+        self.light_top = self.light_side = None
         self.npts = 72
         self.is_running, self.normalize, self.show_mag = False, False, False
         # 'Feenstra': the display divided by I/V, I the total LDOS integrated from 0 V (feenstra.py),
@@ -1502,6 +1519,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
                               [self.lv[0, 0] * 0.8, self.lv[1, 1] * 0.8]]
         self.active_obj = None
         self._drag_moved = False          # the dragged item moved since its press (_on_motion): its release work is due (_on_rel)
+        self._marker_lines_n = 0          # the marker lines in the window's info panel, one per marker, as last set (_markers_changed)
         # The decomp's state (level 0, marker 0, no element), held by ldos_decomp.Decomp and read and set as
         # plot_level, active_marker_idx and active_element.
         self.decomp = ldos_decomp.Decomp()
@@ -1586,7 +1604,8 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         self._extra_boxes = []            # control boxes another window adds to the left column (add_control_box)
 
     # The decomp's state as the simulator's attributes, read and set on the decomp (ldos_decomp.Decomp); a set
-    # value is not checked, and the window's decomp line follows it (_decomp_changed).
+    # value is not checked, and the window's decomp lines follow it, one per setting (_decomp_changed: the decomp
+    # level, the active marker, the active element).
     @property
     def plot_level(self):
         """Machinery: the decomp's level (0 markers, 1 parts, 2 atom types, 3 orbitals): ldos_decomp.Decomp.level."""
@@ -1594,7 +1613,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
 
     @plot_level.setter
     def plot_level(self, value):
-        """Machinery: the decomp's level set (ldos_decomp.Decomp.level), then the window's decomp line."""
+        """Machinery: the decomp's level set (ldos_decomp.Decomp.level), then the window's decomp lines (_decomp_changed)."""
         self.decomp.level = value
         self._decomp_changed()
 
@@ -1605,7 +1624,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
 
     @active_marker_idx.setter
     def active_marker_idx(self, value):
-        """Machinery: the active marker's index set (ldos_decomp.Decomp.marker), then the window's decomp line."""
+        """Machinery: the active marker's index set (ldos_decomp.Decomp.marker), then the window's decomp lines (_decomp_changed: its 'active marker' line)."""
         self.decomp.marker = value
         self._decomp_changed()
 
@@ -1616,7 +1635,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
 
     @active_element.setter
     def active_element(self, value):
-        """Machinery: the active element set (ldos_decomp.Decomp.element), then the window's decomp line."""
+        """Machinery: the active element set (ldos_decomp.Decomp.element), then the window's decomp lines (_decomp_changed: its 'active element' line)."""
         self.decomp.element = value
         self._decomp_changed()
 
@@ -1711,8 +1730,10 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
                                                      self.global_topo_bias, self._effective_decay_model())
             target_setp = cp.max(init_cur)
             print(f"[*] Global Topo Setpoint: {float(target_setp):.6e}")
+            # The convergence header names the global topo, at the topo bias and Topo h.
             z_map_gpu = self._converge_tip_height(z_fixed, grid_xy_gpu, t_samples, self.global_topo_bias, target_setp,
-                                                  decay_model=self._effective_decay_model())
+                                                  decay_model=self._effective_decay_model(),
+                                                  what='global topo', height=self.topo_height)
             self.global_z_map = cp.asnumpy(z_map_gpu)
             np.save(cache_file, self.global_z_map)
         self.grid_xy = grid_xy
@@ -1877,7 +1898,8 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         Machinery: every control of the window, made once per figure (a window owns its state; the controls
         only report): the view radio, RUN, the toggles, the broadening box, the tip-height boxes
         with their Rerun buttons, the bottom strip's boxes (E Min and E Max each with its 'bias' toggle
-        beside it, in its frame), the cluster's label; the pick / drag
+        beside it, in its frame), the Contour / Shading box and the 'darkness' box (placed in Map's shading
+        row, _shading_row), the cluster's label; the pick / drag
         handlers connected once.  The window's layout is installed here; _build_ui fills the
         panel area per view and shows the controls of the view.
         """
@@ -1941,12 +1963,17 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         # 'cmap norm' (Map): each energy map its own colour scale and bar, or one scale and bar for all.
         self.chk_cmap_norm = controls.make(fig, 'cmap norm', value=self.cmap_norm)
         self.chk_cmap_norm.on_change(self._on_cmap_norm)
-        # The Contour / Shading box (Map): the Contour and Shading toggles and the Height / Relief radio ('shading
-        # by'), made by cmap_shading.build_box with this figure and the controls module, at the window's box state
-        # (shade_state); untitled, as the 'cmap norm' box.  A click applies the box's rules (at most one on, both
-        # may be off) and redraws the energy maps only (_on_shade_box).
+        # The Contour / Shading box (Map's shading row, _shading_row): the Contour and Shading toggles and the Height /
+        # Relief radio ('shading by'), made by cmap_shading.build_box with this figure and the controls module, at
+        # the window's box state (shade_state); untitled, as the 'cmap norm' box.  A click applies the box's rules
+        # (at most one on, both may be off) and redraws the energy maps only (_on_shade_box).
         self.shade_box = cmap_shading.build_box(fig, controls, on_change=self._on_shade_box, state=self.shade_state,
                                                 title=None)
+        # The 'darkness' box (Map's shading row, after the Contour / Shading box, in its own frame): the shading's
+        # darkness, 0 to 1, starting at 0.5 (darkness); an edit redraws the shaded energy maps only (_on_darkness).
+        self.s_darkness = controls.make(fig, 'darkness', value=self.darkness)
+        self.s_darkness.on_change(self._on_darkness)
+        self._box_darkness = controls.box(self.s_darkness)
         # Extra broadening: one check per atom type, its σ box shown only while the check is on.
         broad_chk_init = [self.extra_broadening.get(t, 0.0) > 0 for t in self.atomtypes]
         self.chk_broad = controls.make(fig, 'broadening', labels=list(self.atomtypes), values=broad_chk_init)
@@ -1991,7 +2018,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         # The label over the Line / Path cluster and the Map rows ('LDOS', or 'LDOS: <element>' at level 3 (the orbitals)).
         self._cluster_label = controls.Label(fig, text='LDOS', fs=10)
         # The legend panel's Back button (Single Point, Line, Path, Map; kept across views, as the tip-height boxes):
-        # gray, back one level as a right click (_legend_back: ignored while Pan or Zoom is on); hidden at level 0
+        # gray, back one level as a right click (_legend_back); hidden at level 0
         # with its place kept.  Its double-click event is dropped and a right press on it goes back (_LegendEvents).
         self._btn_back = controls.Button(fig, 'Back')
         self._btn_back.qt.setStyleSheet(self.LEGEND_BACK_CSS)
@@ -2037,9 +2064,8 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
             frame = controls.box(c, beside.get(name))
             self._strip_boxes[name] = frame
             strip.addWidget(frame)
-        # The Contour / Shading box after 'cmap norm', in its own frame (the ShadeBox's qt).
-        self._strip_boxes['contour / shading'] = self.shade_box.qt
-        strip.addWidget(self.shade_box.qt)
+        # The Contour / Shading box is not in the strip: it is in Map's shading row, with the darkness box and the
+        # two light panels (_shading_row).
         root = QtWidgets.QVBoxLayout()
         root.setSpacing(round(6 / (1000 / 72) * plt.em_px()))
         root.addWidget(self._title_cell)
@@ -2061,8 +2087,8 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         self.fig.canvas.mpl_connect('motion_notify_event', self._on_motion)
         self.fig.canvas.mpl_connect('button_release_event', self._on_rel)
         self.fig.canvas.mpl_connect('button_press_event', self._on_press)
-        self.fig.canvas.mpl_connect('scroll_event', self._on_scroll)     # the wheel over the legend stack
-        # The decomp's line in the new window's info panel (kept current by _decomp_changed).
+        self.fig.canvas.mpl_connect('scroll_event', self._on_scroll)     # the wheel anywhere over the legend panel
+        # The decomp's lines in the new window's info panel, one per setting (kept current by _decomp_changed).
         self._decomp_changed()
 
     def add_control_box(self, widget):
@@ -2412,7 +2438,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         return (c, (0.0, max(h, c)))
 
     def _in_legend(self, event):
-        """Machinery: whether a canvas press lies in the legend panel: on its stack (event.inaxes), or in its rectangle from the title cell's top to the stack's bottom across the panel's width (the title, the Back button's row, the scroll bar's strip)."""
+        """Machinery: whether a canvas press or wheel lies in the legend panel: on its stack (event.inaxes), or in its rectangle from the title cell's top to the stack's bottom across the panel's width (the title, the Back button's row, the scroll bar's strip)."""
         if self._legend_ax is None:
             return False
         if event.inaxes is self._legend_ax:
@@ -2434,14 +2460,12 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         return None
 
     def _legend_back(self):
-        """Machinery: the Back button's click, or a right press on the legend panel's Back button or scroll bar (Qt widgets: _LegendEvents): back one level, as a right click in the panel; ignored while the toolbar's Pan or Zoom is on, as the canvas's presses are."""
-        if self.fig.canvas.manager.toolbar.mode == "":
-            self._decomp_click(plt.MouseButton.RIGHT)
+        """Machinery: the Back button's click, or a right press on the legend panel's Back button or scroll bar (Qt widgets: _LegendEvents): back one level, as a right click in the panel; it always acts (the window's toolbar has no Pan or Zoom)."""
+        self._decomp_click(plt.MouseButton.RIGHT)
 
     def _on_scroll(self, event):
-        """Machinery: the mouse wheel over the legend stack forwarded to its scroll bar (QCoreApplication.sendEvent, as QAbstractScrollArea forwards its wheel: a mostly vertical wheel), which takes Qt's own step and moves the stack (_legend_scrolled)."""
-        ax = self._legend_ax
-        if ax is None or event.inaxes is not ax or event.guiEvent is None:
+        """Machinery: the mouse wheel anywhere over the legend panel (_in_legend: its stack, its title, its Back button's row, its scroll bar's strip) forwarded to its scroll bar (QCoreApplication.sendEvent, as QAbstractScrollArea forwards its wheel: a mostly vertical wheel), which takes Qt's own step and moves the stack (_legend_scrolled).  A wheel on the shown scroll bar itself is the bar's own and never reaches the canvas."""
+        if self._legend_ax is None or event.guiEvent is None or not self._in_legend(event):
             return
         d = event.guiEvent.angleDelta()
         if abs(d.y()) >= abs(d.x()):
@@ -2473,7 +2497,9 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
                 sub.deleteLater()
 
     def _kept_widgets(self):
-        return (self._box_topo_h, self._box_ldos_h, self._cluster_label.qt, self._box_crop, self._btn_back.qt) + tuple(b.qt for b in self._cursor_boxes.values())
+        """Machinery: the widgets made once and reused by every build (detached before a view's panels are deleted: _clear_panels): the tip-height boxes, the cluster's label, the crop box, the legend's Back button, the cursor boxes, and Map's shading row's two boxes (the Contour / Shading box's frame and the darkness box's: _shading_row)."""
+        return ((self._box_topo_h, self._box_ldos_h, self._cluster_label.qt, self._box_crop, self._btn_back.qt)
+                + tuple(b.qt for b in self._cursor_boxes.values()) + (self.shade_box.qt, self._box_darkness))
 
     def _clear_cluster(self):
         """Machinery: the Line / Path cluster's axes removed and its row emptied (it is built again only when its panel count changes: _build_heat_row); the markers' scatters on Line's or Path's LDOS topo removed with the other counterparts (_make_line_markers makes them all again).  The LDOS topo panel, with its LDOS h box and its drawing (_line_topo_*), is the topo sub-section's (_build_ui) and stays."""
@@ -2521,7 +2547,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         self._map_marks_xy, self._contour_z = None, None
 
     def _clear_panels(self):
-        """Machinery: every panel of the view removed: its axes, its cells, the panes of the panel area; the reused boxes (the LDOS h box among them) and label detached first."""
+        """Machinery: every panel of the view removed: its axes, its cells, the panes of the panel area; the reused boxes (the LDOS h box and Map's shading row's two boxes among them, _kept_widgets) and label detached first."""
         self._clear_cluster()
         self._clear_map_rows()
         for ax in list(self.fig.axes):
@@ -2544,6 +2570,11 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         # Point's markers on its LDOS topo and the layout the Single Point spectrum's row was last aligned for
         # (_on_arranged): none until the view is built again.
         self._topo_group = None
+        # Map's energy maps' group and its shading row (_build_ui, _shading_row): the row's light panels' axes went
+        # with the others, their LightPanels with them; its two boxes are detached above for the next build.
+        self._maps_group = self._shade_row = None
+        self.ax_light_top = self.ax_light_side = None
+        self.light_top = self.light_side = None
         self._line_topo_arts, self._line_topo_key, self._line_topo_z = [], None, None
         self._path_rect = None
         self._ldos_marks = None
@@ -2577,8 +2608,9 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         the cursor boxes above and beside it) and the LDOS topo (the LDOS h box above it).  Per view:
           Single Point: the topo sub-section and the spectrum with its legend panel at its right in one
           row ('h'), the spectrum under the topo sub-section in a window taller than that row ('v', exactly
-          when 'h' would leave an empty band below it, and back: tall_rule), the spectrum at one topo
-          panel's size (free_cap: _spec_cap);
+          when 'h' would leave an empty band below it, and back: tall_rule), the spectrum sized per layout
+          (free_size: _spec_size): in 'h' at one topo panel's size, the row as large as the topo sub-section
+          and it allow; in 'v' filling the bottom row;
           Line / Path: the top row, the topo sub-section and the cluster under its label (the stripe, one
           heatmap per partition and their colour bars: built by _update_all, again only when its panel
           count changes; sized and scored with each heatmap counted as square, then placed in its whole
@@ -2588,12 +2620,18 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
           Map: the top row, the topo sub-section and then the spectrum, its plot box held equal to a topo
           panel's (_spec_box_follow), with its legend panel at its right, over the energy maps' wrapping
           block under its label ('a_top'; the block's rows and columns chosen again at every placement for
-          the largest maps, controls.MapBlock).
+          the largest maps, controls.MapBlock), and Map's last row, its fourth sub-section, the shading row
+          (_shading_row: from the left the Contour / Shading box, the darkness box, the light's top view and
+          its side view, the two panels a map panel's size), under the energy maps however many rows they
+          wrap to, pinned to the bottom of the panel area so that its bottom edge lies on the left
+          column's RUN / toggles box's, the height the window leaves over going between the maps and it,
+          never below it (Arrangement bottom: _shade_row_size).
         Every row holds one plot-box height (Figure.align_row).  The limits: a topography's plot box at most
         TOPO_MAX_FACTOR times a heatmap's or a map's (_topo_cap), in Map at least TOPO_MIN_FACTOR times a
         map's (group_min); the placement panel (the global topo; Map's LDOS topo) never below its minimum
         (_placement_min, the Arrangement's floor), the 2x cap giving way where both cannot hold; the
-        window's smallest size follows from them (Arrangement.minimum_px).  The curve panels take the room
+        window's smallest size follows from them, in Map with the shading row under the maps
+        (Arrangement.minimum_px).  The curve panels take the room
         the heatmaps and topographies leave, at least their readable size (_curves_readable).
         The window is never trimmed to its panels (no Figure.fit_window): it keeps the size it is
         given, and a maximized window stays full screen.  The panels are built once per view (here)
@@ -2614,7 +2652,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         self._strip_boxes['Path Pts'].setVisible(mode == 'Path')
         self._strip_boxes['E Pts'].setVisible(mode == 'Map')
         self._strip_boxes['cmap norm'].setVisible(mode == 'Map')
-        self._strip_boxes['contour / shading'].setVisible(mode == 'Map')
+        # (The Contour / Shading box is shown with Map's shading row, _shading_row, and detached in the other views.)
         # The counts the view reads, put in the boxes without firing.
         self.s_num_marks.set(len(self.marker_ratios) if mode in ('Line', 'Path') else len(self.marker_coords))
         if mode == 'Path':
@@ -2627,7 +2665,8 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
             # The LDOS topo takes the global topo's crop and turn (_apply_crop, _unit_cell_axes).  The markers are
             # placed on the global topo (the placement panel) and shown on the LDOS topo too (_ldos_marks: not
             # pickable, moved with them).  The spectrum with its legend panel at its right (one sub-section)
-            # beside the topo sub-section, or under it by the tall-window rule, at one topo panel's size.
+            # beside the topo sub-section at one topo panel's size ('h'), or under it by the tall-window rule,
+            # filling the bottom row ('v'; free_size: _spec_size).
             self.ax_ldos_topo.set_rotated(self.cell_rotated)
             topos = _TopoRow(topo_row)
             self.ax_spec, spec_cell = self._cell_axes()
@@ -2686,7 +2725,8 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
             # panel (the markers are placed on it) and takes the global topo's crop and turn.  Then, in the same row,
             # the spectrum, its plot box held equal to a topo panel's (its box aspect the LDOS topo's shape:
             # _spec_box_follow), with its legend panel at its right (a fixed-width item); under the top row the
-            # energy maps as a wrapping block under its label (rebuilt by _update_all when the counts change).
+            # energy maps as a wrapping block under its label (rebuilt by _update_all when the counts change); under
+            # them, Map's last row, the shading row (_shading_row), the Arrangement's bottom widget.
             self._draw_level_line()
             self.ax_ldos_topo.set_rotated(self.cell_rotated)
             self.ax_spec, spec_cell = self._cell_axes()
@@ -2695,12 +2735,14 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
             topos = _TopoRow(topo_row)
             self._map_block = controls.MapBlock(fig, spacing=4)
             maps = controls.Titled(self._map_block, self._cluster_label.qt)
+            self._maps_group = maps                # the shading row's panels follow its maps' size (_shade_row_size)
             self._map_block.set_groups([], None)
             groups, free = [topos, maps], None
             self.map_axes = []
             self.cax_list = []
             self.marks = self.ax_ldos_topo.scatter([], [], s=150, edgecolors='black', zorder=15, picker=5)
             fig.align_row(self.cax_topo, self.ax_global_topo, self.ax_ldos_topo, self.ax_spec)
+            self._shade_row = self._shading_row()
         self._topo_group = topos
         # The sizing (rule 11, 3.1 to 3.9): the shaped groups (the topo sub-section's row, Line / Path's cluster,
         # Map's energy maps) are sized first and fill the window, each view in its own layout (VIEW_LAYOUTS); a
@@ -2709,30 +2751,38 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         # Line, Path: the global topo; Map: the LDOS topo) never below _placement_min (floor), the 2x cap giving
         # way where both cannot hold, the window's smallest size following from these limits.  The curve panels,
         # at least readable (free_min), take the room the groups leave: Line / Path the second row under the top
-        # row; Single Point the spectrum beside or under the topo sub-section, at most one topo panel's size
-        # (free_cap: _spec_cap), the tall-window rule choosing 'h' or 'v' (tall_rule).  In Line / Path the
+        # row; Single Point the spectrum beside the topo sub-section at one topo panel's size, the row as large as
+        # the topo sub-section and it allow ('h'), or under it filling the bottom row ('v') (free_size:
+        # _spec_size), the tall-window rule choosing 'h' or 'v' (tall_rule).  In Line / Path the
         # cluster, sized and scored with each heatmap counted as square, is then placed in its whole slot and
-        # its heatmaps fill it (fill_slot; PanelCell.fill_as, _build_heat_row).
+        # its heatmaps fill it (fill_slot; PanelCell.fill_as, _build_heat_row).  In Map the shading row is the
+        # bottom widget: pinned to the panel area's bottom edge at the left, which lies on the left column's RUN /
+        # toggles box's bottom edge (both in the window's one row of the left column and the panel area), its
+        # panels a map panel's size for each candidate (_shade_row_size), every candidate sized in the room above
+        # it, the height left over going between the maps and it; it joins the limits and the window's smallest
+        # size (bottom).
         floor_ax = self.ax_ldos_topo if mode == 'Map' else self.ax_global_topo
         self._arrangement = controls.Arrangement(groups, free, spacing=8, free_min=self._curves_readable,
-                                                 free_cap=self._spec_cap if mode == 'Single Point' else None,
+                                                 free_size=self._spec_size if mode == 'Single Point' else None,
                                                  group_cap=self._topo_cap(mode, groups),
                                                  group_min=self.TOPO_MIN_FACTOR if mode == 'Map' else None,
                                                  fill_slot=cluster if mode in ('Line', 'Path') else None,
                                                  layouts=self.VIEW_LAYOUTS[mode],
                                                  tall_rule=('h', 'v') if mode == 'Single Point' else None,
                                                  floor=(topos, lambda rect, ax=floor_ax: self._topo_box(rect, ax),
-                                                        self._placement_min))
+                                                        self._placement_min),
+                                                 bottom=(self._shade_row, self._shade_row_size) if mode == 'Map' else None)
         self._arrangement.on_arranged(self._on_arranged)
         self._panel_area.addWidget(self._arrangement, 1)
         self._box_topo_h.setVisible(True)
         self._box_ldos_h.setVisible(True)          # above the LDOS topo in every view
         self._cluster_label.show(mode != 'Single Point')
         self._cluster_label.set_text('LDOS')
-        # The info panel's lines of the view: the map energies (none until the view's maps are drawn) and the
-        # contour level (Map).
+        # The info panel's lines of the view: the map energies (none until the view's maps are drawn), the
+        # contour level (Map) and the light's azimuth and elevation (Map).
         self._map_energies_changed()
         self._contour_level_changed()
+        self._light_changed()
 
         self.cached_emin, self.cached_emax = None, None
         # Into Map, with RUN off too: its kept maps, energy markers and spectrum drawn from what is kept (last_run).
@@ -2836,16 +2886,24 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
                 return (h, h)          # one heatmap's box counted as square (ratio 1.0), in Line and in Path
         return (topo_group, heat_group, self.TOPO_MAX_FACTOR, box_a, box_b)
 
-    def _spec_cap(self, rects):
+    def _spec_size(self, name, rects):
         """
-        Machinery: Single Point's free_cap (3.7): the largest region (w, h) of the spectrum's sub-section (the
-        spectrum with its legend panel at its right) for the topo sub-section's region in a candidate (rects:
-        {group: (x, y, w, h)}): the spectrum at one topo panel's size, its plot box as wide as an LDOS topo's
-        (_topo_box) plus its own tick axes (Axes._decor_px), the row's spacing and the legend panel's fixed
-        width (set at the window's text zoom by the readable minimum, _curves_readable, in the same search), and
-        as tall as the topo sub-section's row, so that beside it ('h') its box lies in the row's one band.  None
-        before the panels exist (no cap).
+        Machinery: Single Point's free_size (3.7): the size (w, h) of the spectrum's sub-section (the spectrum
+        with its legend panel at its right) in the candidate `name` ('h' or 'v'), for the topo sub-section's
+        region in it (rects: {shaped group: (x, y, w, h)}, the shaped groups only, here the topo sub-section's:
+        the candidate's real region, or (0, 0, w, h) at the trial sizes of the Arrangement's 'h' fit).  None for
+        every candidate but 'h': in 'v' no cut, so the spectrum and its legend fill the bottom row, the full
+        width and all the height the topo sub-section leaves.  In 'h' the spectrum at one topo panel's size,
+        its plot box as wide as an LDOS topo's (_topo_box) plus its own tick axes (Axes._decor_px), the row's
+        spacing and the legend panel's fixed width (set at the window's text zoom by the readable minimum,
+        _curves_readable, in the same search), and as tall as the topo sub-section's row, so that beside it its
+        box lies in the row's one band; the row as large as the topo sub-section and it allow (the
+        Arrangement's 'h' fit).  It reads only what the Arrangement's minimum size is keyed on (the LDOS topo's
+        shape; the spectrum's tick axes and the legend's width through the readable minimum).  None before the
+        panels exist (no size).
         """
+        if name != 'h':
+            return None
         r = rects.get(self._topo_group)
         ax, sub, legend = getattr(self, 'ax_spec', None), self._spec_sub, self._legend_panel
         if r is None or ax is None or sub is None or legend is None:
@@ -2855,6 +2913,104 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
             return None
         l, t, rr, b = ax._decor_px()
         return (bw + l + rr + sub.layout().spacing() + legend.minimumWidth(), r[3])
+
+    # --- Map's shading row (plan 10): the Contour / Shading box, the darkness box and the two light panels ---
+
+    SHADE_ROW_SPACING = 10             # the shading row's spacing between its items (its qtplot.PanelRow's, as the topo sub-section's row)
+
+    def _shading_row(self):
+        """
+        Machinery: Map's shading row (plan 10), its fourth sub-section and last row, one qtplot.PanelRow as a
+        widget, the Arrangement's bottom widget under the energy maps (_build_ui).  From the left: the Contour /
+        Shading box (the ShadeBox's frame, taken out of the strip) and the darkness box side by side at their own
+        width, at the row's bottom (one fixed item of the row); the light's top view (ax_light_top) and its side
+        view (ax_light_side), each a panel cell whose plot box is a map panel's (its shape an energy map's,
+        _light_box_follow; its size from the row's, _shade_row_size), the two in one plot-box band
+        (Figure.align_row).  On them the two light panels, just the controls, at the window's box state
+        (cmap_shading.draw_light_top and draw_light_side: their LightPanel shares shade_state with the box; greyed
+        in Height, taking no drags), which the window's mouse events reach (_on_press, _light_motion, _on_rel).
+        Returns the row's widget.
+        """
+        row = plt.PanelRow(spacing=self.SHADE_ROW_SPACING)
+        boxes = controls.widget_of(controls.column('stretch', controls.row(self.shade_box.qt, self._box_darkness)))
+        boxes.setSizePolicy(QtWidgets.QSizePolicy.Policy.Fixed, QtWidgets.QSizePolicy.Policy.Preferred)
+        self.shade_box.qt.show()                   # detached (hidden) since the last build (_clear_panels)
+        self._box_darkness.show()
+        row.addWidget(boxes, 0)
+        self.ax_light_top = self._panel(row, 10)
+        self.ax_light_side = self._panel(row, 10)
+        self.light_top = cmap_shading.draw_light_top(self.ax_light_top, self.shade_state)
+        self.light_side = cmap_shading.draw_light_side(self.ax_light_side, self.shade_state)
+        self.fig.align_row(self.ax_light_top, self.ax_light_side)
+        self._light_box_follow()
+        return plt.RowWidget(row)
+
+    def _shade_row_size(self, rects):
+        """
+        Machinery: the Arrangement's bottom size_of in Map (plan 10): the shading row's size (w, h) for a
+        candidate's regions above it (rects: {group: (x, y, w, h)}), its light panels at a map panel's size: one
+        energy map's plot box in the maps' region (controls.MapBlock.map_box of the region less the label over the
+        maps, as _topo_cap's box_b), each light panel's cell at that box plus the room around it (PanelCell._decor:
+        the row's one band, Figure.align_row), the boxes' item at its own width (a fixed item of the row) and the
+        row's spacing between its three items (qtplot.PanelRow's, from SHADE_ROW_SPACING); as tall as a light
+        panel's cell or the boxes, whichever is taller (a taller row centres the panels in it, PanelRow).  It
+        depends only on the region and fixed quantities, as the floor's box_of.  None (the row's size hint) before
+        the energy maps exist.
+        """
+        maps, widget = getattr(self, '_maps_group', None), getattr(self, '_shade_row', None)
+        r = rects.get(maps) if maps is not None else None
+        if (r is None or widget is None or self._map_block is None
+                or self.ax_light_top is None or self.ax_light_side is None):
+            return None
+        box = self._map_block.map_box(r[2], max(r[3] - maps._label_h(), 1.0))
+        if box is None:
+            return None
+        bw, bh = box
+        it = widget.row.itemAt(0)                  # the boxes' item, placed at this width (PanelRow's fixed item)
+        sp = self.SHADE_ROW_SPACING / (1000 / 72) * plt.em_px()
+        w = float(max(it.sizeHint().width(), it.minimumSize().width())) + 2.0 * sp
+        h = float(max(it.sizeHint().height(), it.minimumSize().height()))
+        for ax in (self.ax_light_top, self.ax_light_side):
+            l, t, rr, b = ax._cell._decor()
+            w += bw + l + rr
+            h = max(h, bh + t + b)
+        return (w, h)
+
+    def _light_box_follow(self):
+        """
+        Machinery: in Map, the two light panels' plot boxes held to an energy map's shape, so that at the shading
+        row's size (_shade_row_size) they are a map panel's size (plan 10): their box aspect (Axes.set_box_aspect)
+        an energy map's height over width as drawn and turned (Axes._aspect_want of the first map that has one,
+        the shape controls.MapBlock sizes every map by), 1.0 (MapBlock's own ratio without maps) before the maps
+        are drawn; set again when that shape changes (the maps drawn, _update_all; turned, _set_cell_rotation).
+        Inside its box each light panel keeps an equal aspect, its limits widened about the centre point
+        (cmap_shading.LightPanel).  Nothing in the other views.
+        """
+        if self.mode != 'Map':
+            return
+        figure_axes = self.fig.axes
+        lights = [a for a in (self.ax_light_top, self.ax_light_side) if a is not None and a in figure_axes]
+        if not lights:
+            return
+        maps = [a for a in (getattr(self, 'map_axes', None) or []) if a in figure_axes]
+        r = next((x for x in (a._aspect_want() for a in maps) if x is not None), None)
+        r = 1.0 if r is None else float(r)
+        for a in lights:
+            if a.get_box_aspect() != r:
+                a.set_box_aspect(r)
+
+    def _light_changed(self):
+        """
+        Machinery: the window's light lines in the info panel (set_info_line, keys 'azimuth' and 'elevation'), once
+        the window exists, as the window's other mouse-made settings, one line each: in Map, the Relief shade's
+        light as the light panels set it (shade_state: az, degrees, 0 up and increasing clockwise; el, degrees
+        above the plane, 0 to 90); none in the other views.
+        """
+        if getattr(self, 'fig', None) is None:
+            return
+        st, on = self.shade_state, self.mode == 'Map'
+        self.fig.set_info_line('azimuth', f"azimuth: {st.az:.1f}°" if on else '')
+        self.fig.set_info_line('elevation', f"elevation: {st.el:.1f}°" if on else '')
 
     # --- the contour slice (the level line on the topo colour bar, the LDOS topo's iso-line on the energy maps) ---
 
@@ -2964,11 +3120,12 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         return [a for a in axs if a is not None and a in figure_axes]
 
     def _set_cell_rotation(self, flag):
-        """Machinery: every unit-cell panel of the view turned 90 degrees (Axes.set_rotated) or back, together, Map's spectrum box following the LDOS topo's turned shape (_spec_box_follow); each cursor box moves to the band its cursor's line now runs along."""
+        """Machinery: every unit-cell panel of the view turned 90 degrees (Axes.set_rotated) or back, together, Map's spectrum box following the LDOS topo's turned shape (_spec_box_follow) and Map's light panels the energy maps' (_light_box_follow); each cursor box moves to the band its cursor's line now runs along."""
         flag = bool(flag)
         for ax in self._unit_cell_axes():
             ax.set_rotated(flag)
         self._spec_box_follow()
+        self._light_box_follow()
         if flag == self.cell_rotated:
             return
         self.cell_rotated = flag
@@ -3304,7 +3461,9 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         GPU: the branch's isoluminant shading map (_map_role_cmap: CET-I1, CET-D11 for the signed spin density,
         CET-I3 for |m|) through the map's own norm, as its filled contours take it (Normalize(v_min, v_max) for the
         signed spin density, else PowerNorm(LDOS γ `gamma`, v_min, v_max)), then the shade (`shade`, _map_shade) by
-        the L* stretch, floor 0 (cmap_shading.shaded_rgba).  The colours, moved to the host, drawn by qtplot's
+        the L* stretch at the floor 1 - darkness (cmap_shading.shaded_rgba; the shading row's 'darkness' box, in
+        Height and Relief alike: darkness 1 makes the darkest point black, 0 shades nothing, 0.5 at start).  The
+        colours, moved to the host, drawn by qtplot's
         pcolormesh with an (M, N, 4) C (shading 'flat'), each point's quad centred on it (cmap_shading.mesh_corners:
         steps a / (N - 1) and b / (N - 1)), one mesh at each offset of the 2 x 2 cells.  Each mesh is given the
         map's data value of each cell (QuadMesh.set_values: the slice at the cell's point, (M, N) as the colours),
@@ -3316,7 +3475,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         norm = (plt.Normalize(vmin=v_min, vmax=v_max) if diverging
                 else plt.PowerNorm(gamma, vmin=v_min, vmax=v_max))
         values = cmap_shading.unique_points(slice_data)
-        rgba = cp.asnumpy(cmap_shading.shaded_rgba(values, shade, cmap, norm))
+        rgba = cp.asnumpy(cmap_shading.shaded_rgba(values, shade, cmap, norm, floor=1.0 - self.darkness))
         X, Y = cmap_shading.mesh_corners(self.lv[0, :2] / (n - 1), self.lv[1, :2] / (n - 1), rgba.shape[:2],
                                          offsets=self._cell_offsets_2x2())
         meshes = [ax.pcolormesh(X[k], Y[k], rgba, shading='flat') for k in range(len(X))]
@@ -3329,28 +3488,36 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
     def _map_shade(self):
         """
         Machinery: the energy maps' shade while the box's Shading is on (None while it is off), one for every map,
-        since it depends on the heights only: the LDOS-topo heights Map's maps were computed at (map_z, Map's own,
+        since it depends on the heights only (and in Relief on the light): the LDOS-topo heights Map's maps were computed at (map_z, Map's own,
         whose height range the contour slice's level is a fraction of) at the cell's unique grid points (cmap_shading.unique_points:
         row i along b, column j along a), CuPy float32 on the GPU, shaded by cmap_shading.shade_field in the box's
-        mode: Height, the heights themselves; Relief, Kovesi's relief.m with its defaults, the steps a / (N - 1) and
+        mode: Height, the heights themselves; Relief, Kovesi's relief.m with the window's light (shade_state's az
+        and el, degrees, which the light panels set: azimuth 0 up and increasing clockwise, elevation above the
+        plane; 45 and 45 at start, relief.m's defaults) and its other defaults, the steps a / (N - 1) and
         b / (N - 1), periodic=True (the taps wrap around the cell) and panel_turn 90 while the unit-cell panels are
-        drawn turned (cell_rotated), else 0, so the light stays at the upper right as the map is shown.  The L*
+        drawn turned (cell_rotated), else 0, so the light keeps its azimuth on screen as the map is shown.  The L*
         stretch then runs over this shade's range over the cell (cmap_shading.lstar_stretch).  Kept (_shade_cache)
-        and made again only when the mode, the turn (Relief) or the heights change.
+        with its key (the mode; in Relief the turn and the light, az and el) and made again only when the key or
+        the heights change.
         """
-        mode = self.shade_state.shade_mode
+        st = self.shade_state
+        mode = st.shade_mode
         if mode is None:
             return None
-        turn = (90.0 if self.cell_rotated else 0.0) if mode == cmap_shading.RELIEF else None
+        relief = mode == cmap_shading.RELIEF
+        turn = (90.0 if self.cell_rotated else 0.0) if relief else None
+        light = (st.az, st.el) if relief else None
+        key = (mode, turn, light)
         z = self.map_z
         kept = self._shade_cache
-        if kept is not None and kept[0] == (mode, turn) and np.array_equal(kept[1], z):
+        if kept is not None and kept[0] == key and np.array_equal(kept[1], z):
             return kept[2]
         n = int(round(np.sqrt(len(z))))
         heights = cmap_shading.unique_points(cp.asarray(z, dtype=cp.float32))
         shade = cmap_shading.shade_field(heights, mode, self.lv[0, :2] / (n - 1), self.lv[1, :2] / (n - 1),
-                                         panel_turn=0.0 if turn is None else turn, periodic=True)
-        self._shade_cache = ((mode, turn), np.array(z, copy=True), shade)
+                                         panel_turn=0.0 if turn is None else turn, periodic=True,
+                                         az=st.az, el=st.el)
+        self._shade_cache = (key, np.array(z, copy=True), shade)
         return shade
 
     def _map_cmap(self, use_diverging, has_mag):
@@ -3490,14 +3657,17 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
             print(f"[*] Loading Cached Global Topography: {cache_name}")
             self.global_z_map = np.load(cache_file)
         else:
-            print(f"[*] Calculating Global Topography with broadening: {cache_name}")
+            # No cause in the print: the recompute runs for a broadening change and for a Topo h change alike.
+            print(f"[*] Calculating Global Topography: {cache_name}")
             z_fixed = cp.full(self.grid_xy_gpu.shape[0], self.z_highest_atom + self.topo_height, dtype=cp.float32)
             init_cur, t_samples = self._topo_current(cp.hstack([self.grid_xy_gpu, z_fixed[:, None]]),
                                                      self.global_topo_bias, self._effective_decay_model())
             target_setp = cp.max(init_cur)
             print(f"[*] Global Topo Setpoint: {float(target_setp):.6e}")
+            # The convergence header names the global topo, at the topo bias and Topo h.
             z_map_gpu = self._converge_tip_height(z_fixed, self.grid_xy_gpu, t_samples, self.global_topo_bias, target_setp,
-                                                  decay_model=self._effective_decay_model())
+                                                  decay_model=self._effective_decay_model(),
+                                                  what='global topo', height=self.topo_height)
             self.global_z_map = cp.asnumpy(z_map_gpu)
             np.save(cache_file, self.global_z_map)
 
@@ -3614,8 +3784,9 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
                                                      v_b, decay_model)
             target_setp = cp.max(init_cur)
             print(f"[*] LDOS Topo Setpoint: {float(target_setp):.6e}")
+            # The convergence header names the LDOS topo, at V_b and LDOS h.
             z_map_gpu = self._converge_tip_height(z_fixed, self.grid_xy_gpu, t_samples, v_b, target_setp,
-                                                  decay_model=decay_model)
+                                                  decay_model=decay_model, what='LDOS topo', height=self.ldos_height)
             z = cp.asnumpy(z_map_gpu)
             np.save(ldos_cache_file, z)
         self.ldos_z_map, self.ldos_z_key = z, key
@@ -3819,7 +3990,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
                     self._broadening_topo_dirty = False
             if self.is_running:
                 self._update_all(full_refresh=True)
-            self._markers_changed()                # the Path's length (Extend) in the info panel's line and markers lines, running or not
+            self._markers_changed()                # the Path's length (Extend) in the info panel's line line and marker lines, running or not
             return
 
         # Path Pts box: adjust number of draggable path nodes.
@@ -3965,7 +4136,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
                 # Their copy on Single Point's LDOS topo, at the same places and in the same colours.
                 self._ldos_marks.set_offsets(self.marker_coords)
                 self._ldos_marks.set_facecolors(self.m_colors[:len(self.marker_coords)])
-        self._markers_changed()                    # the markers' and the line's lines in the info panel
+        self._markers_changed()                    # the marker lines (one per marker) and the line line in the info panel
 
         # RUN off: nothing more is drawn, except for a decomp step or a view change into Map (last_run), whose panels are
         # drawn below from the last run's data when the view has them, with nothing computed (compute False).
@@ -4079,8 +4250,12 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
                     z_start = cp.array(self._ldos_topo_interp(p_xy), dtype=cp.float32)
                     target, l_samples = self._ldos_topo_setpoint(v_b, decay_model)
                     print(f"[*] {self.mode} Topo Setpoint: {float(target):.6e}")
+                    # The convergence header names the view's stripe ('Line stripe' or 'Path stripe'), at V_b and
+                    # LDOS h (the LDOS topo's tip height, which the stripe starts from and sits on).
                     z_line = cp.asnumpy(self._converge_tip_height(z_start, p_xy_gpu, l_samples, v_b, target,
-                                                                  decay_model=decay_model))
+                                                                  decay_model=decay_model,
+                                                                  what=f'{self.mode} stripe',
+                                                                  height=self.ldos_height))
                 # Into the view's own record, with its key and the bias and decay model they were converged at
                 # (here, or when the cache was saved).
                 if self.mode == 'Line':
@@ -4488,6 +4663,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
                 self._draw_contour_artists()
                 self._contour_z = np.array(self.map_z, copy=True)
             self._map_energies_changed()           # the info panel's map energies line: the energies of the maps drawn
+            self._light_box_follow()               # the shading row's light panels: the maps' shape, as drawn
 
             quantity = "(dI/dV)/(I/V)" if self.feenstra else "LDOS"
             self._cluster_label.set_text(f"{quantity}: {self.active_element}" if self.plot_level >= 3 else quantity)
@@ -5017,7 +5193,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         Machinery: a Line / Path marker dragged: every counterpart moved with it (_place_line_markers, running
         or not) and, while running, the marker spectra set from the display cache (_line_disp and its
         Norm factors _line_norm, built once per data change by _update_all; _draw_spectrum in place); the
-        info panel's markers line follows (_markers_changed).  Nothing is computed again while the button
+        info panel's marker lines follow (_markers_changed).  Nothing is computed again while the button
         is down.  With `last_run` (a re-sort: _resort_line_markers) the marker spectra are set from the
         display cache with RUN off too, the last run's data.
         """
@@ -5164,14 +5340,16 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
     def _show_map_slice(self, k, ax, slice_data, sig):
         """
         Machinery: energy map k shown with its data and signature `sig` (_set_map_slice's): drawn again when the
-        data, the signature or the box's shading (Shading's mode and its shade, _map_shade) differ from what it
-        shows, otherwise nothing is touched.  The old drawing removed (its filled contours or its shaded meshes),
-        the slice is drawn again as the set's filled contours (_draw_map_slice; TriContourSet has no set_array) or,
-        with Shading on, as the shaded RGBA mesh (_draw_shaded_slice); _map_state keeps what it shows.
+        data, the signature or the box's shading (Shading's mode and its shade, _map_shade, which a Relief light
+        change makes anew; while shaded, the darkness) differ from what it shows, otherwise nothing is touched.
+        The old drawing removed (its filled contours or its shaded meshes), the slice is drawn again as the set's
+        filled contours (_draw_map_slice; TriContourSet has no set_array) or, with Shading on, as the shaded RGBA
+        mesh at the window's darkness (_draw_shaded_slice); _map_state keeps what it shows.
         """
         shade = self._map_shade()
         st = self._map_state.get(k)
         if (st is not None and st['sig'] == sig and st['shade'] is shade
+                and (shade is None or st['darkness'] == self.darkness)
                 and cp.array_equal(st['data'], slice_data)):
             return
         if st is not None:
@@ -5183,13 +5361,14 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
             cs, meshes = self._draw_map_slice(ax, slice_data, *sig), []
         else:
             cs, meshes = None, self._draw_shaded_slice(ax, slice_data, *sig, shade)
-        self._map_state[k] = {'cs': cs, 'mesh': meshes, 'sig': sig, 'shade': shade, 'data': slice_data.copy()}
+        self._map_state[k] = {'cs': cs, 'mesh': meshes, 'sig': sig, 'shade': shade, 'darkness': self.darkness,
+                              'data': slice_data.copy()}
 
     def _reshade_maps(self):
         """
         Machinery: in Map, every energy map drawn now shown again from what it shows (its kept data and signature,
-        _map_state) under the box's shading (_show_map_slice: only a map whose shading changed is drawn again, as
-        filled contours or as the shaded RGBA mesh), and the energy maps' colour bars given the maps' colour map
+        _map_state) under the box's shading, its light and the darkness (_show_map_slice: only a map whose shading
+        changed is drawn again, as filled contours or as the shaded RGBA mesh), and the energy maps' colour bars given the maps' colour map
         (the set's, or the shading map unshaded while Shading is on: _map_role_cmap); nothing computed, made anew or
         arranged again.  The caller draws the canvas.
         """
@@ -5213,13 +5392,51 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         nothing arranged again): the level line on the topo colour bar shown with Contour on and hidden with it
         off; the energy maps drawn again for Shading (_reshade_maps: the shaded RGBA mesh, or the set's maps and
         filled contours again); the contour slice's traces on the energy maps drawn (Contour on) or removed
-        (_draw_contour_artists); then one draw.  The info panel's settings section lists the box's controls.
+        (_draw_contour_artists); the two light panels drawn at the state (LightPanel.update: greyed, taking no
+        drags, in Height; in colour in Relief); then one draw.  The info panel's settings section lists the box's
+        controls.
         """
         if self._level_line is not None:
             self._level_line.set_visible(state.contour)
         self._reshade_maps()
         self._draw_contour_artists()
+        for p in (self.light_top, self.light_side):
+            if p is not None:
+                p.update()
         self.fig.canvas.draw_idle()
+
+    def _on_darkness(self, value):
+        """
+        Machinery: the 'darkness' box (Map's shading row; 0 to 1, clamped by the box) edited, running or not,
+        display only (no LDOS recomputed, nothing arranged again): the shading's darkness set (darkness: the L*
+        stretch's floor is 1 - darkness, in Height and Relief alike, _draw_shaded_slice), the shaded energy maps
+        drawn again at it (_reshade_maps: only while the box's Shading is on), then one draw.  The info panel's
+        settings section lists the box with the other controls.
+        """
+        self.darkness = float(value)
+        self._reshade_maps()
+        self.fig.canvas.draw_idle()
+
+    def _light_motion(self, event):
+        """
+        Machinery: a mouse motion while a light panel's dot is held (Map's shading row; LightPanel.dragging): the
+        panel sets the light by its rule from the mouse's point, inside the panel or not (LightPanel.motion: the
+        top view the azimuth only, the side view the elevation only).  When the light changed: both panels drawn
+        at it (LightPanel.update: the top view's dot moves with the elevation), the energy maps shaded again live
+        (_reshade_maps: the Relief shade made anew for the new light, _map_shade; nothing redrawn while Shading is
+        off or in Height), the info panel's azimuth and elevation lines (_light_changed), then one draw.  True
+        while a dot is held (the motion is the light's), else False.
+        """
+        for p in (self.light_top, self.light_side):
+            if p is not None and p.dragging:
+                if p.motion(event):
+                    for q in (self.light_top, self.light_side):
+                        q.update()
+                    self._reshade_maps()
+                    self._light_changed()
+                    self.fig.canvas.draw_idle()
+                return True
+        return False
 
     def _set_map_cbar(self, slot, v_min, v_max, use_diverging, has_mag, labelsize=None):
         """
@@ -5340,16 +5557,31 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         elif (isinstance(event.artist, (plt.Line2D, plt._RefLine, plt.PathCollection))
               and event.artist.get_label().startswith('marker_')):
             # A Line / Path marker's line on the Tip Height profile, a heatmap or the stripe, or its
-            # scatter on Line's or Path's LDOS topo: selected (the active marker) and dragged from there.
+            # scatter on Line's or Path's LDOS topo: selected (the active marker) and dragged from there.  The info
+            # panel's active marker line follows the selection (active_marker_idx: _decomp_changed).
             self.active_obj = ('mark_dynamic', int(event.artist.get_label().split('_')[1]))
             self.active_marker_idx = int(event.artist.get_label().split('_')[1])
             # Only what shows the active marker is updated: the spectrum, from the display cache.
             if self.is_running and self.mode in ('Line', 'Path') and self._line_disp is not None and self._spec_key is not None:
                 self._draw_spectrum(self._line_disp, None, self._line_geom[1], line_norm=self._line_norm)
-            self._markers_changed()                # the info panel's markers line stars the active marker
             self.fig.canvas.draw_idle()
 
+    def _in_spec_cell(self, event):
+        """Machinery: whether a canvas press lies in the spectrum's panel cell (ax_spec's PanelCell: its plot box with its tick labels, axis labels and title around it), from the cell's rectangle as placed (PanelCell.rect_px, from the top left; the event's y from the bottom left)."""
+        ax = getattr(self, 'ax_spec', None)
+        cell = getattr(ax, '_cell', None)
+        if ax is None or cell is None or ax not in self.fig.axes or event.x is None or event.y is None:
+            return False
+        py = self.fig.canvas.viewport().height() - event.y
+        cx, cy, cw, ch = cell.rect_px()
+        return cx <= event.x <= cx + cw and cy <= py <= cy + ch
+
     def _on_press(self, event):
+        # Map's light panels first: a left press on a light's dot while Relief grabs it (LightPanel.press; in Height
+        # they take no drags), and the press is theirs.
+        if any(p is not None and p.press(event) for p in (self.light_top, self.light_side)):
+            return
+        # The decomp's clicks always act: the window's toolbar has no Pan or Zoom (Figure.set_navigation).
         if event.inaxes == self.ax_spec:
             # One decision per press, from the lines drawn at the press (before any redraw): the pickable line on
             # top under it (the highest zorder, ties to the one drawn last).
@@ -5357,27 +5589,31 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
             top = ldos_decomp.top_artist(hits)
             if top is not None and top.get_label().startswith('emarker_') and event.button == plt.MouseButton.LEFT:
                 # A Map energy marker on top under a left press: its drag at level 0 (not on a double click's
-                # press; the toolbar's Pan / Zoom does not stop it), nothing at the other levels.
+                # press), nothing at the other levels.
                 if self.plot_level == 0 and not event.dblclick:
                     self.active_obj = ('emarker', int(top.get_label().split('_')[1]))
                 return
-            if self.fig.canvas.manager.toolbar.mode == "":
-                item = self._spec_curves[self._spec_lines.index(top)] if top in self._spec_lines else None
-                self._decomp_click(event.button, event.dblclick, item)
+            item = self._spec_curves[self._spec_lines.index(top)] if top in self._spec_lines else None
+            self._decomp_click(event.button, event.dblclick, item)
+        elif self._in_spec_cell(event):
+            # A press in the spectrum's panel cell off its plot box (its tick labels, axis labels or title): no curve
+            # under it, so a right click goes back one level and any other press does nothing (Decomp.press).
+            self._decomp_click(event.button, event.dblclick)
         elif self._in_legend(event):
             # A press in the legend panel (its stack, title or Back row): one decision, from the boxes drawn at
-            # the press (the entry under it, or none); ignored while the toolbar's Pan or Zoom is on.
-            if self.fig.canvas.manager.toolbar.mode == "":
-                self._decomp_click(event.button, event.dblclick, self._legend_entry_at(event))
+            # the press (the entry under it, or none).
+            self._decomp_click(event.button, event.dblclick, self._legend_entry_at(event))
 
     def _decomp_click(self, button, dblclick=False, item=None):
         """
-        Machinery: the one entry point of the decomp's clicks: the spectrum's presses (_on_press), the legend
-        panel's and its Back button's.  The rules are ldos_decomp's (Decomp.press): a right click goes back one
-        level, a left click on a clickable curve or entry goes down one level with its option, a double click's
-        press, a middle click, a left click on neither and the two ends do nothing.  `item`: the
-        ldos_decomp.Curve or ldos_decomp.Entry under the click, or None; the Back button is a right click
-        (button plt.MouseButton.RIGHT, no item).  When the state changed: the window's decomp line, and one
+        Machinery: the one entry point of the decomp's clicks: the spectrum's presses anywhere in its panel cell
+        (_on_press: on its plot box, or off it on its tick labels, axis labels or title, with no item), the legend
+        panel's and its Back button's; they always act (the window's toolbar has no Pan or Zoom).  The rules are
+        ldos_decomp's (Decomp.press): a right click goes back one level, a left click on a clickable curve or
+        entry goes down one level with its option, a double click's press, a middle click, a left click on
+        neither and the two ends do nothing.  `item`: the ldos_decomp.Curve or ldos_decomp.Entry under the
+        click, or None; the Back button is a right click (button plt.MouseButton.RIGHT, no item).  When the state
+        changed: the window's decomp lines (_decomp_changed), and one
         redraw (_update_all), running or not: with RUN off the spectrum, the legend panel, the heatmaps and the
         maps are drawn from the last run's data, nothing computed (last_run); otherwise nothing is redrawn.
         With RUN off and without the last run's data (_has_last_run: dropped by a change made while stopped,
@@ -5407,25 +5643,40 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
             return self.map_ld_total_gpu is not None and self.map_e_idx is not None and spec_ok
         return spec_ok
 
+    # The decomp level line's word for each level, 0 to 3 (_decomp_changed): ldos_decomp.Decomp.info's words.
+    DECOMP_LEVEL_NAMES = ('markers', 'Partition (Au / Molecule)', 'Atom Types', 'Orbitals')
+
     def _decomp_changed(self):
         """
-        Machinery: the window's decomp line in the info panel (set_info_line, key 'decomp'): the level's full
-        word and the selection (ldos_decomp.Decomp.info), once the window exists.
-        """
-        if getattr(self, 'fig', None) is not None:
-            self.fig.set_info_line('decomp', f"decomp: {self.decomp.info()}")
-
-    def _markers_changed(self):
-        """
-        Machinery: the window's markers and line lines in the info panel (set_info_line), once the window
-        exists, from the state as it is: key 'markers', every marker in index order, the active one starred
-        (Single Point / Map 'k (x, y) Å'; Line / Path 'k at d Å', d the distance along the line of the
-        sample the marker's spectrum is taken at); key 'line', the Line's ends or the Path's nodes with the
-        length (none in Single Point / Map).
+        Machinery: the window's decomp lines in the info panel (set_info_line), one per setting the decomp's clicks
+        make, once the window exists, from the decomp's state as it is (ldos_decomp.Decomp): key 'decomp level',
+        the level and its word (DECOMP_LEVEL_NAMES; the bare number for a level outside 0 to 3, as a set value is
+        not checked); key 'active marker', the active marker's index; key 'active element', the active element,
+        'none' while none is held.  The active marker and the active element are shown as held at every level.
+        No line is ever empty, so the three keep their order.
         """
         if getattr(self, 'fig', None) is None:
             return
-        active = self.active_marker_idx
+        level, names = self.decomp.level, self.DECOMP_LEVEL_NAMES
+        word = f", {names[level]}" if 0 <= level < len(names) else ''
+        self.fig.set_info_line('decomp level', f"decomp level: {level}{word}")
+        self.fig.set_info_line('active marker', f"active marker: {self.decomp.marker}")
+        element = self.decomp.element
+        self.fig.set_info_line('active element', "active element: " + (str(element) if element is not None else "none"))
+
+    def _markers_changed(self):
+        """
+        Machinery: the window's marker lines and line line in the info panel (set_info_line), once the window
+        exists, from the state as it is: one line per marker, key 'marker k' in index order, its position (Single
+        Point / Map 'marker k: (x, y) Å'; Line / Path 'marker k: at d Å', d the distance along the line of the
+        sample the marker's spectrum is taken at; the active marker has its own line, _decomp_changed); key
+        'line', the Line's ends or the Path's nodes with the length (none in Single Point / Map).  When the
+        marker count differs from the lines last set (_marker_lines_n), those lines and the line line are taken
+        out first and set again, so the marker lines stay together in index order with the line line after
+        them; no marker, no marker line.
+        """
+        if getattr(self, 'fig', None) is None:
+            return
         if self.mode in ('Line', 'Path'):
             if self.mode == 'Line':
                 p_len = float(norm(self.p2 - self.p1))
@@ -5434,14 +5685,19 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
                 p_len = float(self._build_path_xy()[2])
                 points = "nodes " + ", ".join(f"({n[0]:.2f}, {n[1]:.2f})" for n in self.path_nodes) + " Å"
             p_dist = np.linspace(0, p_len, self.npts)
-            marks = [f"{k} at {p_dist[int(r * (self.npts - 1))]:.2f} Å" + (" *" if k == active else "")
-                     for k, r in enumerate(self.marker_ratios)]
+            marks = [f"at {p_dist[int(r * (self.npts - 1))]:.2f} Å" for r in self.marker_ratios]
             line = f"line: {points}, length {p_len:.2f} Å"
         else:
-            marks = [f"{k} ({pt[0]:.2f}, {pt[1]:.2f}) Å" + (" *" if k == active else "")
-                     for k, pt in enumerate(self.marker_coords)]
+            marks = [f"({pt[0]:.2f}, {pt[1]:.2f}) Å" for pt in self.marker_coords]
             line = ''
-        self.fig.set_info_line('markers', "markers: " + (", ".join(marks) if marks else "none"))
+        if len(marks) != self._marker_lines_n:
+            # A new marker count: the old marker lines and the line line out, to be set again in order below.
+            for k in range(self._marker_lines_n):
+                self.fig.set_info_line(f'marker {k}', '')
+            self.fig.set_info_line('line', '')
+            self._marker_lines_n = len(marks)
+        for k, text in enumerate(marks):
+            self.fig.set_info_line(f'marker {k}', f"marker {k}: {text}")
         self.fig.set_info_line('line', line)
 
     def _map_energies_changed(self):
@@ -5496,6 +5752,9 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         return 'grey'
 
     def _on_motion(self, event):
+        if self._light_motion(event):
+            # A light panel's dot is held: the light follows the mouse and the maps are shaded again live.
+            return
         if self.active_obj is not None and self.active_obj[0] == 'zlevel':
             # The contour slice's level line follows the cursor's height on the bar it was picked on
             # while the button is down, wherever the cursor is sideways (_ramp_fraction).
@@ -5606,7 +5865,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
             return
         else:
             return
-        self._markers_changed()                    # the info panel's markers and line lines follow the drag
+        self._markers_changed()                    # the info panel's marker lines and line line follow the drag
         self._drag_moved = True
         self.fig.canvas.draw_idle()
 
@@ -5615,7 +5874,12 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         kept model, and, when that changed the map energies' samples, the maps saved under their new key's file
         (Map's LDOS disk cache: _save_ldos_cache); a moved line end, path node or Single Point / Map marker, its
         work done once (_update_all); a Line / Path marker, the markers put back in their order
-        (_resort_line_markers)."""
+        (_resort_line_markers); a held light panel's dot let go, the light where the last motion set it
+        (LightPanel.release; the maps were shaded live, _light_motion), nothing more."""
+        if any(p is not None and p.release(event) for p in (self.light_top, self.light_side)):
+            self._drag_moved = False
+            self.active_obj = None
+            return
         if self.active_obj is not None and self.active_obj[0] == 'emarker':
             idx = self.active_obj[1]
             target_e = self.map_e_targets[idx]

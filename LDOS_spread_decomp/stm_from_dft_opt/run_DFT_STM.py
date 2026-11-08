@@ -10,7 +10,8 @@ import os, sys
 
 from stm_from_dft import Interactive_STM_Simulator
 
-# Point at the VASP directory containing DOSCAR, LOCPOT, POSCAR/CONTCAR
+# Point at the VASP directory containing DOSCAR, LOCPOT, POSCAR/CONTCAR (every cache the simulator makes is
+# written to and looked for in the folder 'caches' inside it)
 #v_dir = r'dir/run'
 v_dir='dir/run'#'dir/run'#'dir/run'
 
@@ -18,7 +19,7 @@ v_dir='dir/run'#'dir/run'#'dir/run'
 sim = Interactive_STM_Simulator(
     filepath=v_dir,
     erange=[-3, 0.5],          # initial energy box range
-    ldos_height=1.25,              # Å above highest atom for LDOS sampling
+    ldos_height=1.25,              # the LDOS tip height (LDOS h, Å above the highest atom): the LDOS topo's, on whose heights the spectra, the stripes and the energy maps sit
     cmap_set='default 1',
     unit_cell_num=2,
     # cmap_set: the colour maps the window opens with, 'default 1' (the topo black / firebrick / yellow, MAP_CMAP,
@@ -27,13 +28,13 @@ sim = Interactive_STM_Simulator(
 
 sim.run_interactive(
     grid_res=50,                   # NxN topography grid
-    topo_bias=0.2,                # V for constant-current topography
-    topo_height=2.5,                # initial tip height above highest atom (Å)
-    ldos_bias_sign='neg',          # 'pos' or 'neg' — which box (E Max or E Min) sets the bias; an end of 0.0 makes the other end the bias
+    topo_bias=0.2,                # the topo bias (V): the global topo's, at constant current
+    topo_height=2.5,                # the topo tip height (Topo h, Å above the highest atom): the global topo's, at start
+    ldos_bias_sign='neg',          # the 'bias' toggles' starting state only: 'neg' the toggle beside E Min on, 'pos' the one beside E Max (that end is the LDOS bias V_b); an end of 0.0 starts the bias on the other end. The toggles switch it in the window
     use_decay=True,                # Decay on (its model: decay_linearized) for topography convergence and LDOS together
     decay_linearized=False,        # the Decay-on model: False 'exact' (the exact tilted barrier), True 'linearized' (the exact weight to first order in (E - V/2)/phi)
     show_decay_toggle=True,        # show the 'Decay' checkbox and its 'exact' / 'linearized' rows (False hides the three; the decay model stays as set)
-    reuse_cache=True,              # load existing global_topo_*/ldos_topo_* .npy caches; False recomputes and rewrites them
+    reuse_cache=True,              # load existing caches from the VASP folder's caches/ (global_topo_*/ldos_topo_* .npy; the Line, Path and Map LDOS line_ldos_*/path_ldos_*/map_ldos_* .npz with their _mag files); False recomputes and rewrites them
 
     # Optional: pre-set line scan endpoints
     #line_endpoints=([11.849932, -7.506780], [5.490312, 22.283022]),
