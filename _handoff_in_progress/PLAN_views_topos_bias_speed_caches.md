@@ -29,7 +29,7 @@ Draft of 2026-11-07, for Benjamin's approval. Nothing in it is implemented. Your
 - The names and titles in the code and on the plots are "global topo" and "LDOS topo".
 - The stripe's title is "Topo", and only that.
 - The topo colour bar keeps "topo". The other panels keep their names.
-- "Map Topo" and "Line Topo" in comments, docstrings and prints become "LDOS topo". So do the prints "Map Local Setpoint LDOS" and "Path Setpoint LDOS".
+- "Map Topo" and "Line Topo" in comments, docstrings and prints become "LDOS topo". So do the prints "Map Local Setpoint LDOS" and "Path Setpoint LDOS". Their exact names are your later rule, under Prints below.
 - Unchanged: the cache names `global_topo_*` and `ldos_topo_*`, and the view names.
 - Each topo gets its own variable and panel under the new names, listed for approval.
 
@@ -54,7 +54,7 @@ Draft of 2026-11-07, for Benjamin's approval. Nothing in it is implemented. Your
 
 **Titles:**
 - The global topo keeps "Global Topo: bias … V, height … Å".
-- The LDOS topo becomes "LDOS Topo: bias … V, height … Å".
+- The LDOS topo becomes "LDOS Topo: bias … V, height … Å", on every view's LDOS topo panel. That includes Line's, titled "Topo" today, and Path's new one.
 
 **Prints:**
 - **The setpoint prints** (your rule, 2026-11-08) are all "… Topo Setpoint", with only the first word naming what is converged:
@@ -89,13 +89,13 @@ Draft of 2026-11-07, for Benjamin's approval. Nothing in it is implemented. Your
 ### 3.2 The cursor readout
 
 **Your rules:**
-- While the mouse is in any panel, the window's top right shows the mouse's x and y in that panel's axes coordinates, as matplotlib's toolbar did: "(x, y) = (…, …)".
+- While the mouse is in any panel, the window's top right shows the mouse's x and y in that panel's axes coordinates, as matplotlib's toolbar did: "(x, y) = (…, …)". Your later rule (below) keeps the text "x=…  y=…" and leaves the colour bars blank.
 - One set of coordinates only, for the panel under the mouse.
-- When the mouse is on no panel, the readout goes away. No artist value.
+- When the mouse is on no panel, the readout goes away. No artist value. Your later rule (below) adds the value under the mouse on colour panels.
 
 **Now** (corrected: an earlier draft said there was none):
 - Every `qtgui` window has a toolbar across its top: Home, Pan, Zoom, Save, and at its right end a coordinates label (`qtplot.py` `NavigationToolbar.coords`, `show_coords`). It has been there since before this session.
-- On mouse motion the label shows "x=…  y=…" for the panel under the mouse, in that panel's data coordinates (turned back for a rotated panel). Off every panel it is blank.
+- On mouse motion the label shows "x=…  y=…" for the panel under the mouse, in that panel's own coordinates: the values its axes are labelled in. That holds on a turned panel too: `Axes.set_rotated` keeps the labels in data terms, and the readout swaps its screen axes back to match. On Line's corridor and Path's rectangle these are the panel's own "Perp." and "Position" axes. Off every panel it is blank.
 - It is also blank over a colour bar.
 
 **Your later rule (2026-11-08):**
@@ -114,7 +114,7 @@ Draft of 2026-11-07, for Benjamin's approval. Nothing in it is implemented. Your
   - For a filled-contour panel (60 bands) the value is the data interpolated at the mouse's point, as the contours are made from it, not the band's edge.
   - A tiled panel takes the value of the periodic data at that point.
   - Curve panels (the spectra, Tip Height) keep x and y only.
-- **Over a colour bar** the readout stays blank, as now.
+- **Over a colour bar** the readout stays blank, as now (your rule, 2026-11-08: "not the color bars … only on the other panels").
 - It goes in `qtgui`'s readout (`NavigationToolbar.show_coords`), with each colour artist giving its value at a point. So every `qtgui` window gets it on its own colour panels.
 - Everything else of your rule is already true.
 
@@ -126,7 +126,8 @@ Draft of 2026-11-07, for Benjamin's approval. Nothing in it is implemented. Your
   - is its own panel, always far left;
   - overlaps no text, axis label, tick mark or tick value; the global topo's y label and ticks sit clear of it;
   - keeps its look: the ramp, no ticks, no numbers, "topo" above it;
-  - carries the level line (the contour slice) only in Map.
+  - carries the level line (the contour slice) only in Map, where it sets the LDOS topo's iso-line on the energy maps. Single Point, Line and Path have no level line on it.
+- Line and Path gain the topo colour bar. Their heatmap colour bars are separate and stay with the heatmaps.
 - The global topo carries the crop adjusters and the auto rotate (already true: `_placement`, `_choose_orientation`).
 - The LDOS topo:
   - Map and Single Point: takes the global topo's crop and auto rotate (Map already does: `_apply_crop`, `_unit_cell_axes`).
@@ -140,6 +141,8 @@ Draft of 2026-11-07, for Benjamin's approval. Nothing in it is implemented. Your
 - Every view builds `cax_topo | ax_global_topo | ax_ldos_topo` as one `PanelRow`, with the colour bar's cell left of the global topo's y labels.
 - `ax_ldos_topo` draws `ldos_z_map` (section 5), with the atoms, unit cell and markers as each view draws them today.
 - Single Point's LDOS topo takes the crop and the rotation as Map's does.
+- In Map, the colour bar moves from beside the LDOS topo to the far left, beside the global topo. Its level line still sets the LDOS topo's iso-line on the energy maps, as a fraction of the LDOS topo's height range (`map_z`), as now.
+- Line's and Path's heatmap colour bars stay where they are, with the heatmaps.
 
 ### 3.4 Line
 
@@ -176,6 +179,7 @@ Draft of 2026-11-07, for Benjamin's approval. Nothing in it is implemented. Your
 - It turns 90° when wider than tall.
 - The LDOS h box moves above it.
 - `layouts=['row_top']`, and the second row is held to one row (`FlipBox` with `tall=0`, as in Line).
+- Path's two rows follow Line's sizing rule (3.4): the xy-spatial panels grow, keeping their ratio, up to what the row's width allows, and the 1D plots take the remaining height, with no empty band. This is read from "the same two rows as Line".
 
 ### 3.6 Map
 
@@ -186,7 +190,7 @@ Draft of 2026-11-07, for Benjamin's approval. Nothing in it is implemented. Your
 - **Size limits:**
   - a map ≤ a topo panel ≤ 2 × a map, plus the placement-panel minimum (3.9); together these set a minimum window size;
   - when the window can't fit them all, the placement-panel minimum holds, and the 2× cap gives way.
-- **Energy markers:** re-sorted into increasing energy on release, in place. Already true: `_on_rel` re-orders Map's columns.
+- **Energy markers:** after a drag, the maps are re-sorted into increasing energy on release, in place, with no rearrangement. Already true: `_on_rel` re-orders Map's columns and redraws the maps that moved in place (`_redraw_map_slice`), without arranging the window again.
 
 **Now:**
 - The top row is the global topo, the Map Topo and the colour bar.
@@ -196,7 +200,7 @@ Draft of 2026-11-07, for Benjamin's approval. Nothing in it is implemented. Your
 **Change:**
 - The top row becomes the topo sub-section, then the spectrum (plot box held equal to a topo panel's), with its legend panel at its right (part 3), over the map block (`a_top`).
 - The map block no longer holds the spectrum (no `extra` cell).
-- Its columns are the ones that make each map largest in the window at its current size, chosen again on every resize. That is how "in a full 16:9 window" is read here. Kept if `MapBlock` already does this; added if not.
+- Its columns are the ones that make each map largest in the window at its current size, chosen again on every resize. That is how "in a full 16:9 window" is read here, the reading you accepted with the other recommendations on 2026-11-08. Kept if `MapBlock` already does this; added if not.
 - `Arrangement` gains:
   - the lower limit "a map ≤ a topo panel";
   - the placement-panel minimum as a floor on the LDOS topo panel (Map's placement panel, 3.9), with the 2× cap giving way when both can't hold;
@@ -256,7 +260,11 @@ Draft of 2026-11-07, for Benjamin's approval. Nothing in it is implemented. Your
 **Change:**
 - **State:** `self.bias_end` ∈ {`'emin'`, `'emax'`}, starting at `'emin'` for `ldos_bias_sign` 'neg' and `'emax'` for 'pos'.
 - **Controls:** one toggle beside each of the E Min and E Max boxes in the bottom strip (`chk_bias_emin`, `chk_bias_emax`, each labelled "bias"), in every view, mutually exclusive as 'exact' / 'linearized' are.
-- **A box edited to 0.0 while it is the bias end:** `bias_end` moves to the other end and the toggles follow. A click on the toggle of an end at 0.0 leaves it off.
+- **An end at 0.0, however it got there:** the bias is on the other end, and the toggles follow.
+  - At start: if the end `ldos_bias_sign` picks is 0.0, `bias_end` starts on the other end.
+  - After an edit: if the bias end is edited to 0.0, `bias_end` moves to the other end.
+  - A click on the toggle of an end at 0.0 leaves it off.
+  - When that end becomes nonzero again, `bias_end` stays where it is until you click.
 - **Computing V_b:** `_bias_sample()` takes the end from `bias_end`. Its snapping, V_b and the both-zero `ValueError` stay.
 - **Recomputes:** a toggle switch runs `_on_ui_change` as a change of that end's value does.
 - **Info panel and docs:** both toggles appear in the info panel's settings. `run_DFT_STM.py`'s `ldos_bias_sign` comment, the README and the `_bias_sample` docstring follow. `sim_wrapper` and `run_stm_decomp.py` keep passing `ldos_bias_sign` as the start state.
@@ -268,7 +276,7 @@ Draft of 2026-11-07, for Benjamin's approval. Nothing in it is implemented. Your
 - **The LDOS topo panels of Line and Path:** show the LDOS topo, from memory or the `ldos_topo_*` cache when it is already computed at that V_b. Otherwise they compute it and save it under that bias's cache name.
 - **The stripes keep their own quick line convergence, with no cache of their own.** Your later rule (9.2): their heights are saved inside the Line / Path LDOS cache, with the spectra computed at them. The rules for the convergence:
   - **Starting heights:** the LDOS topo interpolated at the path's sample points, bilinear and periodic in the cell's fractional coordinates. The duplicate edge row and column are left out of the interpolation only.
-  - **The setpoint:** at the location of the LDOS topo's tallest height in the unit cell, even when the line or path doesn't go there.
+  - **The setpoint:** at the location of the LDOS topo's tallest height in the unit cell, even when the line or path doesn't go there. The stripes then sit on the same LDOS topo tip height as the LDOS topo itself: the stripe's setpoint equals the LDOS topo's.
     - **The value:** the integrated LDOS at V_b at that point's xy and its LDOS topo height, by the same call the LDOS topo makes.
     - **Ties at the tallest height:** the one with the largest integrated LDOS, which is the point the LDOS topo's own setpoint came from.
     - **From the cache:** only the heights are kept, so the value is computed again at those points.
@@ -286,7 +294,7 @@ Draft of 2026-11-07, for Benjamin's approval. Nothing in it is implemented. Your
   - A bias or LDOS h change in Line or Path therefore converges the whole-cell LDOS topo too, unless it is in memory or cached.
 - **The stripes (Line and Path):**
   - start from the bilinear periodic interpolation of `ldos_z_map` (the grid without its duplicate last row and column) at the sample points;
-  - take their setpoint from `_topo_current` at the tallest grid point of `ldos_z_map`, ties to the largest value;
+  - take their setpoint from `_topo_current` at the tallest grid point of `ldos_z_map`, ties to the largest value. That is the same value the LDOS topo's own setpoint was, so the stripes sit on the LDOS topo's constant-current height;
   - then `_converge_tip_height` as now.
   - On a Line / Path LDOS cache hit (9.2), the stripe's heights come from the cache and the stripe is not converged again.
   - G1 (b) stays: Line and Path keep their own heights under their own keys.
