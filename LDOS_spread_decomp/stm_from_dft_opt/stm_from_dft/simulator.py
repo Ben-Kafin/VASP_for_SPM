@@ -1356,11 +1356,12 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
     decomposition wrapper's σ box and its 'Send to decomp' buttons) and the RUN button with the
     toggles; the panel area of the view (Single Point: Global Topo | Topo h | Partitioned LDOS,
     its legend panel at its right; Line / Path: the top row Global Topo | Topo h | LDOS h | the
-    cluster (Topo box, stripe, one heatmap per partition, colour bar) over the tip-height profile
-    and the spectrum, its legend panel at its right; Map: Global Topo | Topo h | LDOS h | Map Topo
-    over the rows of energy maps, the Partitioned LDOS one cell of the map block, its legend
-    panel at its right); the bottom strip of number boxes (Cells, Path Pts, Markers, E Pts,
-    E Min, E Max, LDOS γ) and Map's 'cmap norm' and Contour / Shading boxes.  Every slider of
+    cluster (Line's LDOS Topo, the stripe 'Topo', one heatmap per partition, colour bar) over the
+    tip-height profile and the spectrum, its legend panel at its right; Map: Global Topo | Topo h |
+    LDOS h | LDOS Topo over the rows of energy maps, the Partitioned LDOS one cell of the map block,
+    its legend panel at its right); the bottom strip of number boxes (Cells, Path Pts, Markers, E Pts,
+    E Min and E Max, each with its 'bias' toggle beside it, LDOS γ) and Map's 'cmap norm' and
+    Contour / Shading boxes.  Every slider of
     the old figure is a number box (the arrow keys step its digits); the orbital hover labels
     are widgets.HoverLabels.
     The physics and the caches are Unified_STM_Simulator's, called as before.
@@ -1442,6 +1443,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         self.cached_marker_coords, self.cached_spec_ldos = None, None   # Single Point's marker spectra (Map keeps its own, map_spec_*)
         self.cached_spec_ldos_gpu = None                                # the GPU copy the display works from
         self.cached_spec_window = None                                  # the window's snapped ends the marker spectra were computed over
+        self.cached_spec_z_key = None                                   # the LDOS topo's key (ldos_z_key) their tip heights were taken at
         self.cached_spec_eg = None                                      # the marker spectra's energies, kept with them (sim_wrapper reads them)
         self.cached_current, self.cached_current_E = None, None              # the Line / Path points
         self.cached_spec_current, self.cached_spec_current_E = None, None    # the Single Point markers
@@ -1450,9 +1452,10 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         # ends and count they were last formed from (map_typed: E Min, E Max, E Pts); the grid's LDOS at them
         # (map_ld_*, with the GPU copies the display works from) and its current (map_current at map_current_E);
         # the window's snapped ends (map_window), the decay model (map_d_ldos), the broadening (map_broadening, a
-        # copy of extra_broadening) and the LDOS-topo heights (map_z, which the Map Topo, the contour slice and the
-        # shading are drawn from, with the bias map_bias and the LDOS h map_ldos_h they were computed at, the Map
-        # Topo's title) they were computed with; Map's marker spectra (map_spec_ldos, with the GPU copy
+        # copy of extra_broadening) and the LDOS-topo heights (map_z, Map's copy of the LDOS topo ldos_z_map its maps
+        # were computed at, which Map's LDOS topo panel, the contour slice and the shading are drawn from, with the
+        # bias map_bias and the LDOS h map_ldos_h they were computed at, that panel's title) they were computed with;
+        # Map's marker spectra (map_spec_ldos, with the GPU copy
         # map_spec_ldos_gpu), their energies (map_eg), the markers they were computed for (map_marker_coords), their
         # current (map_spec_current at map_spec_current_E) and the decay model and the broadening they were
         # computed with (map_spec_d_ldos, map_spec_broadening).
@@ -1464,6 +1467,13 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         self.map_spec_ldos, self.map_spec_ldos_gpu, self.map_marker_coords = None, None, None
         self.map_spec_current, self.map_spec_current_E = None, None
         self.map_spec_d_ldos, self.map_spec_broadening = None, None
+        # The two topos: the global topo (global_z_map: the topography at the topo bias and the topo tip height,
+        # run_interactive, _recompute_global_topo) and the LDOS topo (ldos_z_map: the topography at the LDOS bias V_b
+        # and the LDOS tip height, the only one at the LDOS h), each over the unit cell's grid (grid_xy) and tiled for
+        # display.  The LDOS topo is shared by every view (_ensure_ldos_topo: from memory, its ldos_topo_* cache or
+        # converged and saved), kept with its key ldos_z_key = (V_b, LDOS h, the decay model, the broadening); None
+        # until one is computed.
+        self.ldos_z_map, self.ldos_z_key = None, None
 
         # --- Path mode state ---
         self.path = None                  # initial seed: all atom-index lists [[154],...] OR all [x,y] coords; no mix
@@ -1473,10 +1483,10 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         self.cached_path_extend = None
         self.fig = None                   # the window (run_interactive); its controls are made once (_make_controls)
         self.cell_rotated = False         # the unit-cell panels turned 90 degrees (Axes.set_rotated): _choose_orientation
-        self.z_frac = 0.5                 # the contour slice: its level as a fraction of the Map Topo's height range
+        self.z_frac = 0.5                 # the contour slice: its level as a fraction of the LDOS topo's height range (map_z)
         self._contour_artists = []        # the slice's traces on the energy maps
         self._level_line = None           # the slice's level line on the topo colour bar
-        self.cax_topo = None              # Map: the topo colour bar beside the Map Topo
+        self.cax_topo = None              # the topo colour bar: the ramp, 'topo' above it; in Map it carries the contour slice's level line
         self._orient_pending = False      # an orientation decision waiting for the arrangement's first size
         self._extra_boxes = []            # control boxes another window adds to the left column (add_control_box)
 
@@ -1526,6 +1536,12 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         if topo_bias is None or topo_bias == 0:
             raise ValueError(f"topo_bias must be a nonzero bias voltage in volts; received {topo_bias!r}.")
         self.ldos_bias_sign = ldos_bias_sign
+        # The bias end (the 'bias' toggles beside E Min and E Max, exactly one on: _on_bias_toggle): 'emin' or
+        # 'emax'.  ldos_bias_sign sets only its start ('neg': E Min, 'pos': E Max); when the end it picks is 0.0,
+        # the bias starts on the other end.
+        self.bias_end = 'emin' if str(ldos_bias_sign).lower() in ['neg', '-', 'negative'] else 'emax'
+        if float(self.erange[0 if self.bias_end == 'emin' else 1]) == 0.0:
+            self.bias_end = 'emax' if self.bias_end == 'emin' else 'emin'
         self.use_decay = use_decay
         self.decay_linearized = bool(decay_linearized)
         self.reuse_cache = reuse_cache
@@ -1588,22 +1604,22 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         grid_xy_gpu = cp.array(grid_xy, dtype=cp.float32)
         z_fixed = cp.full(grid_xy_gpu.shape[0], self.z_highest_atom + topo_height, dtype=cp.float32)
         cache_name = f"global_topo_{self.global_topo_bias}V_{topo_height}A_{grid_res}px{self._broadening_cache_suffix()}{self._unit_cell_cache_suffix()}{self._decay_cache_suffix()}_fold{self._precision_cache_suffix()}.npy"
+        # The global topo (global_z_map, its own: the LDOS topo is ldos_z_map, _ensure_ldos_topo).
         if self.reuse_cache and exists(cache_name):
             print(f"[*] Loading Cached Global Topography: {cache_name}")
-            self.current_z_map = np.load(cache_name)
-            z_map_gpu = cp.array(self.current_z_map, dtype=cp.float32)
+            self.global_z_map = np.load(cache_name)
+            z_map_gpu = cp.array(self.global_z_map, dtype=cp.float32)
         else:
             print(f"[*] Cache not found. Calculating Global Topography: {cache_name}")
             init_cur, t_samples = self._topo_current(cp.hstack([grid_xy_gpu, z_fixed[:, None]]),
                                                      self.global_topo_bias, self._effective_decay_model())
             target_setp = cp.max(init_cur)
-            print(f"[*] Global Setpoint LDOS: {float(target_setp):.6e}")
+            print(f"[*] Global Topo Setpoint: {float(target_setp):.6e}")
             z_map_gpu = self._converge_tip_height(z_fixed, grid_xy_gpu, t_samples, self.global_topo_bias, target_setp,
                                                   decay_model=self._effective_decay_model())
-            self.current_z_map = cp.asnumpy(z_map_gpu)
-            np.save(cache_name, self.current_z_map)
+            self.global_z_map = cp.asnumpy(z_map_gpu)
+            np.save(cache_name, self.global_z_map)
         self.grid_xy = grid_xy
-        self.global_z_map = self.current_z_map.copy()
         self.grid_xy_gpu = grid_xy_gpu
         self.fig = plt.figure(figsize=DESIGN, fill_screen=True)   # opened on the screen's available area; never trimmed to its panels
         self._make_controls()
@@ -1633,27 +1649,59 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
 
     def _bias_sample(self):
         """
-        Machinery: the window's bias end and its snapped DOS sample, (index, V_b).  E Min = 0.0 makes E
-        Max the bias end, E Max = 0.0 makes E Min the bias end; otherwise ldos_bias_sign decides, as
-        before.  V_b is the energy of the bias end's sample snapped by that end's own rule (_snap 'emin'
-        or 'emax'), a Python float (the parser's float64 value); it replaces the typed bias everywhere it
-        is used (the topography window's end, the frozen-bias weight, the cached-bias comparisons, the
-        cache names, the titles).  With both ends 0.0 the bias end is exactly 0 V: (ZERO_V, 0.0) (the
-        topography raises its ValueError for it).
+        Machinery: the window's bias end and its snapped DOS sample, (index, V_b).  The bias end is the one
+        whose 'bias' toggle is on (bias_end: 'emin' or 'emax'; ldos_bias_sign set only its start, and an end at
+        0.0 has the bias on the other end: run_interactive, _on_end_box, _on_bias_toggle).  V_b is the energy of
+        the bias end's sample snapped by that end's own rule (_snap 'emin' or 'emax'), a Python float (the
+        parser's float64 value); it replaces the typed bias everywhere it is used (the topography window's end,
+        the frozen-bias weight, the cached-bias comparisons, the cache names, the titles).  With both ends 0.0
+        the bias end is exactly 0 V: (ZERO_V, 0.0) (the topography raises its ValueError for it).
         """
-        emin, emax = self.s_emin.val, self.s_emax.val
-        if emin == 0.0:
-            end, kind = emax, 'emax'
-        elif emax == 0.0:
-            end, kind = emin, 'emin'
-        elif str(self.ldos_bias_sign).lower() in ['neg', '-', 'negative']:
-            end, kind = emin, 'emin'
+        if self.bias_end == 'emin':
+            end, kind = self.s_emin.val, 'emin'
         else:
-            end, kind = emax, 'emax'
+            end, kind = self.s_emax.val, 'emax'
         i = _snap(self.energies, end, kind)
         if i is ZERO_V:
             return ZERO_V, 0.0
         return i, float(self.energies[i])
+
+    def _set_bias_toggles(self):
+        """Machinery: the two 'bias' toggles set to the bias end (bias_end): the one beside its box on, the other off (Check.set, never firing)."""
+        self.chk_bias_emin.set(self.bias_end == 'emin')
+        self.chk_bias_emax.set(self.bias_end == 'emax')
+
+    def _on_end_box(self, end, *args):
+        """
+        Machinery: an edit of E Min (end 'emin') or E Max ('emax'): when the bias end's box is now 0.0, the bias
+        moves to the other end if this edit was of the bias end itself (an end edited to 0.0) or the other end is
+        not 0.0 (an end at 0.0, however it got there, has the bias on the other end); otherwise it stays where it
+        is, also when an end becomes nonzero again, until a toggle is clicked.  With both ends at 0.0 it stays an
+        error (the topography's ValueError).  The toggles follow, then the change as every value box's
+        (_on_ui_change).
+        """
+        box = {'emin': self.s_emin, 'emax': self.s_emax}
+        other = 'emax' if self.bias_end == 'emin' else 'emin'
+        if box[self.bias_end].val == 0.0 and (end == self.bias_end or box[other].val != 0.0):
+            self.bias_end = other
+            self._set_bias_toggles()
+        self._on_ui_change(*args)
+
+    def _on_bias_toggle(self, end, flag):
+        """
+        Machinery: a 'bias' toggle clicked (controls.Check: already flipped, `flag` its new state), beside E Min
+        (end 'emin') or E Max ('emax'): exactly one is on and one always is, as 'exact' / 'linearized'.  A click on
+        the bias end's toggle leaves it on; a click on the other end's, while that end is 0.0, leaves it off;
+        otherwise the bias moves to that end, the other toggle goes off, and the window recomputes as for a change
+        of that end's value (_on_ui_change: V_b from the new end, _bias_sample, with the same caches).
+        """
+        box = self.s_emin if end == 'emin' else self.s_emax
+        if end == self.bias_end or box.val == 0.0:
+            self._set_bias_toggles()
+            return
+        self.bias_end = end
+        self._set_bias_toggles()
+        self._on_ui_change(box.val)
 
     def _feenstra_iv(self, which):
         """
@@ -1729,7 +1777,8 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         """
         Machinery: every control of the window, made once per figure (a window owns its state; the controls
         only report): the view radio, RUN, the toggles, the broadening box, the tip-height boxes
-        with their Rerun buttons, the bottom strip's boxes, the cluster's label; the pick / drag
+        with their Rerun buttons, the bottom strip's boxes (E Min and E Max each with its 'bias' toggle
+        beside it, in its frame), the cluster's label; the pick / drag
         handlers connected once.  The window's layout is installed here; _build_ui fills the
         panel area per view and shows the controls of the view.
         """
@@ -1772,10 +1821,21 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         self.s_nepts = controls.make(fig, 'E Pts', value=5 if self.cached_nepts is None else self.cached_nepts)
         self.s_emin = controls.make(fig, 'E Min', value=self.erange[0])
         self.s_emax = controls.make(fig, 'E Max', value=self.erange[1])
+        # The 'bias' toggles, one beside E Min and one beside E Max (every view): which end is the bias (bias_end),
+        # exactly one on (_on_bias_toggle); the info panel tells them apart by their setting labels.  An edit of
+        # either end goes through _on_end_box (an end at 0.0 has the bias on the other end) to _on_ui_change.
+        self.chk_bias_emin = controls.make(fig, 'bias', value=self.bias_end == 'emin')
+        self.chk_bias_emax = controls.make(fig, 'bias', value=self.bias_end == 'emax')
+        self.chk_bias_emin.setting_label = 'E Min bias'
+        self.chk_bias_emax.setting_label = 'E Max bias'
+        self.chk_bias_emin.on_change(lambda flag: self._on_bias_toggle('emin', flag))
+        self.chk_bias_emax.on_change(lambda flag: self._on_bias_toggle('emax', flag))
+        self.s_emin.on_change(lambda *a: self._on_end_box('emin', *a))
+        self.s_emax.on_change(lambda *a: self._on_end_box('emax', *a))
         # LDOS heatmap colour-map gamma (PowerNorm): 1.0 = linear; <1 squashes the colour map
         # toward the minimum; >1 compresses the low end. Only re-colours (no recompute).
         self.s_ldos_gamma = controls.GammaBox(fig, self.ldos_gamma, name='LDOS γ', fmt='.2f')
-        for c in (self.s_cell, self.s_path_pts, self.s_num_marks, self.s_nepts, self.s_emin, self.s_emax, self.s_ldos_gamma):
+        for c in (self.s_cell, self.s_path_pts, self.s_num_marks, self.s_nepts, self.s_ldos_gamma):
             c.on_change(self._on_ui_change)
         # 'cmap norm' (Map): each energy map its own colour scale and bar, or one scale and bar for all.
         self.chk_cmap_norm = controls.make(fig, 'cmap norm', value=self.cmap_norm)
@@ -1869,10 +1929,11 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         main.addLayout(self._panel_area, 1)
         strip = controls.FlowLayout()
         self._strip_boxes = {}
+        beside = {'E Min': self.chk_bias_emin, 'E Max': self.chk_bias_emax}    # each end's 'bias' toggle, in its frame
         for c, name in ((self.s_cell, 'Cells'), (self.s_path_pts, 'Path Pts'), (self.s_num_marks, 'Markers'),
                         (self.s_nepts, 'E Pts'), (self.s_emin, 'E Min'), (self.s_emax, 'E Max'),
                         (self.s_ldos_gamma, 'LDOS γ'), (self.chk_cmap_norm, 'cmap norm')):
-            frame = controls.box(c)
+            frame = controls.box(c, beside.get(name))
             self._strip_boxes[name] = frame
             strip.addWidget(frame)
         # The Contour / Shading box after 'cmap norm', in its own frame (the ShadeBox's qt).
@@ -2303,7 +2364,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
             if ax in self.fig.axes:
                 ax.remove()
         self.line_decomp_axes = []
-        for name in ('ax_ldos', 'ax_stripe', 'ax_line_topo', 'cax'):
+        for name in ('ax_ldos', 'ax_stripe', 'ax_ldos_topo', 'cax'):
             ax = getattr(self, name, None)
             if ax is not None and ax in self.fig.axes:
                 ax.remove()
@@ -2385,7 +2446,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         above and beside it); in Line / Path the heatmap row (its label over it), sized and scored
         with each heatmap counted as square, then placed in its whole slot, which its heatmaps fill
         (Arrangement fill_slot, PanelCell.fill_as); in Map the
-        Global Topo and Map Topo pair (their boxes above) and the energy maps' wrapping block.  The
+        Global Topo and LDOS Topo pair (their boxes above) and the energy maps' wrapping block.  The
         curve panels (Tip Height and Partitioned LDOS, side by side in Line, in Path beside or over each other by their room)
         take the room the heatmaps and topographies leave, at least their readable size
         (_curves_readable), the topographies at most twice a heatmap (_topo_cap); in Map the
@@ -2420,17 +2481,17 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         if mode == 'Single Point':
             # The placement topo; the Partitioned LDOS beside it, a first-class panel (free_scored), with its
             # legend panel at its right (one sub-section).
-            self.ax_map, topo = self._placement()
+            self.ax_global_topo, topo = self._placement()
             self.ax_spec, spec_cell = self._cell_axes()
             groups, free = [topo], self._spectrum_and_legend(spec_cell)
-            self.marks = self.ax_map.scatter([], [], s=150, edgecolors='black', zorder=15, picker=5)
+            self.marks = self.ax_global_topo.scatter([], [], s=150, edgecolors='black', zorder=15, picker=5)
         elif mode in ('Line', 'Path'):
-            # The placement topo; the heatmap row (built by _update_all, again only when its panel
-            # count changes; the LDOS h box above the Line Topo panel or above the Path stripe) under
+            # The placement topo (the global topo); the heatmap row (built by _update_all, again only when its panel
+            # count changes; the LDOS h box above Line's LDOS topo panel or above the Path stripe) under
             # its label, filling its whole slot (fill_slot); the Tip Height
             # profile and the spectrum in the room left (at least readable: rule 11), in Line side by side in every
             # room's shape, in Path side by side or stacked by that room's shape.
-            self.ax_map, topo = self._placement()
+            self.ax_global_topo, topo = self._placement()
             self._cluster_row = plt.PanelRow(spacing=4)
             cluster = controls.Titled(plt.RowWidget(self._cluster_row), self._cluster_label.qt)
             self.ax_prof, prof_cell = self._cell_axes()
@@ -2443,25 +2504,25 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
                                                              spacing=10, **flip_kw)
             # Until RUN builds the row, the LDOS h box stands in it alone: reachable, and between no panels.
             self._cluster_row.addWidget(self._box_ldos_h, 0)
-            self.line_art, = self.ax_map.plot([], [], 'r--', lw=2.5, zorder=5)
+            self.line_art, = self.ax_global_topo.plot([], [], 'r--', lw=2.5, zorder=5)
             if mode == 'Line':
-                self.ends = self.ax_map.scatter([], [], c='white', edgecolors='red', s=100, zorder=10, picker=5)
+                self.ends = self.ax_global_topo.scatter([], [], c='white', edgecolors='red', s=100, zorder=10, picker=5)
             else:  # Path: draggable nodes instead of two endpoints
-                self.path_pts = self.ax_map.scatter([], [], c='white', edgecolors='red', s=100, zorder=10, picker=5)
-            self.marks = self.ax_map.scatter([], [], s=150, edgecolors='black', zorder=15, picker=5)
-            self.ax_line_topo = self.ax_stripe = self.ax_ldos = self.cax = None
+                self.path_pts = self.ax_global_topo.scatter([], [], c='white', edgecolors='red', s=100, zorder=10, picker=5)
+            self.marks = self.ax_global_topo.scatter([], [], s=150, edgecolors='black', zorder=15, picker=5)
+            self.ax_ldos_topo = self.ax_stripe = self.ax_ldos = self.cax = None
         elif mode == 'Map':
-            # The Global Topo (the crop panel) and the Map Topo (LDOS h above it) side by side as one
-            # shaped row; the energy maps as a wrapping block under its label (rebuilt by _update_all
+            # The Global Topo (the crop panel) and the LDOS Topo (LDOS h above it; the markers are placed on it)
+            # side by side as one shaped row; the energy maps as a wrapping block under its label (rebuilt by _update_all
             # when the counts change) with the spectrum as one of its cells (rule 11).  The topo panels keep
             # set_aspect('equal') and take the same crop.
             row = plt.PanelRow(spacing=10)
-            self.ax_map_global, topo = self._placement()
+            self.ax_global_topo, topo = self._placement()
             row.addWidget(topo, 10)
-            self.ax_map = self._panel_with_box(row, self._box_ldos_h, stretch=10)
-            self.ax_map.set_rotated(self.cell_rotated)
-            # The topo colour bar beside the Map Topo (the browser's: the ramp, no numbers), carrying the
-            # contour slice's level line; the Map Topo's iso-line at that level goes on every energy map while
+            self.ax_ldos_topo = self._panel_with_box(row, self._box_ldos_h, stretch=10)
+            self.ax_ldos_topo.set_rotated(self.cell_rotated)
+            # The topo colour bar beside the LDOS topo (the browser's: the ramp, no numbers), carrying the
+            # contour slice's level line; the LDOS topo's iso-line at that level goes on every energy map while
             # the box's Contour is on.
             self.cax_topo = self._panel(row, inner_w=9)
             self._draw_topo_cbar(self.cax_topo)
@@ -2479,8 +2540,8 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
             groups, free = [topos, maps], None
             self.map_axes = []
             self.cax_list = []
-            self.marks = self.ax_map.scatter([], [], s=150, edgecolors='black', zorder=15, picker=5)
-            fig.align_row(self.ax_map_global, self.ax_map, self.cax_topo)
+            self.marks = self.ax_ldos_topo.scatter([], [], s=150, edgecolors='black', zorder=15, picker=5)
+            fig.align_row(self.ax_global_topo, self.ax_ldos_topo, self.cax_topo)
         # The sizing (rule 11): the heatmaps and the topographies are sized first and fill the window (the
         # topographies at most twice a heatmap, in width and in height); the curve panels, at least readable,
         # take the room those leave (Line / Path: the Tip Height profile and the spectrum in the room beside
@@ -2550,10 +2611,10 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
     TOPO_MAX_FACTOR = 2.0              # a topography's plot box at most this many times a heatmap's (Map, Line, Path)
 
     def _topo_axes(self):
-        """Machinery: the topography panels of the view: the placement topo (Global Topo in Map) and the Map Topo."""
+        """Machinery: the topography panels of the view: the global topo (ax_global_topo, the placement topo), and in Map the LDOS topo (ax_ldos_topo)."""
         if self.mode == 'Map':
-            return [a for a in (getattr(self, 'ax_map_global', None), getattr(self, 'ax_map', None)) if a is not None]
-        return [a for a in (getattr(self, 'ax_map', None),) if a is not None]
+            return [a for a in (getattr(self, 'ax_global_topo', None), getattr(self, 'ax_ldos_topo', None)) if a is not None]
+        return [a for a in (getattr(self, 'ax_global_topo', None),) if a is not None]
 
     def _topo_cap(self, mode, groups):
         """
@@ -2596,14 +2657,14 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
                 hm_tb = max(a._decor_px()[1] + a._decor_px()[3] for a in hm)
                 h = max(rect[3] - heat_group._label_h() - hm_tb, 1.0)
                 if mode == 'Line':
-                    return (h, h)      # one heatmap's box counted as square (ratio 1.0): the row's first panel is the Line Topo (2:3)
+                    return (h, h)      # one heatmap's box counted as square (ratio 1.0): the row's first panel is Line's LDOS topo (2:3)
                 return with_width(h, hm[0])
         return (topo_group, heat_group, self.TOPO_MAX_FACTOR, box_a, box_b)
 
-    # --- the contour slice (the level line on the topo colour bar, the Map Topo's iso-line on the energy maps) ---
+    # --- the contour slice (the level line on the topo colour bar, the LDOS topo's iso-line on the energy maps) ---
 
     def _draw_topo_cbar(self, ax):
-        """Machinery: the topo colour bar beside the Map Topo (the sm4_Browser's draw_topo_cbar): the topo colour map's ramp, low at the bottom, no ticks and no numbers, 'topo' above it; it spans 0 to 1, the fraction of the Map Topo's height range, and carries the contour slice's level line."""
+        """Machinery: the topo colour bar (cax_topo; the sm4_Browser's draw_topo_cbar): the topo colour map's ramp, low at the bottom, no ticks and no numbers, 'topo' above it; it spans 0 to 1, the fraction of the LDOS topo's height range (map_z), and in Map carries the contour slice's level line."""
         ax.set_navigate(False)
         ramp = np.linspace(0.0, 1.0, 256)[:, None]
         ax.imshow(ramp, aspect='auto', origin='lower', cmap=self._cmap('topo'), extent=[0, 1, 0, 1])
@@ -2620,7 +2681,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         self._level_line.set_visible(self.shade_state.contour)
 
     def _set_level(self, frac):
-        """Machinery: the contour slice's level set to `frac` of the Map Topo's height range (clipped to 0 .. 1): the level line moved, the traces made anew on every energy map, the window's contour level line (_contour_level_changed)."""
+        """Machinery: the contour slice's level set to `frac` of the LDOS topo's height range (map_z; clipped to 0 .. 1): the level line moved, the traces made anew on every energy map, the window's contour level line (_contour_level_changed)."""
         frac = float(np.clip(frac, 0.0, 1.0))
         if frac == self.z_frac:
             return
@@ -2644,9 +2705,9 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         """
         Machinery: the contour slice's traces in the plane, (n, 2, 2): contour.iso_segments
         on the LDOS-topo heights Map's maps were computed at (map_z, Map's own, grid_res x grid_res over the
-        unit cell's fractional grid, as the Map Topo is drawn) at the level
+        unit cell's fractional grid, as Map's LDOS topo panel is drawn) at the level
         z_frac of their range (the lowest to the highest height, the colour
-        range the Map Topo is drawn on), placed on the lattice at the 2 x 2
+        range Map's LDOS topo panel is drawn on), placed on the lattice at the 2 x 2
         images an energy map shows (contour.to_cell, _cell_offsets_2x2); empty
         without heights.
         """
@@ -2697,10 +2758,10 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
     ORIENT_HYSTERESIS = 0.05           # the panels keep their orientation unless the other scores better by this
 
     def _unit_cell_axes(self):
-        """Machinery: the panels drawn in the unit cell's frame, which turn together: the placement topo, and in Map the Map Topo and every energy map.  The Line / Path heatmap row never turns."""
+        """Machinery: the panels drawn in the unit cell's frame, which turn together: the placement topo, and in Map the LDOS topo and every energy map.  The Line / Path heatmap row never turns."""
         axs = [getattr(self, '_crop_ax', None)]
         if self.mode == 'Map':
-            axs.append(getattr(self, 'ax_map', None))
+            axs.append(getattr(self, 'ax_ldos_topo', None))
             axs.extend(getattr(self, 'map_axes', None) or [])
         figure_axes = self.fig.axes
         return [a for a in axs if a is not None and a in figure_axes]
@@ -2893,13 +2954,13 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         return out[0], out[1]
 
     def _apply_crop(self):
-        """Machinery: the placement topo's limits at the applied crop (both axes; the full extent where there is none); in Map the Map Topo takes the same; the window's crop line follows (_crop_changed)."""
+        """Machinery: the placement topo's limits at the applied crop (both axes; the full extent where there is none); in Map the LDOS topo takes the same; the window's crop line follows (_crop_changed)."""
         (ex, ey) = self._full_extent()
         x_rng = self.crop_x if self.crop_x is not None else ex
         y_rng = self.crop_y if self.crop_y is not None else ey
         axes = [self._crop_ax]
-        if self.mode == 'Map' and getattr(self, 'ax_map', None) is not None:
-            axes.append(self.ax_map)
+        if self.mode == 'Map' and getattr(self, 'ax_ldos_topo', None) is not None:
+            axes.append(self.ax_ldos_topo)
         for ax in axes:
             if ax is not None and ax in self.fig.axes:
                 ax.set_xlim(*x_rng)
@@ -3036,8 +3097,8 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         """
         Machinery: the colour-map set chosen ('cmap set': 'default 1' or 'default 2', cmap_shading.SETS), running or not:
         every panel drawn now takes, in place (set_cmap; nothing recomputed, made anew or arranged again), the
-        new set's map of the role it is drawn in: the filled contours of the topo panels (the global topo, the
-        Map Topo, the Line Topo) and the topo colour bar's ramp ('topo'), the Line / Path stripe ('topo'), each
+        new set's map of the role it is drawn in: the filled contours of the topo panels (the global topo and the
+        LDOS topo) and the topo colour bar's ramp ('topo'), the Line / Path stripe ('topo'), each
         heatmap (its colour bar follows its mesh), each energy map drawn as filled contours (the role of the branch
         it was drawn in, from its _set_map_slice signature) and the energy maps' colour bars; then one draw.  A
         shaded energy map and a colour bar showing a shading map keep them (the shading maps are the same in both
@@ -3058,7 +3119,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
 
         topo = self._cmap('topo')
         figure_axes = self.fig.axes
-        for ax in (self.ax_map, getattr(self, 'ax_map_global', None), self.ax_line_topo):
+        for ax in (getattr(self, 'ax_global_topo', None), getattr(self, 'ax_ldos_topo', None)):
             if ax is not None and ax in figure_axes:
                 for cs in ax.collections:
                     if isinstance(cs, plt.TriContourSet):
@@ -3120,40 +3181,149 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
                 print(f"marker_positions=[{pos_str}]")
 
     def _recompute_global_topo(self):
-        """Machinery: re-run Phase 1 global topography with current broadened DOS (cache-aware), at global_topo_bias (V_b, the snapped topo_bias)."""
+        """Machinery: re-run Phase 1 global topography with current broadened DOS (cache-aware), at global_topo_bias (V_b, the snapped topo_bias), into the global topo's own record global_z_map (the LDOS topo, ldos_z_map, is not touched)."""
         grid_res = int(np.sqrt(len(self.grid_xy)))
         cache_name = f"global_topo_{self.global_topo_bias}V_{self.topo_height}A_{grid_res}px{self._broadening_cache_suffix()}{self._unit_cell_cache_suffix()}{self._decay_cache_suffix()}_fold{self._precision_cache_suffix()}.npy"
         if self.reuse_cache and exists(cache_name):
             print(f"[*] Loading Cached Global Topography: {cache_name}")
-            self.current_z_map = np.load(cache_name)
+            self.global_z_map = np.load(cache_name)
         else:
             print(f"[*] Calculating Global Topography with broadening: {cache_name}")
             z_fixed = cp.full(self.grid_xy_gpu.shape[0], self.z_highest_atom + self.topo_height, dtype=cp.float32)
             init_cur, t_samples = self._topo_current(cp.hstack([self.grid_xy_gpu, z_fixed[:, None]]),
                                                      self.global_topo_bias, self._effective_decay_model())
             target_setp = cp.max(init_cur)
-            print(f"[*] Global Setpoint LDOS: {float(target_setp):.6e}")
+            print(f"[*] Global Topo Setpoint: {float(target_setp):.6e}")
             z_map_gpu = self._converge_tip_height(z_fixed, self.grid_xy_gpu, t_samples, self.global_topo_bias, target_setp,
                                                   decay_model=self._effective_decay_model())
-            self.current_z_map = cp.asnumpy(z_map_gpu)
-            np.save(cache_name, self.current_z_map)
-        self.global_z_map = self.current_z_map.copy()
+            self.global_z_map = cp.asnumpy(z_map_gpu)
+            np.save(cache_name, self.global_z_map)
+
+    def _ldos_topo_key(self, v_b, decay_model):
+        """Machinery: the LDOS topo's key for the window's state at the bias V_b (_bias_sample) and the decay model decay_model (_effective_decay_model's names): (V_b, LDOS h, the decay model, the broadening as sorted (type, σ) pairs), the key ldos_z_key is kept with."""
+        return (v_b, self.ldos_height, decay_model, tuple(sorted(self.extra_broadening.items())))
+
+    def _ensure_ldos_topo(self, v_b, decay_model):
+        """
+        Machinery: the LDOS topo (ldos_z_map, shared by every view) at the window's key (_ldos_topo_key: V_b, LDOS
+        h, the decay model, the broadening), returned (grid_res x grid_res heights over grid_xy, NumPy): from
+        memory when ldos_z_key is that key; else from its cache ldos_topo_*.npy (reuse_cache on), or converged on
+        the whole unit cell's grid and saved under that name, as Map's code did before: from the flat start
+        z_highest_atom + LDOS h, the setpoint the largest current there (_topo_current at the frozen bias V_b),
+        _converge_tip_height under decay_model.  ldos_z_map and ldos_z_key are set to it.  Callers: Map (before
+        its maps), Single Point (before its spectra), Line and Path (before their stripes, and for their LDOS
+        topo panel); a bias or LDOS h change in Line or Path so converges the whole cell's LDOS topo too, unless
+        it is in memory or cached.  Both window ends at 0.0 stay an error (the bias is 0 V): ValueError.
+        """
+        if self.s_emin.val == 0.0 and self.s_emax.val == 0.0:
+            raise ValueError("Stabilization bias is 0: set a nonzero E Min or E Max before the constant-current window can be built.")
+        key = self._ldos_topo_key(v_b, decay_model)
+        if self.ldos_z_map is not None and self.ldos_z_key == key:
+            return self.ldos_z_map
+        grid_res = int(np.sqrt(len(self.grid_xy)))
+        ldos_cache_name = f"ldos_topo_{v_b}V_{self.ldos_height}A_{grid_res}px{self._broadening_cache_suffix()}{self._unit_cell_cache_suffix()}{self._decay_cache_suffix()}_fold{self._precision_cache_suffix()}.npy"
+        if self.reuse_cache and exists(ldos_cache_name):
+            print(f"[*] Loading Cached LDOS Topography: {ldos_cache_name}")
+            z = np.load(ldos_cache_name)
+        else:
+            print(f"[*] Cache not found. Calculating LDOS Topography: {ldos_cache_name}")
+            z_fixed = cp.full(self.grid_xy_gpu.shape[0], self.z_highest_atom + self.ldos_height, dtype=cp.float32)
+            init_cur, t_samples = self._topo_current(cp.hstack([self.grid_xy_gpu, z_fixed[:, None]]),
+                                                     v_b, decay_model)
+            target_setp = cp.max(init_cur)
+            print(f"[*] LDOS Topo Setpoint: {float(target_setp):.6e}")
+            z_map_gpu = self._converge_tip_height(z_fixed, self.grid_xy_gpu, t_samples, v_b, target_setp,
+                                                  decay_model=decay_model)
+            z = cp.asnumpy(z_map_gpu)
+            np.save(ldos_cache_name, z)
+        self.ldos_z_map, self.ldos_z_key = z, key
+        return z
+
+    def _ldos_topo_interp(self, xy):
+        """
+        Machinery: the LDOS topo (ldos_z_map) at the in-plane points xy ((n, 2), Angstrom), bilinear and periodic in
+        the cell's fractional coordinates: xy = fa a + fb b (a, b the in-plane lattice vectors, the grid's own
+        definition, grid_xy), fa and fb wrapped into [0, 1) and placed on the grid without its duplicate last row
+        and column (fractional 1, the same points as fractional 0; left out of the interpolation only): N - 1
+        intervals each way, column j along a and row i along b, the four corners wrapped.  The stripes' starting
+        heights.  Returns (n,) float64 NumPy.
+        """
+        n = int(round(np.sqrt(len(self.ldos_z_map))))
+        m = n - 1
+        g = np.asarray(self.ldos_z_map, dtype=np.float64).reshape(n, n)[:m, :m]
+        f = np.asarray(xy, dtype=np.float64)[:, :2] @ inv(self.lv[:2, :2])
+        u = (f[:, 0] % 1.0) * m
+        v = (f[:, 1] % 1.0) * m
+        j0, i0 = np.floor(u).astype(np.int64), np.floor(v).astype(np.int64)
+        tu, tv = u - j0, v - i0
+        j0, i0 = j0 % m, i0 % m
+        j1, i1 = (j0 + 1) % m, (i0 + 1) % m
+        return ((1.0 - tu) * (1.0 - tv) * g[i0, j0] + tu * (1.0 - tv) * g[i0, j1]
+                + (1.0 - tu) * tv * g[i1, j0] + tu * tv * g[i1, j1])
+
+    def _ldos_topo_setpoint(self, v_b, decay_model):
+        """
+        Machinery: the stripes' setpoint, the LDOS topo's own: the current at the frozen bias V_b (_topo_current,
+        the same call the LDOS topo makes, under decay_model) at the LDOS topo's tallest grid point in the unit
+        cell (ldos_z_map: its xy and its height), ties at the tallest height to the largest current, which is the
+        point the LDOS topo's own setpoint came from; the stripes so sit on the LDOS topo's constant-current
+        height, even where the line or path does not pass.  Only the heights are kept (in memory and in the cache),
+        so the value is computed again at those points.  Returns (the setpoint, a CuPy scalar; the sample list
+        _topo_current formed for V_b, which _converge_tip_height takes).
+        """
+        z = np.asarray(self.ldos_z_map)
+        top = np.flatnonzero(z == z.max())
+        pts = cp.array(np.hstack([self.grid_xy[top], z[top, None]]), dtype=cp.float32)
+        cur, samples = self._topo_current(pts, v_b, decay_model)
+        return cp.max(cur), samples
+
+    def _draw_ldos_topo(self, z, bias, height):
+        """
+        Machinery: the LDOS topo panel drawn in the unit cell's frame (ax_ldos_topo: Map's; Single Point's once its
+        panel is built), on the cleared panel: the heights z (grid_res x grid_res over grid_xy) as filled contours
+        over every image of the Cells count (one raster at every offset: tricontourf offsets=), nothing while z is
+        None (no LDOS topo computed yet: never the global topo), the atoms of one type over every image as one
+        scatter (Atoms on), the unit cell (Cell on), the equal aspect, the title 'LDOS Topo: bias ... V, height
+        ... Å' at the bias and LDOS h the heights were computed at (bias, height), and in Map the markers (Map's
+        placement panel).  The caller applies the crop (_apply_crop).
+        """
+        ax = self.ax_ldos_topo
+        ax.clear()
+        offs = self._cell_offsets(int(self.s_cell.val))
+        if z is not None:
+            ax.tricontourf(self.grid_xy[:, 0], self.grid_xy[:, 1], z, levels=60, cmap=self._cmap('topo'), zorder=1, offsets=offs)
+        if self.show_atoms:
+            tr = np.repeat(self.atomtypes, self.atomnums)
+            for t_idx, t_name in enumerate(self.atomtypes):
+                m = (tr == t_name)
+                xs = np.concatenate([self.coord[m, 0] + off[0] for off in offs])
+                ys = np.concatenate([self.coord[m, 1] + off[1] for off in offs])
+                ax.scatter(xs, ys, s=10, color=plt.cm.tab10(t_idx / 10), alpha=0.3, zorder=2)
+        if self.show_unit_cell:
+            v0, v1, v2, v3 = np.array([0, 0]), self.lv[0, :2], self.lv[0, :2] + self.lv[1, :2], self.lv[1, :2]
+            cell_pts = np.array([v0, v1, v2, v3, v0])
+            ax.plot(cell_pts[:, 0], cell_pts[:, 1], color='cyan', lw=2.0, ls='-', zorder=4, label='Unit Cell')
+        ax.set_aspect('equal')
+        ax.set_title(f"LDOS Topo: bias {bias:.3f} V, height {height} Å")
+        if self.mode == 'Map':
+            ax.add_collection(self.marks)
 
     def _on_topo_height_rerun(self, event=None):
         """Machinery: apply the global-topo tip-height box (the 'Topo h' Value box) and recompute the global topo.
         Static-label, single-action button. Does nothing unless the main RUN
         button is active. Height-encoded cache filenames are loaded when
         reuse_cache is True and recomputed and rewritten when reuse_cache is
-        False. The global topo takes the place of the tip heights Map's maps
-        are computed at (current_z_map, the LDOS topo), so Map's topo records
-        are reset: in Map (now, or on return) the LDOS topo is loaded or
-        computed again and the maps computed again at the kept energies."""
+        False. The global topo has its own record (global_z_map) and the LDOS
+        topo (ldos_z_map) is not touched; Map's topo records are still reset,
+        as before: in Map (now, or on return) the LDOS topo is taken again
+        (_ensure_ldos_topo: from memory) and the maps computed again at the
+        kept energies."""
         if not self.is_running:
             return
         self.topo_height = float(self.s_topo_h.val)
         self._recompute_global_topo()
         self._broadening_topo_dirty = False
-        # current_z_map now holds the global topo: Map's LDOS topo, and its maps at the kept energies, again.
+        # Map's topo records reset, as before: its LDOS topo taken again (from memory) and its maps at the kept energies.
         self.cached_bias_energy_map = self.cached_d_topo_map = None
         self._update_all(full_refresh=True)
 
@@ -3323,21 +3493,15 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         box's Shading on one RGBA mesh at each cell offset (_draw_shaded_slice).
         """
         if full_refresh:
-            self.ax_map.clear()
+            # The global topo (ax_global_topo, every view's placement topo) from the global topo's own heights
+            # (global_z_map).
+            t_ax = self.ax_global_topo
+            t_ax.clear()
             n = int(self.s_cell.val)
-            if self.mode == 'Map':
-                self.ax_map_global.clear()
-            t_ax = self.ax_map_global if self.mode == 'Map' else self.ax_map
             z_data = self.global_z_map
 
             offs = self._cell_offsets(n)
             t_ax.tricontourf(self.grid_xy[:, 0], self.grid_xy[:, 1], z_data, levels=60, cmap=self._cmap('topo'), zorder=1, offsets=offs)
-            if self.mode == 'Map':
-                # The Map Topo from the LDOS-topo heights Map's maps were computed at (map_z, Map's own); before
-                # Map's first maps (none kept), from current_z_map, as before.
-                self.ax_map.tricontourf(self.grid_xy[:, 0], self.grid_xy[:, 1],
-                                        self.current_z_map if self.map_z is None else self.map_z,
-                                        levels=60, cmap=self._cmap('topo'), zorder=1, offsets=offs)
             if self.show_atoms:
                 # The atoms of one type over every image as one item (one colour, one scatter).
                 tr = np.repeat(self.atomtypes, self.atomnums)
@@ -3346,31 +3510,34 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
                     xs = np.concatenate([self.coord[m, 0] + off[0] for off in offs])
                     ys = np.concatenate([self.coord[m, 1] + off[1] for off in offs])
                     t_ax.scatter(xs, ys, s=10, color=plt.cm.tab10(t_idx / 10), alpha=0.3, zorder=2)
-                    if self.mode == 'Map':
-                        self.ax_map.scatter(xs, ys, s=10, color=plt.cm.tab10(t_idx / 10), alpha=0.3, zorder=2)
             if self.show_unit_cell:
                 v0, v1, v2, v3 = np.array([0, 0]), self.lv[0, :2], self.lv[0, :2] + self.lv[1, :2], self.lv[1, :2]
                 cell_pts = np.array([v0, v1, v2, v3, v0])
                 t_ax.plot(cell_pts[:, 0], cell_pts[:, 1], color='cyan', lw=2.0, ls='-', zorder=4, label='Unit Cell')
-                if self.mode == 'Map':
-                    self.ax_map.plot(cell_pts[:, 0], cell_pts[:, 1], color='cyan', lw=2.0, ls='-', zorder=4, label='Unit Cell')
 
             t_ax.set_aspect('equal')
             t_ax.set_title(f"Global Topo: bias {self.global_topo_bias:.3f} V, height {self.topo_height} Å")
-            if self.mode == 'Map':
-                self.ax_map.set_aspect('equal')
-                # Titled with the bias and LDOS h those heights were computed at (map_bias, map_ldos_h, kept beside
-                # map_z); before Map's first maps, the window's, as before.
-                m_bias, m_h = ((self._bias_sample()[1], self.ldos_height) if self.map_z is None
-                               else (self.map_bias, self.map_ldos_h))
-                self.ax_map.set_title(f"Map Topo: bias {m_bias:.3f} V, height {m_h} Å")
-            if self.mode in ('Line', 'Path'):
-                self.ax_map.add_line(self.line_art)
-                if self.mode == 'Line':
-                    self.ax_map.add_collection(self.ends)
+            if self.mode in ('Single Point', 'Map') and getattr(self, 'ax_ldos_topo', None) is not None:
+                # The LDOS topo panel in the unit cell's frame (_draw_ldos_topo), never from the global heights: in
+                # Map from the LDOS-topo heights Map's maps were computed at (map_z, Map's copy of the LDOS topo),
+                # titled with the bias and LDOS h they were computed at (map_bias, map_ldos_h); otherwise (Single
+                # Point, Map before its first maps) from the shared LDOS topo (ldos_z_map) at its key's bias and
+                # LDOS h (ldos_z_key); with none computed yet, empty, titled with the window's.
+                if self.mode == 'Map' and self.map_z is not None:
+                    self._draw_ldos_topo(self.map_z, self.map_bias, self.map_ldos_h)
+                elif self.ldos_z_map is not None:
+                    self._draw_ldos_topo(self.ldos_z_map, self.ldos_z_key[0], self.ldos_z_key[1])
                 else:
-                    self.ax_map.add_collection(self.path_pts)
-            self.ax_map.add_collection(self.marks)
+                    self._draw_ldos_topo(None, self._bias_sample()[1], self.ldos_height)
+            if self.mode in ('Line', 'Path'):
+                self.ax_global_topo.add_line(self.line_art)
+                if self.mode == 'Line':
+                    self.ax_global_topo.add_collection(self.ends)
+                else:
+                    self.ax_global_topo.add_collection(self.path_pts)
+            if self.mode != 'Map':
+                # The markers on the placement panel: the global topo (in Map the LDOS topo: _draw_ldos_topo).
+                self.ax_global_topo.add_collection(self.marks)
             # The crop (the placement topo's limits) and its cursors, drawn afresh on the cleared panel.
             self._apply_crop()
             self._draw_cursors()
@@ -3445,19 +3612,34 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
             reform = False
             needs_ldos = compute and (needs_topo or self.cached_emin != e_lo or self.cached_emax != e_hi or
                                       self.cached_d_ldos != decay_model or getattr(self, 'cached_mode', None) != self.mode)
-            needs_spec = compute and (needs_ldos or (self.mode == 'Single Point' and (self.cached_marker_coords is None or not np.array_equal(self.marker_coords, self.cached_marker_coords))))
+            # Single Point's spectra take their tip heights from the LDOS topo at the window's key, so they are
+            # computed again when that key changes (the bias end, LDOS h, the decay model, the broadening:
+            # cached_spec_z_key, the key they were taken at).
+            needs_spec = compute and (needs_ldos or (self.mode == 'Single Point' and (
+                self.cached_marker_coords is None or not np.array_equal(self.marker_coords, self.cached_marker_coords)
+                or self.cached_spec_z_key != self._ldos_topo_key(v_b, decay_model))))
+
+        if compute and self.mode in ('Line', 'Path'):
+            # The LDOS topo at the window's key (_ensure_ldos_topo: from memory, its cache, or converged and saved),
+            # before the stripe (its starting heights and its setpoint) and for the view's LDOS topo panel
+            # (_fill_heat_row).
+            self._ensure_ldos_topo(v_b, decay_model)
 
         if needs_topo:
             if self.s_emin.val == 0.0 and self.s_emax.val == 0.0:
                 raise ValueError("Stabilization bias is 0: set a nonzero E Min or E Max before the constant-current window can be built.")
             if self.mode in ('Line', 'Path'):
+                # The stripe's own quick line convergence (no cache of its own; Line's and Path's heights kept
+                # under their own keys): its starting heights the LDOS topo interpolated at the sample points,
+                # bilinear and periodic in the cell's fractional coordinates (_ldos_topo_interp); its setpoint the
+                # LDOS topo's own, the current at the LDOS topo's tallest grid point (_ldos_topo_setpoint), so the
+                # stripe sits on the LDOS topo's tip height; then every point moved by the existing rule
+                # (_converge_tip_height: a point within 1 % of the setpoint is not moved again).
                 p_xy_gpu = cp.array(p_xy, dtype=cp.float32)
-                l_cur, l_samples = self._topo_current(
-                    cp.hstack([p_xy_gpu, cp.full((self.npts, 1), self.z_highest_atom + self.ldos_height, dtype=cp.float32)]),
-                    v_b, decay_model)
-                target = cp.max(l_cur)
-                print(f"[*] Path Setpoint LDOS: {float(target):.6e}")
-                z_line = self._converge_tip_height(cp.full(self.npts, self.z_highest_atom + self.ldos_height, dtype=cp.float32), p_xy_gpu, l_samples, v_b, target,
+                z_start = cp.array(self._ldos_topo_interp(p_xy), dtype=cp.float32)
+                target, l_samples = self._ldos_topo_setpoint(v_b, decay_model)
+                print(f"[*] {self.mode} Topo Setpoint: {float(target):.6e}")
+                z_line = self._converge_tip_height(z_start, p_xy_gpu, l_samples, v_b, target,
                                                    decay_model=decay_model)
                 # Into the view's own record, with its key and the bias and decay model they were converged at.
                 if self.mode == 'Line':
@@ -3470,24 +3652,11 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
                     self.cached_path_extend = self.path_extend
                     self.cached_bias_energy_path, self.cached_d_topo_path = v_b, decay_model
             elif self.mode == 'Map':
-                grid_res = int(np.sqrt(len(self.grid_xy)))
-                ldos_cache_name = f"ldos_topo_{v_b}V_{self.ldos_height}A_{grid_res}px{self._broadening_cache_suffix()}{self._unit_cell_cache_suffix()}{self._decay_cache_suffix()}_fold{self._precision_cache_suffix()}.npy"
-                if self.reuse_cache and exists(ldos_cache_name):
-                    print(f"[*] Loading Cached LDOS Topography: {ldos_cache_name}")
-                    self.current_z_map = np.load(ldos_cache_name)
-                else:
-                    print(f"[*] Cache not found. Calculating LDOS Topography: {ldos_cache_name}")
-                    z_fixed = cp.full(self.grid_xy_gpu.shape[0], self.z_highest_atom + self.ldos_height, dtype=cp.float32)
-                    init_cur, t_samples = self._topo_current(cp.hstack([self.grid_xy_gpu, z_fixed[:, None]]),
-                                                             v_b, decay_model)
-                    target_setp = cp.max(init_cur)
-                    print(f"[*] Map Local Setpoint LDOS: {float(target_setp):.6e}")
-                    z_map_gpu = self._converge_tip_height(z_fixed, self.grid_xy_gpu, t_samples, v_b, target_setp,
-                                                          decay_model=decay_model)
-                    self.current_z_map = cp.asnumpy(z_map_gpu)
-                    np.save(ldos_cache_name, self.current_z_map)
+                # The LDOS topo at the window's key (_ensure_ldos_topo: from memory, its ldos_topo_* cache, or
+                # converged and saved), shared by every view.
+                self._ensure_ldos_topo(v_b, decay_model)
                 self.cached_bias_energy_map, self.cached_d_topo_map = v_b, decay_model
-                # The Map Topo is drawn again from it once Map's maps are computed at it (map_z, below).
+                # The LDOS topo panel is drawn again from it once Map's maps are computed at it (map_z, below).
 
         if reform:
             # An edit of E Min, E Max or E Pts: the Map energies formed again from the typed ends, np.linspace of
@@ -3503,8 +3672,11 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
             # own caches, with the LDOS-topo heights (map_z, a copy), the bias and LDOS h they were computed at
             # (map_bias, map_ldos_h) and the records they were taken with (the window, the decay model and the
             # broadening: map_window, map_d_ldos, map_broadening; the spectrum's energies are kept with Map's marker
-            # spectra, below).
-            grid_z = cp.hstack([self.grid_xy_gpu, cp.asarray(self.current_z_map, dtype=cp.float32)[:, None]])
+            # spectra, below).  The heights: the LDOS topo at the window's key (_ensure_ldos_topo, before the maps;
+            # from memory when needs_topo took it above).
+            z_ldos = self._ensure_ldos_topo(v_b, decay_model)
+            topo_new = self.map_z is None or not np.array_equal(self.map_z, z_ldos)
+            grid_z = cp.hstack([self.grid_xy_gpu, cp.asarray(z_ldos, dtype=cp.float32)[:, None]])
             ld_up, ld_dn, _, cur = self._calculate_ldos_at_points_gpu(
                 grid_z, None, None, decay_model=decay_model, preserve_orbitals=True, with_current=True,
                 samples=self.map_e_idx, progress='Map energy maps')
@@ -3513,34 +3685,18 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
             self.map_ld_up_gpu, self.map_ld_dn_gpu = ld_up, ld_dn
             self.map_current = cur
             self.map_current_E = cp.asarray((self.map_e_idx - self.k0).astype(np.float32)) * self.e_step32 + self.e032
-            self.map_z = np.array(self.current_z_map, copy=True)
+            self.map_z = np.array(z_ldos, copy=True)
             self.map_bias, self.map_ldos_h = v_b, self.ldos_height
             self.map_window, self.map_d_ldos = (e_lo, e_hi), decay_model
             self.map_broadening = dict(self.extra_broadening)
-            if needs_topo:
-                # The LDOS topo just computed (needs_topo, above): the Map Topo drawn again on the cleared panel
-                # from the heights Map's maps were computed at (map_z), with what the full refresh drew on it: the
-                # atoms of one type over every image as one scatter, the unit cell and the title (their bias and
-                # LDOS h, map_bias and map_ldos_h).
-                self.ax_map.clear()
-                n = int(self.s_cell.val)
-                offs = self._cell_offsets(n)
-                self.ax_map.tricontourf(self.grid_xy[:, 0], self.grid_xy[:, 1], self.map_z, levels=60, cmap=self._cmap('topo'), zorder=1, offsets=offs)
-                if self.show_atoms:
-                    tr = np.repeat(self.atomtypes, self.atomnums)
-                    for t_idx, t_name in enumerate(self.atomtypes):
-                        m = (tr == t_name)
-                        xs = np.concatenate([self.coord[m, 0] + off[0] for off in offs])
-                        ys = np.concatenate([self.coord[m, 1] + off[1] for off in offs])
-                        self.ax_map.scatter(xs, ys, s=10, color=plt.cm.tab10(t_idx / 10), alpha=0.3, zorder=2)
-                if self.show_unit_cell:
-                    v0, v1, v2, v3 = np.array([0, 0]), self.lv[0, :2], self.lv[0, :2] + self.lv[1, :2], self.lv[1, :2]
-                    cell_pts = np.array([v0, v1, v2, v3, v0])
-                    self.ax_map.plot(cell_pts[:, 0], cell_pts[:, 1], color='cyan', lw=2.0, ls='-', zorder=4, label='Unit Cell')
-                self.ax_map.set_aspect('equal')
-                self.ax_map.set_title(f"Map Topo: bias {self.map_bias:.3f} V, height {self.map_ldos_h} Å")
-                self.ax_map.add_collection(self.marks)
-                self._apply_crop()                 # the Map Topo takes the placement topo's crop
+            if needs_topo or topo_new:
+                # The LDOS topo just taken (needs_topo, above, or new heights for the maps): the LDOS topo panel
+                # drawn again on the cleared panel from the heights Map's maps were computed at (map_z), with what
+                # the full refresh drew on it (_draw_ldos_topo: the atoms of one type over every image as one
+                # scatter, the unit cell, the title with their bias and LDOS h, map_bias and map_ldos_h, and the
+                # markers).
+                self._draw_ldos_topo(self.map_z, self.map_bias, self.map_ldos_h)
+                self._apply_crop()                 # the LDOS topo takes the placement topo's crop
         elif needs_ldos:
             if self.mode in ('Line', 'Path'):
                 l_idx = self._display_indices(self.s_emin.val, self.s_emax.val)
@@ -3570,6 +3726,11 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
             self.cached_mode = self.mode
 
         if needs_spec and self.mode in ['Single Point', 'Map']:
+            # The markers' tip heights: the LDOS topo at the window's key (_ensure_ldos_topo; in Map from memory, taken
+            # before its maps), at the grid point nearest each marker's place wrapped into the cell, in Single Point
+            # as in Map: shared with Map, so they no longer depend on which view ran last.
+            key_before = self.ldos_z_key
+            z_ldos = self._ensure_ldos_topo(v_b, decay_model)
             m_coords = np.array(self.marker_coords)
             z_marks = []
             inv_lv_np = inv(self.lv)
@@ -3579,8 +3740,14 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
                 f_pt[:2] = f_pt[:2] % 1.0
                 wrapped_pt = np.dot(f_pt, self.lv)
                 dist_sq = (self.grid_xy[:, 0] - wrapped_pt[0]) ** 2 + (self.grid_xy[:, 1] - wrapped_pt[1]) ** 2
-                z_marks.append(self.current_z_map[np.argmin(dist_sq)])
+                z_marks.append(z_ldos[np.argmin(dist_sq)])
             z_marks = np.array(z_marks)
+            if (self.mode == 'Single Point' and getattr(self, 'ax_ldos_topo', None) is not None
+                    and self.ldos_z_key != key_before):
+                # A new LDOS topo just taken: Single Point's LDOS topo panel drawn again from it (_draw_ldos_topo)
+                # at its key's bias and LDOS h, with the placement topo's crop.
+                self._draw_ldos_topo(self.ldos_z_map, self.ldos_z_key[0], self.ldos_z_key[1])
+                self._apply_crop()
 
             pt_gpu = cp.array(np.hstack([m_coords, z_marks[:, None]]), dtype=cp.float32)
             spec_idx = self._display_indices(self.s_emin.val, self.s_emax.val)
@@ -3608,6 +3775,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
                 self.cached_spec_ldos = cp.asnumpy(spec_ldos)
                 self.cached_marker_coords = np.array(self.marker_coords).copy()
                 self.cached_spec_window = (e_lo, e_hi)
+                self.cached_spec_z_key = self.ldos_z_key          # the LDOS topo's key their tip heights were taken at
                 self.cached_spec_eg = self.energies[spec_idx]      # their energies, kept with them
                 # The markers' current from the same pass, stored with its samples' GPU energies e0 + (i - k0) step.
                 self.cached_spec_current = s_cur
@@ -3866,8 +4034,9 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         Machinery: the Line / Path heatmap row built anew, only when its panel count changes (n_heat, the
         partitions of the level, or the per-heatmap colour bars): the old panels removed
         (_clear_cluster), then the cluster's row, left to right (a PanelRow: its shaped panels
-        share one height; rule 11): the 'Topo' panel with the LDOS h box above it (Line only),
-        the tip-height stripe (with the LDOS h box above it in Path), one heatmap per partition
+        share one height; rule 11): Line's LDOS topo panel (ax_ldos_topo, its title set with its data by
+        _fill_heat_row) with the LDOS h box above it (Line only), the tip-height stripe titled 'Topo'
+        (with the LDOS h box above it in Path), one heatmap per partition
         with a colour bar after each (show_dcmp_norm) or after the last.  The panels' fixed parts
         (box aspects, anchors, axis labels, ticks) are set here and their data by _fill_heat_row;
         the Tip Height profile is cleared with the row (_fill_heat_row draws its curve and the
@@ -3878,23 +4047,24 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         num_p = max(1, n_heat)
         row = self._cluster_row
         if self.mode == 'Line':
-            # Line Topo panel (the unwrapped 'Topo' corridor) — Line mode only; the LDOS h box above it.
-            self.ax_line_topo = self._panel_with_box(row, self._box_ldos_h, stretch=10)
-            self.line_decomp_axes.append(self.ax_line_topo)
-            self.ax_line_topo.set_box_aspect(1.5)
-            self.ax_line_topo.set_xlabel("Perp. (Å)", fontsize=10)
-            self.ax_line_topo.set_ylabel("Position (Å)", fontsize=10)
-            self.ax_line_topo.set_title("Topo", fontsize=10)
+            # Line's LDOS topo panel (the unwrapped corridor of the LDOS topo, 2:3) — Line mode only; the LDOS h box above it.
+            self.ax_ldos_topo = self._panel_with_box(row, self._box_ldos_h, stretch=10)
+            self.line_decomp_axes.append(self.ax_ldos_topo)
+            self.ax_ldos_topo.set_box_aspect(1.5)
+            self.ax_ldos_topo.set_xlabel("Perp. (Å)", fontsize=10)
+            self.ax_ldos_topo.set_ylabel("Position (Å)", fontsize=10)
         else:
-            self.ax_line_topo = None
+            self.ax_ldos_topo = None
 
-        # Topo stripe: a narrow cell as wide as its 40-point stroke and its tick axis; in Path the LDOS h box above it.
+        # The stripe (the Line / Path tip heights, not a topo), titled 'Topo': a narrow cell as wide as its 40-point
+        # stroke and its tick axis; in Path the LDOS h box above it.
         if self.mode == 'Path':
             self.ax_stripe = self._panel_with_box(row, self._box_ldos_h, inner_w=58)
         else:
             self.ax_stripe = self._panel(row, inner_w=58)
         self.line_decomp_axes.append(self.ax_stripe)
         self.ax_stripe.set_xticks([])
+        self.ax_stripe.set_title("Topo", fontsize=10)
         self.ax_prof.set(ylabel="Height (Å)", title="Tip Height", xlabel="Dist (Å)")
 
         for p_idx in range(n_heat):
@@ -3917,15 +4087,17 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
 
         # The cluster's row shares one height (the row rule, Figure.align_row): the heatmaps (no box
         # aspect: they fill their cells), the stripe and the colour bars take the row's band, in Line at
-        # most the height the Line Topo's box aspect asks for.
+        # most the height Line's LDOS topo's box aspect asks for.
         self.fig.align_row(*self.line_decomp_axes)
         self._row_key = (n_heat, self.show_dcmp_norm)
 
     def _fill_heat_row(self, processed_partitions, global_vmax, global_vmin, p_dist, p_len, use_diverging, has_mag):
         """
-        Machinery: the Line / Path panels given the state's data in place (no panel made or removed): the
-        Line Topo drawn again when its line, the Cells count, the atoms or the heights changed
-        (its contour, atoms, line, ends and limits; the marker scatters stay), the stripe's
+        Machinery: the Line / Path panels given the state's data in place (no panel made or removed): Line's
+        LDOS topo panel drawn again from the LDOS topo (ldos_z_map, never the global topo) when its line, the
+        Cells count, the atoms or the LDOS topo (its heights, its key ldos_z_key) changed (its contour, atoms,
+        line, ends, limits and the title 'LDOS Topo: bias ... V, height ... Å' at its key's bias and LDOS h; the
+        marker scatters stay), the stripe's
         segments, colours and limits (LineCollection.set_segments / set_norm / set_array), the
         Tip Height profile's curve (Line2D.set_data), each heatmap's values and colour scale
         (QuadMesh.set_array / set_cmap / set_norm; its colour bar follows the mesh's norm; a new
@@ -3934,11 +4106,11 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         then placed: _place_line_markers).  processed_partitions, global_vmax and global_vmin
         as _update_all computes them.
         """
-        if self.ax_line_topo is not None:
+        if self.mode == 'Line' and self.ax_ldos_topo is not None and self.ldos_z_map is not None:
             topo_key = (tuple(np.asarray(self.p1, dtype=float)), tuple(np.asarray(self.p2, dtype=float)),
-                        max(int(self.s_cell.val), 1) + 1, bool(self.show_atoms))
+                        max(int(self.s_cell.val), 1) + 1, bool(self.show_atoms), self.ldos_z_key)
             if (topo_key != self._line_topo_key or self._line_topo_z is None
-                    or not np.array_equal(self._line_topo_z, self.global_z_map)):
+                    or not np.array_equal(self._line_topo_z, self.ldos_z_map)):
                 for art in self._line_topo_arts:
                     art.remove()
                 arts = []
@@ -3961,9 +4133,9 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
                         mask = (rot_x > -half_w - margin) & (rot_x < half_w + margin) & (rot_y > -margin) & (rot_y < p_len + margin)
                         all_rx.append(rot_x[mask])
                         all_ry.append(rot_y[mask])
-                        all_z.append(self.global_z_map[mask])
+                        all_z.append(self.ldos_z_map[mask])
                 all_rx, all_ry, all_z = np.concatenate(all_rx), np.concatenate(all_ry), np.concatenate(all_z)
-                arts.append(self.ax_line_topo.tricontourf(all_rx, all_ry, all_z, levels=60, cmap=self._cmap('topo'), zorder=1))
+                arts.append(self.ax_ldos_topo.tricontourf(all_rx, all_ry, all_z, levels=60, cmap=self._cmap('topo'), zorder=1))
 
                 if self.show_atoms:
                     tr = np.repeat(self.atomtypes, self.atomnums)
@@ -3981,17 +4153,19 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
                                 a_rx_all.append(a_rx[vis])
                                 a_ry_all.append(a_ry[vis])
                         if a_rx_all:
-                            arts.append(self.ax_line_topo.scatter(np.concatenate(a_rx_all), np.concatenate(a_ry_all), s=10, color=plt.cm.tab10(t_idx / 10), alpha=0.3, zorder=2))
+                            arts.append(self.ax_ldos_topo.scatter(np.concatenate(a_rx_all), np.concatenate(a_ry_all), s=10, color=plt.cm.tab10(t_idx / 10), alpha=0.3, zorder=2))
 
-                arts += self.ax_line_topo.plot([0, 0], [0, p_len], color='red', ls='--', lw=2.0, zorder=6)
-                arts.append(self.ax_line_topo.scatter([0], [0], c='white', edgecolors='red', s=60, zorder=8))
-                arts.append(self.ax_line_topo.scatter([0], [p_len], c='white', edgecolors='red', s=60, zorder=8))
+                arts += self.ax_ldos_topo.plot([0, 0], [0, p_len], color='red', ls='--', lw=2.0, zorder=6)
+                arts.append(self.ax_ldos_topo.scatter([0], [0], c='white', edgecolors='red', s=60, zorder=8))
+                arts.append(self.ax_ldos_topo.scatter([0], [p_len], c='white', edgecolors='red', s=60, zorder=8))
 
-                self.ax_line_topo.set_xlim(-half_w, half_w)
-                self.ax_line_topo.set_ylim(0, p_len)
+                self.ax_ldos_topo.set_xlim(-half_w, half_w)
+                self.ax_ldos_topo.set_ylim(0, p_len)
+                self.ax_ldos_topo.set_title(f"LDOS Topo: bias {self.ldos_z_key[0]:.3f} V, height {self.ldos_z_key[1]} Å",
+                                            fontsize=10)
                 self._line_topo_arts = arts
                 self._line_topo_key = topo_key
-                self._line_topo_z = np.array(self.global_z_map, copy=True)
+                self._line_topo_z = np.array(self.ldos_z_map, copy=True)
 
         # The stripe and the Tip Height profile from the view's own tip heights: Line's (current_z_line) or
         # Path's (current_z_path).
@@ -4079,8 +4253,8 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
     def _make_line_markers(self, p_dist, p_len):
         """
         Machinery: the Line / Path markers' counterparts made anew for the marker count (the old ones
-        removed): on the Line Topo a scatter at the marker's place along the line (pickable,
-        label 'marker_<i>': a marker is dragged from the Line Topo), and, once there are
+        removed): on Line's LDOS topo a scatter at the marker's place along the line (pickable,
+        label 'marker_<i>': a marker is dragged from Line's LDOS topo), and, once there are
         heatmaps, a dashed line at the marker's distance on the Tip Height profile, on every
         heatmap and on the stripe (picker 5, label 'marker_<i>': dragged from any of them).
         """
@@ -4093,8 +4267,8 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
             idx = int(r * (self.npts - 1))
             color = self.line_marker_colors[i]
             items = {'topo': None, 'prof': None, 'h': []}
-            if self.ax_line_topo is not None:
-                items['topo'] = self.ax_line_topo.scatter([0], [r * p_len], c=color, edgecolors='black', s=80, zorder=10,
+            if self.mode == 'Line' and self.ax_ldos_topo is not None:
+                items['topo'] = self.ax_ldos_topo.scatter([0], [r * p_len], c=color, edgecolors='black', s=80, zorder=10,
                                                           picker=5, label=f'marker_{i}')
             if self._heat_axes:
                 items['prof'] = self.ax_prof.axvline(x=p_dist[idx], color=color, ls='--', lw=2, alpha=0.7, picker=5, label=f'marker_{i}')
@@ -4107,7 +4281,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
     def _place_line_markers(self, counterparts=True):
         """
         Machinery: the Line / Path markers placed at marker_ratios on the line as last drawn (_line_geom):
-        the placement topo's markers, and with `counterparts` the Line Topo's scatters, the
+        the placement topo's markers, and with `counterparts` Line's LDOS topo's scatters, the
         dashed lines on the heatmaps and the stripe (set_ydata) and on the Tip Height profile
         (set_xdata), all together.  Nothing is computed.
         """
@@ -4169,7 +4343,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         to bottom (_line_marker_order).  The permutation is applied together to marker_ratios, the kept
         colours (line_marker_colors) and the active marker's index (the same marker stays active); artist i
         shows marker i, so each index's artists take their marker's colour in place (the placement topo's
-        markers, and the Line Topo's scatter and the Tip Height, heatmap and stripe lines), then every one is
+        markers, and Line's LDOS topo's scatter and the Tip Height, heatmap and stripe lines), then every one is
         moved and the spectrum's curves (the level-0 curves), its title and the legend take their marker's
         data and colour in place (_move_line_markers), running or not (with RUN off from the last run's data,
         the display cache): one redraw, no rearrangement, no rebuild, nothing computed.  Nothing happens when
@@ -4366,7 +4540,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         st.update(sig=sig, cmap=cmap, exp=exp)
 
     def _place_map_markers(self):
-        """Machinery: the Map markers (marker_coords) placed on every counterpart together: the Map Topo's scatter and each energy map's (a drag moves them; the spectrum follows on release)."""
+        """Machinery: the Map markers (marker_coords) placed on every counterpart together: the LDOS topo's scatter (Map's placement panel) and each energy map's (a drag moves them; the spectrum follows on release)."""
         xy = np.array(self.marker_coords)
         recolor = self._map_marks_xy is None or len(self._map_marks_xy) != len(xy)
         cols = self.m_colors[:len(xy)]
@@ -4447,7 +4621,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         elif event.artist == getattr(self, 'marks', None):
             self.active_obj = ('mark_map', event.ind[0])
         elif self.mode == 'Map' and any(event.artist is sc for sc in self._map_marks.values()):
-            # A Map marker on an energy map: dragged as on the Map Topo (all counterparts together).
+            # A Map marker on an energy map: dragged as on the LDOS topo (all counterparts together).
             self.active_obj = ('mark_map', event.ind[0])
         elif getattr(event, 'mouseevent', None) and event.mouseevent.inaxes == self.ax_spec:
             # The spectrum's clicks (the decomp, Map's energy markers) are decided once, at the press (_on_press).
@@ -4455,7 +4629,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         elif (isinstance(event.artist, (plt.Line2D, plt._RefLine, plt.PathCollection))
               and event.artist.get_label().startswith('marker_')):
             # A Line / Path marker's line on the Tip Height profile, a heatmap or the stripe, or its
-            # scatter on the Line Topo: selected (the active marker) and dragged from there.
+            # scatter on Line's LDOS topo: selected (the active marker) and dragged from there.
             self.active_obj = ('mark_dynamic', int(event.artist.get_label().split('_')[1]))
             self.active_marker_idx = int(event.artist.get_label().split('_')[1])
             # Only what shows the active marker is updated: the spectrum, from the display cache.
@@ -4594,12 +4768,12 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
     def _contour_level_changed(self):
         """
         Machinery: the window's contour level line in the info panel (set_info_line, key 'contour level'), once the
-        window exists: in Map, the contour slice's level z_frac, the fraction of the Map Topo's height range the
+        window exists: in Map, the contour slice's level z_frac, the fraction of the LDOS topo's height range (map_z) the
         level line on the topo colour bar marks (_set_level); none in the other views.
         """
         if getattr(self, 'fig', None) is None:
             return
-        text = f"contour level: {self.z_frac:.3f} of the Map Topo's height range" if self.mode == 'Map' else ''
+        text = f"contour level: {self.z_frac:.3f} of the LDOS topo's height range" if self.mode == 'Map' else ''
         self.fig.set_info_line('contour level', text)
 
     def _get_element_by_index_helper(self, a):
@@ -4648,7 +4822,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
             self.ends.set_offsets([self.p1, self.p2])
         elif t_obj == 'path_node' and self.mode == 'Path':
             # A path node: only the path and its node markers move on the placement topo.
-            if event.inaxes != self.ax_map:
+            if event.inaxes != self.ax_global_topo:
                 return
             new = np.array([event.xdata, event.ydata])
             if np.array_equal(new, self.path_nodes[idx]):
@@ -4657,7 +4831,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
             _, _, _, verts = self._build_path_xy()
             self.line_art.set_data(verts[:, 0], verts[:, 1])
             self.path_pts.set_offsets(np.array(self.path_nodes))
-        elif t_obj == 'mark_map' and (event.inaxes == self.ax_map
+        elif t_obj == 'mark_map' and (event.inaxes == (self.ax_ldos_topo if self.mode == 'Map' else self.ax_global_topo)
                                       or (self.mode == 'Map' and event.inaxes in self.map_axes)):
             if self.mode == 'Line':
                 v = self.p2 - self.p1
@@ -4681,7 +4855,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
             if new == list(self.marker_coords[idx]):
                 return
             self.marker_coords[idx] = new
-            # Single Point / Map: the markers move (Map: on the Map Topo and every energy map); the
+            # Single Point / Map: the markers move (Map: on the LDOS topo and every energy map); the
             # spectrum is computed on release.
             if self.mode == 'Map':
                 self._place_map_markers()
@@ -4692,7 +4866,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
             if hasattr(self, 'ax_prof') and event.inaxes == self.ax_prof:
                 if p_len > 1e-9:
                     new = np.clip(event.xdata / p_len, 0, 1)
-            elif event.inaxes in [ax for ax in [getattr(self, 'ax_ldos', None), getattr(self, 'ax_stripe', None), getattr(self, 'ax_line_topo', None)] + list(self._heat_axes) if ax is not None]:
+            elif event.inaxes in [ax for ax in [getattr(self, 'ax_ldos', None), getattr(self, 'ax_stripe', None), getattr(self, 'ax_ldos_topo', None) if self.mode == 'Line' else None] + list(self._heat_axes) if ax is not None]:
                 if p_len > 1e-9:
                     new = np.clip(event.ydata / p_len, 0, 1)
             if new is None or new == self.marker_ratios[idx]:
@@ -4734,7 +4908,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
                 if line.get_label() == f'emarker_{idx}':
                     line.set_xdata([self.map_e_targets[idx], self.map_e_targets[idx]])
             # The dragged map by the same call and at the same tip heights as the full Map computation: Map's kept
-            # LDOS-topo heights (map_z, not the shared current_z_map), under Map's kept model: its decay model
+            # LDOS-topo heights (map_z, not the shared ldos_z_map), under Map's kept model: its decay model
             # (map_d_ldos: 'decay_exact', 'decay_linearized' or 'decay_k0', _effective_decay_model's names) and its
             # broadening (map_broadening).
             # While the window's broadening differs from Map's (changed since, while stopped or in another view), the
@@ -4793,7 +4967,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
                    or (self.active_obj[0] == 'mark_map' and self.mode in ('Single Point', 'Map')))):
             # The release of a moved line end, path node or Single Point / Map marker: the work today's
             # redraw did on every motion, done once (Line / Path: the tip heights, the LDOS along the
-            # line, the heatmaps, stripe, profile, Line Topo and marker spectra; Single Point / Map:
+            # line, the heatmaps, stripe, profile, Line's LDOS topo and marker spectra; Single Point / Map:
             # the markers' spectrum), by the same computations (_update_all).
             self._update_all()
         elif (self.active_obj is not None and self.mode in ('Line', 'Path')
