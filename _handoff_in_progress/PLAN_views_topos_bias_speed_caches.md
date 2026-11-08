@@ -12,6 +12,8 @@ The owner stopped the run on 2026-11-08 before stage 4's review, so another sess
 - The pieces outside simulator.py are done and reviewed (`f49169e`): cmap_shading.py (10, module side), locpot_manager.py (9.1), doscar_parser.py (12.6), plot_dos_cursors_levels.py (12.1).
 - Stage 5: item 14.3 is done and reviewed (`e08c95f`). Items 14.7 and 14.8 are done. Items 14.1, 14.2, 14.4 (to implement) and 14.5, 14.6 (to check) are not started.
 
+**Step 0: the owner's updates file.** The owner will give you a `.md` file (not in the repository) listing every update the previous session made to `LDOS_spread_decomp/` since 11/4: each change, its file and function, the plan item or ruling it implements, its commit and whether it was reviewed. It is your checklist for checking that session's work, with the reviews kept minimal.
+
 **Step 1: stage 4's review and fixes (minimal).**
 - One reviewer, no edits. Check `git diff 0263117 657670f -- LDOS_spread_decomp/stm_from_dft_opt` against sections 9, 6.2, 10 (the simulator side), 3.7, 12.2 to 12.5, and the docs, using `STAGE4_CHANGES.md`. Ignore the `qtgui/controls.py` hunks from `e08c95f` (stage 5's 14.3, already reviewed).
 - Report what is missing, wrong, beyond the plan, or broken, and judge each decided detail: is it needed to make the approved item work?
@@ -26,7 +28,6 @@ The owner stopped the run on 2026-11-08 before stage 4's review, so another sess
 **Step 3: finish.**
 - Delete this folder (`_handoff_in_progress/`) in the final commit, as before.
 - Fast-forward `main` to the branch: fast-forward only, no force push, every commit's history kept. The owner asked for this once everything is done (2026-11-08).
-- Then give the owner, as a download and **not** as a file in the repository, one `.md` file listing every update made to `LDOS_spread_decomp/` since 11/4, from the git history (the first such commit is `b051547` on 11/7) and the change lists. Organize it by part and stage, giving for each change what changed, in which file and function, and the commit.
 
 **Not in the repository:** the one-time kernel check script (`compare_exact_kernels.py`, plan 7.1) was sent to the owner directly on 2026-11-08. Nothing in the steps above needs it.
 
