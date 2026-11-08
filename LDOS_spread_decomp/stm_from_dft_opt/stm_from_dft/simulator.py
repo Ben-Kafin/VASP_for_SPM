@@ -180,13 +180,16 @@ def gpu_decay_off_factor(phi, d):
 # gives rho_o(0) w(0, 0) and current 0.  Nothing per sample is stored; the outputs hold only the requested samples.
 # Which lines are which: the lines marked 'Physics' in the source transcribe the physics: exact_weight's
 # S and dS/dV (and w, dw/dV), the two integrands, and the sums that make dI/dV and I.  Everything else is
-# machinery: one thread per (tip point, atom), looping over the atom's images and the requested samples; out
-# (n_p, n_t, n_atoms, N_ORB) += dI/dV; cur (n_p, n_t, n_atoms) += the current, each thread in its own atom's slot
-# (summed over its images; the caller sums cur over atoms; no atomics); want_cur = 0 skips the current and does not
-# touch cur (NULL then); the stencil, f(0), the pieces and the pairs (quadrature.integral_from_zero's rule); a
-# sample's energy formed from its span index j as e0 + (j - kz) step in float32 (step, e0 and kz, the span index of
-# k0, passed in; no energy array); float for every value, pointer and output, expf / sqrtf and the f suffix on
-# every literal; the launch chunked by the caller by the (requested V, sample) pairs per tip point.
+# machinery: one thread per (tip point, requested V, atom), the grid's x over the launch's (tip point, requested
+# V) pairs, tp = t n_p + pl (requested sample t at tip point p0 + pl: a warp's threads share one V at consecutive
+# tip points), its y over the atoms; each thread loops over its atom's images and does its one V's work for each;
+# out (n_p, n_t, n_atoms, N_ORB) += dI/dV; cur (n_p, n_t, n_atoms) += the current, each thread in its own (tip
+# point, V, atom) slot (summed over its images; the caller sums cur over atoms; no atomics); want_cur = 0 skips the
+# current and does not touch cur (NULL then); the stencil, f(0), the pieces and the pairs
+# (quadrature.integral_from_zero's rule); a sample's energy formed from its span index j as e0 + (j - kz) step in
+# float32 (step, e0 and kz, the span index of k0, passed in; no energy array); float for every value, pointer and
+# output, expf / sqrtf and the f suffix on every literal; the launch chunked by the caller by the (requested V,
+# sample) pairs per tip point.
 _EXACT_SWEEP_SRC = r'''
 // Physics: the exact tilted barrier (gpu_exact_factor): a = phi - E + V, b = phi - E, kd = k d;
 // w = exp(-S), dw/dV = -(dS/dV) w.  Three branches: under the barrier at both ends (the forms with no division
@@ -274,9 +277,11 @@ extern "C" __global__ void exact_sweep(
     const int n_e_all, const int span_lo, const int kz,
     const int n_t, const int t_split, const int want_cur)
 {
-    const int pl = blockIdx.x * blockDim.x + threadIdx.x;
+    const int tp = blockIdx.x * blockDim.x + threadIdx.x;                         // the (tip point, requested V) pair
     const int a = blockIdx.y;
-    if (pl >= n_p) return;
+    if (tp >= n_t * n_p) return;
+    const int t = tp / n_p;                                                       // the requested sample t (js[t])
+    const int pl = tp - t * n_p;                                                  // the tip point p0 + pl
     const int p = p0 + pl;
     const float ph = phi[p];
     const float* rho = dos + ((long long)a * n_e_all + span_lo) * N_ORB;          // rho[j * N_ORB + o]: span sample j
@@ -306,82 +311,81 @@ extern "C" __global__ void exact_sweep(
         pair_coef(-e0, step, R.pd, &R.hd);
     }
 
+    // The atom's images, in order, each adding its part to this thread's slot (requested sample t).
     for (int s = 0; s < n_shift; ++s) {
         const float kd = kappa0_per_sqrt_ev * dists[((long long)s * n_atoms + a) * n_pts_all + p];   // Physics: k d
-        for (int t = 0; t < n_t; ++t) {
-            const int jv = js[t];                                                 // V's span index
-            const float V = e0 + (float)(jv - kz) * step;                         // the bias V (eV)
-            // w(E, V) and dw(E, V)/dV at the stencil, once per sample.
-            float ws[5] = {0.0f, 0.0f, 0.0f, 0.0f, 0.0f}, dws[5] = {0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
-            for (int m = m_lo; m < 5; ++m)
-                exact_weight(e0 + (float)(m - 2) * step, V, ph, kd, &ws[m], &dws[m]);
-            // The side of 0 V, and k, the intervals from 0 V to V: the sample n intervals out (E+-n) is at span
-            // index z + dir n.
-            const bool up = (t >= t_split);
-            const int dir = up ? 1 : -1;
-            const int z = (up || exact0) ? kz : kz + 1;
-            const int k = up ? jv - z : z - jv;
-            float* o_t = o_pa + (long long)t * t_stride;
-            if (k == 0) {                                                         // V at the sample at 0 V: both integrals 0
-                for (int o = 0; o < N_ORB; ++o)
-                    o_t[o] += rho[(long long)jv * N_ORB + o] * ws[2];            // Physics: dI/dV = rho_o(0) w(0, 0)
-                continue;
-            }
-            const bool odd = (k & 1) != 0;
-            const int n0 = odd ? 1 : 2;                                           // the pairs start at E+-n0
-            const float dx = up ? step : -step;
-
-            // The piece next to 0 V (first_piece) of each integrand, from the stencil.
-            float acc[N_ORB];                                                     // dI/dV's integral, per orbital
-            float Fc[5] = {0.0f, 0.0f, 0.0f, 0.0f, 0.0f};                         // the current's integrand at the stencil
-            for (int o = 0; o < N_ORB; ++o) {
-                float F[5] = {0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
-                for (int m = m_lo; m < 5; ++m) {
-                    const float r = rho[(long long)(kz - 2 + m) * N_ORB + o];
-                    F[m] = r * dws[m];                                            // Physics: rho_o(E) dw(E, V)/dV
-                    if (want_cur) Fc[m] += r;                                     // sum_o rho_o(E)
-                }
-                acc[o] = first_piece(R, exact0, up, odd, step, F[0], F[1], F[2], F[3], F[4]);
-            }
-            float acc_c = 0.0f;                                                   // the current's integral
-            if (want_cur) {
-                for (int m = m_lo; m < 5; ++m) Fc[m] *= ws[m];                    // Physics: (sum_o rho_o(E)) w(E, V)
-                acc_c = first_piece(R, exact0, up, odd, step, Fc[0], Fc[1], Fc[2], Fc[3], Fc[4]);
-            }
-
-            // The equal-step Simpson pairs (y0 + 4 y1 + y2) outward from E+-n0 to V, walked: the pair's first
-            // sample j0 (its weight from the stencil or the previous pair), the weight evaluated at each new sample.
-            float sum[N_ORB];
-            for (int o = 0; o < N_ORB; ++o) sum[o] = 0.0f;
-            float sum_c = 0.0f;
-            int j0 = z + dir * n0;
-            float w0 = ws[j0 - kz + 2], dw0 = dws[j0 - kz + 2];
-            for (int n = n0; n + 2 <= k; n += 2) {
-                const int j1 = j0 + dir, j2 = j0 + 2 * dir;
-                float w1, dw1, w2, dw2;
-                if (n + 1 <= 2) { w1 = ws[j1 - kz + 2]; dw1 = dws[j1 - kz + 2]; }
-                else exact_weight(e0 + (float)(j1 - kz) * step, V, ph, kd, &w1, &dw1);
-                exact_weight(e0 + (float)(j2 - kz) * step, V, ph, kd, &w2, &dw2);
-                const float* r0 = rho + (long long)j0 * N_ORB;
-                const float* r1 = rho + (long long)j1 * N_ORB;
-                const float* r2 = rho + (long long)j2 * N_ORB;
-                float t0 = 0.0f, t1 = 0.0f, t2 = 0.0f;
-                for (int o = 0; o < N_ORB; ++o) {
-                    sum[o] += r0[o] * dw0 + 4.0f * (r1[o] * dw1) + r2[o] * dw2;  // Physics: rho_o(E) dw(E, V)/dV
-                    if (want_cur) { t0 += r0[o]; t1 += r1[o]; t2 += r2[o]; }
-                }
-                if (want_cur) sum_c += t0 * w0 + 4.0f * (t1 * w1) + t2 * w2;     // Physics: (sum_o rho_o(E)) w(E, V)
-                j0 = j2;
-                w0 = w2;
-                dw0 = dw2;
-            }
-            const float wV = (k <= 2) ? ws[jv - kz + 2] : w0;                     // w(V, V): V's sample is the last walked
-
+        const int jv = js[t];                                                     // V's span index
+        const float V = e0 + (float)(jv - kz) * step;                             // the bias V (eV)
+        // w(E, V) and dw(E, V)/dV at the stencil, once per sample.
+        float ws[5] = {0.0f, 0.0f, 0.0f, 0.0f, 0.0f}, dws[5] = {0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
+        for (int m = m_lo; m < 5; ++m)
+            exact_weight(e0 + (float)(m - 2) * step, V, ph, kd, &ws[m], &dws[m]);
+        // The side of 0 V, and k, the intervals from 0 V to V: the sample n intervals out (E+-n) is at span
+        // index z + dir n.
+        const bool up = (t >= t_split);
+        const int dir = up ? 1 : -1;
+        const int z = (up || exact0) ? kz : kz + 1;
+        const int k = up ? jv - z : z - jv;
+        float* o_t = o_pa + (long long)t * t_stride;
+        if (k == 0) {                                                             // V at the sample at 0 V: both integrals 0
             for (int o = 0; o < N_ORB; ++o)
-                o_t[o] += rho[(long long)jv * N_ORB + o] * wV + (acc[o] + dx / 3.0f * sum[o]);   // Physics: dI/dV_o(V)
-            if (want_cur)
-                c_pa[(long long)t * n_atoms] += acc_c + dx / 3.0f * sum_c;                        // Physics: I(V)
+                o_t[o] += rho[(long long)jv * N_ORB + o] * ws[2];                // Physics: dI/dV = rho_o(0) w(0, 0)
+            continue;                                                             // the next image
         }
+        const bool odd = (k & 1) != 0;
+        const int n0 = odd ? 1 : 2;                                               // the pairs start at E+-n0
+        const float dx = up ? step : -step;
+
+        // The piece next to 0 V (first_piece) of each integrand, from the stencil.
+        float acc[N_ORB];                                                         // dI/dV's integral, per orbital
+        float Fc[5] = {0.0f, 0.0f, 0.0f, 0.0f, 0.0f};                             // the current's integrand at the stencil
+        for (int o = 0; o < N_ORB; ++o) {
+            float F[5] = {0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
+            for (int m = m_lo; m < 5; ++m) {
+                const float r = rho[(long long)(kz - 2 + m) * N_ORB + o];
+                F[m] = r * dws[m];                                                // Physics: rho_o(E) dw(E, V)/dV
+                if (want_cur) Fc[m] += r;                                         // sum_o rho_o(E)
+            }
+            acc[o] = first_piece(R, exact0, up, odd, step, F[0], F[1], F[2], F[3], F[4]);
+        }
+        float acc_c = 0.0f;                                                       // the current's integral
+        if (want_cur) {
+            for (int m = m_lo; m < 5; ++m) Fc[m] *= ws[m];                        // Physics: (sum_o rho_o(E)) w(E, V)
+            acc_c = first_piece(R, exact0, up, odd, step, Fc[0], Fc[1], Fc[2], Fc[3], Fc[4]);
+        }
+
+        // The equal-step Simpson pairs (y0 + 4 y1 + y2) outward from E+-n0 to V, walked: the pair's first
+        // sample j0 (its weight from the stencil or the previous pair), the weight evaluated at each new sample.
+        float sum[N_ORB];
+        for (int o = 0; o < N_ORB; ++o) sum[o] = 0.0f;
+        float sum_c = 0.0f;
+        int j0 = z + dir * n0;
+        float w0 = ws[j0 - kz + 2], dw0 = dws[j0 - kz + 2];
+        for (int n = n0; n + 2 <= k; n += 2) {
+            const int j1 = j0 + dir, j2 = j0 + 2 * dir;
+            float w1, dw1, w2, dw2;
+            if (n + 1 <= 2) { w1 = ws[j1 - kz + 2]; dw1 = dws[j1 - kz + 2]; }
+            else exact_weight(e0 + (float)(j1 - kz) * step, V, ph, kd, &w1, &dw1);
+            exact_weight(e0 + (float)(j2 - kz) * step, V, ph, kd, &w2, &dw2);
+            const float* r0 = rho + (long long)j0 * N_ORB;
+            const float* r1 = rho + (long long)j1 * N_ORB;
+            const float* r2 = rho + (long long)j2 * N_ORB;
+            float t0 = 0.0f, t1 = 0.0f, t2 = 0.0f;
+            for (int o = 0; o < N_ORB; ++o) {
+                sum[o] += r0[o] * dw0 + 4.0f * (r1[o] * dw1) + r2[o] * dw2;      // Physics: rho_o(E) dw(E, V)/dV
+                if (want_cur) { t0 += r0[o]; t1 += r1[o]; t2 += r2[o]; }
+            }
+            if (want_cur) sum_c += t0 * w0 + 4.0f * (t1 * w1) + t2 * w2;         // Physics: (sum_o rho_o(E)) w(E, V)
+            j0 = j2;
+            w0 = w2;
+            dw0 = dw2;
+        }
+        const float wV = (k <= 2) ? ws[jv - kz + 2] : w0;                         // w(V, V): V's sample is the last walked
+
+        for (int o = 0; o < N_ORB; ++o)
+            o_t[o] += rho[(long long)jv * N_ORB + o] * wV + (acc[o] + dx / 3.0f * sum[o]);       // Physics: dI/dV_o(V)
+        if (want_cur)
+            c_pa[(long long)t * n_atoms] += acc_c + dx / 3.0f * sum_c;                            // Physics: I(V)
     }
 }
 '''
@@ -906,14 +910,21 @@ class Unified_STM_Simulator:
         self._dos_up_gpu_orig = self.dos_up_gpu.copy()
         self._dos_dn_gpu_orig = self.dos_dn_gpu.copy() if self.dos_dn_gpu is not None else None
 
-        # Precompute total-ρ DOS for COLLINEAR_POL topography (avoids computing two channels and adding).
-        # NCL_SOC: dos_up_gpu IS already ρ_total per orbital. COLLINEAR_UNPOL: single channel reuses dos_up_gpu.
+        # Precompute total-ρ DOS for COLLINEAR_POL, the topography's and the LDOS's total channel, each one pass
+        # (avoids computing two channels and adding), and its magnetization m = up - down per orbital (dos_m_*),
+        # the LDOS's mag channel, one pass, while Mag is on (_calculate_ldos_at_points_gpu, want_mag).
+        # NCL_SOC: dos_up_gpu IS already ρ_total per orbital, dos_dn_gpu its |m|. COLLINEAR_UNPOL: single channel
+        # reuses dos_up_gpu, no mag channel.
         if self.spin_mode == SpinMode.COLLINEAR_POL:
             self.dos_total_gpu = self.dos_up_gpu + self.dos_dn_gpu
             self.dos_total_collapsed = cp.ascontiguousarray(cp.sum(self.dos_total_gpu, axis=2))
+            self.dos_m_gpu = self.dos_up_gpu - self.dos_dn_gpu
+            self.dos_m_collapsed = cp.ascontiguousarray(cp.sum(self.dos_m_gpu, axis=2))
         else:
             self.dos_total_gpu = None
             self.dos_total_collapsed = None
+            self.dos_m_gpu = None
+            self.dos_m_collapsed = None
 
         inv_lv = inv(self.lv)
         frac_coords = np.dot(self.coord, inv_lv)
@@ -956,10 +967,13 @@ class Unified_STM_Simulator:
         if self.dos_dn_gpu is not None:
             self.dos_dn_collapsed = cp.ascontiguousarray(cp.sum(self.dos_dn_gpu, axis=2))
 
-        # Refresh COLLINEAR_POL total-ρ DOS after broadening changes (NCL_SOC and UNPOL reuse dos_up_gpu).
+        # Refresh COLLINEAR_POL total-ρ DOS and its m = up - down after broadening changes (NCL_SOC and UNPOL
+        # reuse dos_up_gpu, NCL's |m| dos_dn_gpu).
         if self.spin_mode == SpinMode.COLLINEAR_POL:
             self.dos_total_gpu = self.dos_up_gpu + self.dos_dn_gpu
             self.dos_total_collapsed = cp.ascontiguousarray(cp.sum(self.dos_total_gpu, axis=2))
+            self.dos_m_gpu = self.dos_up_gpu - self.dos_dn_gpu
+            self.dos_m_collapsed = cp.ascontiguousarray(cp.sum(self.dos_m_gpu, axis=2))
 
     def _broadening_cache_suffix(self):
         """Machinery: generate cache filename suffix encoding active broadening state."""
@@ -1011,14 +1025,21 @@ class Unified_STM_Simulator:
     def _calculate_ldos_at_points_gpu(self, tip_positions, emin, emax,
                                       use_energy_decay=False, preserve_orbitals=False,
                                       topo_only=False, v_bias=None, with_current=False, samples=None, progress='',
-                                      decay_model=None):
+                                      decay_model=None, want_mag=False):
         """
         Machinery: the LDOS at the tip positions on the displayed DOSCAR samples of the window [emin, emax]
         (_display_indices: each end snapped to a sample by _snap; an end of exactly 0.0 is 0 V and adds no
         sample, the samples starting or ending at the first on the window's side of 0), or, with `samples`,
         on those DOSCAR sample indices, in the order requested (emin and emax then unused): per point and
-        energy, or with preserve_orbitals per point, energy, atom and orbital.  The third element returned
-        is the samples' energies, the parser's float64 values as a CuPy array (cp.asarray(energies[idx])).
+        energy, or with preserve_orbitals per point, energy, atom and orbital.  The first two elements
+        returned are the total channel and the magnetization channel; the third is the samples' energies,
+        the parser's float64 values as a CuPy array (cp.asarray(energies[idx])).
+        The total channel, one pass: NCL dos_up_* (already the total), collinear polarized dos_total_* (up +
+        down), unpolarized its one channel (dos_up_*).  The magnetization channel (want_mag; None without it,
+        and always for an unpolarized run or with topo_only), one pass: NCL |m| from dos_dn_*, collinear
+        polarized m from dos_m_* (up - down).  want_mag: False (the total only), True (the total, then the mag
+        channel: while Mag is on), or 'only' (the mag channel alone, the total element None: the mag channel of
+        data whose total is kept, computed when Mag is turned on).
         The weights, I and dI/dV are those of the block THE DECAY MODEL (physics); everything computed here on
         the GPU is float32 (the tip positions, the distances, phi, the weights, the outputs).
         decay_model: 'decay_exact', 'decay_linearized' or 'decay_k0' (_effective_decay_model's names; ValueError
@@ -1045,17 +1066,17 @@ class Unified_STM_Simulator:
         with_current=True (used only with v_bias None and topo_only False): a fourth element is returned, the
           total current I(V) at the requested samples, in the order requested, (num_pts, num_e) float32 CuPy:
           the integral from 0 V to V of the total DOS weighted at that V, oriented (negative below 0 V for a
-          positive DOS, 0 at a sample exactly at 0 V), the channels combined as _combine_ldos_total combines
-          them (channel 1 for NCL and unpolarized, channel 1 + channel 2 for collinear polarized; the NCL |m|
-          channel computes no current).  Decay on: from the kernel's same pass as dI/dV (want_cur = 1).  Decay
-          off: the channel's collapsed DOS with the display's weights at the stencil and every sample from 0 V
-          out to the farthest requested sample on each side, integrated by feenstra.current_from_ldos
-          (_current_decay_off).  Without with_current the three elements above are returned (sim_wrapper and
-          the topography callers).
+          positive DOS, 0 at a sample exactly at 0 V), from the total channel's pass (the mag channel computes
+          no current; None with want_mag 'only').  Decay on: from the kernel's same pass as dI/dV (want_cur =
+          1).  Decay off: the total channel's collapsed DOS with the display's weights at the stencil and every
+          sample from 0 V out to the farthest requested sample on each side, integrated by
+          feenstra.current_from_ldos (_current_decay_off).  Without with_current the three elements above are
+          returned (sim_wrapper and the topography callers).
         With v_bias None and topo_only False (the LDOS, after the tip heights converged) the console shows one
-        line per channel, 'x/n spectra calculated' (n the tip points), updated after each launch of tip points
-        (Decay on) or once (Decay off), led by `progress` (what is computed) and the channel; the topography
-        calls print nothing here.
+        line per channel computed, 'x/n spectra calculated' (n the tip points), updated after each launch of
+        tip points (Decay on) or once (Decay off), led by `progress` (what is computed) and the channel:
+        'total: ' (none for an unpolarized run), then, for the mag channel, '|m|: ' (NCL) or 'm: ' (collinear
+        polarized); the topography calls print nothing here.
         """
         # The decay model (decay_model, or the Decay bool's), and from it Decay on or off and the frozen-bias weight.
         if decay_model is None:
@@ -1122,12 +1143,15 @@ class Unified_STM_Simulator:
         def _sweep(phi_c, dos3, p0, n_p, out, cur):
             """Machinery: the decay model's sweep kernel over tip points p0 .. p0 + n_p: out (n_p, n_unique, atoms,
             columns) += dI/dV, and, unless cur is None (want_cur = 0), cur (n_p, n_unique, atoms) += the current;
-            'decay_exact': exact_sweep (_exact_sweep_kernel), each requested V on its own; 'decay_linearized':
-            linearized_sweep (_linearized_sweep_kernel), one walk outward from 0 V on each side for every
-            requested V.  The two kernels take the same arguments, launched the same way."""
+            'decay_exact': exact_sweep (_exact_sweep_kernel), each requested V on its own, one thread per (tip
+            point, requested V, atom); 'decay_linearized': linearized_sweep (_linearized_sweep_kernel), one walk
+            outward from 0 V on each side for every requested V, one thread per (tip point, atom).  The two
+            kernels take the same arguments and blocks of 64 threads; the grid's x runs over the launch's (tip
+            point, requested V) pairs (exact_sweep) or its tip points (linearized_sweep), its y over the atoms."""
             kern = (_linearized_sweep_kernel if linearized else _exact_sweep_kernel)(dos3.shape[2])
+            n_thr = n_p if linearized else n_p * len(u_idx)       # the threads per atom: the grid's x
             kern(
-                ((n_p + 63) // 64, self.num_total_atoms), (64,),
+                ((n_thr + 63) // 64, self.num_total_atoms), (64,),
                 (dos3, dists_c, phi_c, js_gpu, out, cur, np.float32(KAPPA0_PER_SQRT_EV), self.e_step32, self.e032,
                  np.int32(self.num_total_atoms), np.int32(n_shift), np.int32(num_pts), np.int32(p0), np.int32(n_p),
                  np.int32(dos3.shape[1]), np.int32(span_lo), np.int32(k0_span),
@@ -1236,47 +1260,44 @@ class Unified_STM_Simulator:
             return (_compute_channel(barrier_pot, self.dos_up_gpu, self.dos_up_collapsed)[0],
                     None, calc_energies_gpu)
 
-        if self.spin_mode == SpinMode.COLLINEAR_POL:
-            # Collinear polarized: two channels (up, down), both against total barrier
-            ld_1, cur_1 = _compute_channel(barrier_pot, self.dos_up_gpu, self.dos_up_collapsed, with_current,
-                                           label='spin up: ')
-            ld_2, cur_2 = _compute_channel(barrier_pot, self.dos_dn_gpu, self.dos_dn_collapsed, with_current,
-                                           label='spin down: ')
-        elif self.spin_mode == SpinMode.NCL_SOC:
-            # NCL: channel 1 = total DOS, channel 2 = |m| DOS (the |m| channel computes no current)
-            ld_1, cur_1 = _compute_channel(barrier_pot, self.dos_up_gpu, self.dos_up_collapsed, with_current,
-                                           label='total: ')
-            ld_2, cur_2 = _compute_channel(barrier_pot, self.dos_dn_gpu, self.dos_dn_collapsed, label='|m|: ')
-        else:
-            # Unpolarized: single channel
-            ld_1, cur_1 = _compute_channel(barrier_pot, self.dos_up_gpu, self.dos_up_collapsed, with_current)
-            ld_2, cur_2 = None, None
+        # The total channel, one pass, every run (but with want_mag 'only'), both against the total barrier:
+        # collinear polarized the precomputed up + down (dos_total_*); NCL_SOC dos_up_gpu IS already ρ_total per
+        # orbital; COLLINEAR_UNPOL dos_up_gpu IS the single channel (its console line has no channel label).  The
+        # current (with_current) comes from this pass.
+        has_mag = self._has_mag_channel()
+        ld_total = cur = None
+        if want_mag != 'only':
+            if self.spin_mode == SpinMode.COLLINEAR_POL:
+                ld_total, cur = _compute_channel(barrier_pot, self.dos_total_gpu, self.dos_total_collapsed,
+                                                 with_current, label='total: ')
+            else:
+                ld_total, cur = _compute_channel(barrier_pot, self.dos_up_gpu, self.dos_up_collapsed, with_current,
+                                                 label='total: ' if has_mag else '')
+        # The magnetization channel, one pass, only on request (want_mag: while Mag is on), computing no current:
+        # NCL |m| from dos_dn_*; collinear polarized m = up - down from the precomputed dos_m_*.  None otherwise
+        # (want_mag False, or an unpolarized run).
+        ld_mag = None
+        if want_mag and has_mag:
+            if self.spin_mode == SpinMode.COLLINEAR_POL:
+                ld_mag = _compute_channel(barrier_pot, self.dos_m_gpu, self.dos_m_collapsed, label='m: ')[0]
+            else:
+                ld_mag = _compute_channel(barrier_pot, self.dos_dn_gpu, self.dos_dn_collapsed, label='|m|: ')[0]
         if not with_current:
-            return ld_1, ld_2, calc_energies_gpu
+            return ld_total, ld_mag, calc_energies_gpu
         # with_current: the total current I at the requested samples, in the order requested, (num_pts, num_e)
-        # float32, the channels combined as the total LDOS is (_combine_ldos_total: channel 1 for NCL and
-        # unpolarized, channel 1 + channel 2 for collinear polarized).
-        return ld_1, ld_2, calc_energies_gpu, self._combine_ldos_total(cur_1, cur_2)
+        # float32, from the total channel's pass (None with want_mag 'only').
+        return ld_total, ld_mag, calc_energies_gpu, cur
 
     # ------------------------------------------------------------------
-    # _combine_ldos: central dispatch for how channels are combined at display time
+    # _combine_ldos_display: central dispatch for which channel is displayed
     # ------------------------------------------------------------------
-    def _combine_ldos_total(self, ld_1, ld_2):
-        """Machinery: combine channels into total LDOS (for topography / non-mag display)."""
-        if self.spin_mode == SpinMode.COLLINEAR_POL:
-            return ld_1 + ld_2
-        # NCL and unpol: ld_1 is already the total
-        return ld_1
-
-    def _combine_ldos_display(self, ld_1, ld_2, show_mag):
-        """Machinery: combine channels for display, respecting show_mag toggle."""
-        if not show_mag or ld_2 is None:
-            return self._combine_ldos_total(ld_1, ld_2)
-        if self.spin_mode == SpinMode.COLLINEAR_POL:
-            return ld_1 - ld_2   # spin density (signed)
-        if self.spin_mode == SpinMode.NCL_SOC:
-            return ld_2           # |m| (unsigned, always ≥ 0)
-        return ld_1
+    def _combine_ldos_display(self, total, mag, show_mag):
+        """Machinery: the channel displayed, as it is (no copy): the total, or the mag channel while Mag is on
+        (show_mag; NCL |m|, unsigned, always ≥ 0; collinear polarized m = up - down, the spin density, signed);
+        the total while the mag channel is None (not computed yet, or an unpolarized run)."""
+        if not show_mag or mag is None:
+            return total
+        return mag
 
     def _mag_is_signed(self):
         """Machinery: whether the magnetization display data is signed (needs a diverging colour map, the 'mag' role's) or not."""
@@ -1478,11 +1499,17 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         self.cached_emin, self.cached_emax = None, None
         self.cached_d_topo_line, self.cached_d_topo_map, self.cached_d_ldos = None, None, None
         self.cached_bias_energy_line, self.cached_bias_energy_map, self.cached_nepts = None, None, None
-        self.cached_ld_up, self.cached_ld_dn, self.cached_eg = None, None, None   # the Line / Path points' LDOS and its energies, kept together (sim_wrapper reads them)
+        # The Line / Path points' LDOS: its total channel and its mag channel (|m| or m; None until computed: only
+        # while Mag is on, _calculate_ldos_at_points_gpu's want_mag) and its energies, kept together (sim_wrapper
+        # reads them).
+        self.cached_ld_total, self.cached_ld_mag, self.cached_eg = None, None, None
         self.cached_ld_mode = None                                      # the view that computed them, Line or Path, kept with them (sim_wrapper reads it)
-        self.cached_ld_up_gpu, self.cached_ld_dn_gpu = None, None      # the GPU copies the display works from
-        self.cached_marker_coords, self.cached_spec_ldos = None, None   # Single Point's marker spectra (Map keeps its own, map_spec_*)
+        self.cached_ld_total_gpu, self.cached_ld_mag_gpu = None, None   # the GPU copies the display works from
+        self.cached_marker_coords, self.cached_spec_ldos = None, None   # Single Point's marker spectra as shown (Map keeps its own, map_spec_*)
         self.cached_spec_ldos_gpu = None                                # the GPU copy the display works from
+        # Their two channels (GPU), the total and the mag channel (None until computed: only while Mag is on), the
+        # spectra as shown being one of them (_combine_ldos_display).
+        self.cached_spec_total_gpu, self.cached_spec_mag_gpu = None, None
         self.cached_spec_window = None                                  # the window's snapped ends the marker spectra were computed over
         self.cached_spec_z_key = None                                   # the LDOS topo's key (ldos_z_key) their tip heights were taken at
         self.cached_spec_eg = None                                      # the marker spectra's energies, kept with them (sim_wrapper reads them)
@@ -1491,21 +1518,25 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         # Map's own energies, data and caches, apart from the other views' and kept through every toggle and view
         # change (_update_all): the snapped Map energies (map_e_idx, their energies map_e_targets) and the typed
         # ends and count they were last formed from (map_typed: E Min, E Max, E Pts); the grid's LDOS at them
-        # (map_ld_*, with the GPU copies the display works from) and its current (map_current at map_current_E);
+        # (map_ld_total, and map_ld_mag, None until computed: only while Mag is on, with the GPU copies the
+        # display works from) and its current (map_current at map_current_E);
         # the window's snapped ends (map_window), the decay model (map_d_ldos), the broadening (map_broadening, a
         # copy of extra_broadening) and the LDOS-topo heights (map_z, Map's copy of the LDOS topo ldos_z_map its maps
         # were computed at, which Map's LDOS topo panel, the contour slice and the shading are drawn from, with the
         # bias map_bias and the LDOS h map_ldos_h they were computed at, that panel's title) they were computed with;
-        # Map's marker spectra (map_spec_ldos, with the GPU copy
-        # map_spec_ldos_gpu), their energies (map_eg), the markers they were computed for (map_marker_coords), their
+        # Map's marker spectra as shown (map_spec_ldos, with the GPU copy
+        # map_spec_ldos_gpu; one of their two channels, the total map_spec_total_gpu and the mag channel
+        # map_spec_mag_gpu, None until computed: only while Mag is on), their energies (map_eg), the markers they
+        # were computed for (map_marker_coords), their
         # current (map_spec_current at map_spec_current_E) and the decay model and the broadening they were
         # computed with (map_spec_d_ldos, map_spec_broadening).
         self.map_e_idx, self.map_e_targets, self.map_typed = None, None, None
-        self.map_ld_up, self.map_ld_dn, self.map_ld_up_gpu, self.map_ld_dn_gpu = None, None, None, None
+        self.map_ld_total, self.map_ld_mag, self.map_ld_total_gpu, self.map_ld_mag_gpu = None, None, None, None
         self.map_current, self.map_current_E = None, None
         self.map_eg, self.map_window, self.map_d_ldos, self.map_broadening = None, None, None, None
         self.map_z, self.map_bias, self.map_ldos_h = None, None, None
         self.map_spec_ldos, self.map_spec_ldos_gpu, self.map_marker_coords = None, None, None
+        self.map_spec_total_gpu, self.map_spec_mag_gpu = None, None
         self.map_spec_current, self.map_spec_current_E = None, None
         self.map_spec_d_ldos, self.map_spec_broadening = None, None
         # The two topos: the global topo (global_z_map: the topography at the topo bias and the topo tip height,
@@ -3591,10 +3622,11 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         self.cached_d_topo_line = self.cached_d_topo_map = None
         self.cached_bias_energy_path = self.cached_d_topo_path = None
         self.cached_emin = self.cached_emax = None
-        self.cached_ld_up = self.cached_ld_dn = None
-        self.cached_ld_up_gpu = self.cached_ld_dn_gpu = None
+        self.cached_ld_total = self.cached_ld_mag = None
+        self.cached_ld_total_gpu = self.cached_ld_mag_gpu = None
         self.cached_marker_coords = self.cached_spec_ldos = None
         self.cached_spec_ldos_gpu = None
+        self.cached_spec_total_gpu = self.cached_spec_mag_gpu = None
         self._update_all(full_refresh=True)
 
     def _on_broadening_change(self, *args):
@@ -3613,8 +3645,9 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         self.cached_bias_energy_path = self.cached_d_topo_path = None
         self.cached_marker_coords = self.cached_spec_ldos = None
         self.cached_spec_ldos_gpu = None
-        self.cached_ld_up = self.cached_ld_dn = None
-        self.cached_ld_up_gpu = self.cached_ld_dn_gpu = None
+        self.cached_spec_total_gpu = self.cached_spec_mag_gpu = None
+        self.cached_ld_total = self.cached_ld_mag = None
+        self.cached_ld_total_gpu = self.cached_ld_mag_gpu = None
         self._broadening_topo_dirty = True
         if self.is_running:
             self._recompute_global_topo()
@@ -3660,8 +3693,8 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
             self.cached_bias_energy_path = None
             self.cached_emin = self.cached_emax = None
             self.cached_d_ldos = None
-            self.cached_ld_up = self.cached_ld_dn = None
-            self.cached_ld_up_gpu = self.cached_ld_dn_gpu = None
+            self.cached_ld_total = self.cached_ld_mag = None
+            self.cached_ld_total_gpu = self.cached_ld_mag_gpu = None
             # Only a decay-model change alters the global topo (recompute, or
             # load the model-tagged cache); path-extend does not.  Nor does
             # path-extend alter Map's topo and maps or the markers' spectra:
@@ -3672,6 +3705,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
                 self.cached_bias_energy_map = None
                 self.cached_marker_coords = self.cached_spec_ldos = None
                 self.cached_spec_ldos_gpu = None
+                self.cached_spec_total_gpu = self.cached_spec_mag_gpu = None
                 self._broadening_topo_dirty = True
                 if self.is_running:
                     self._recompute_global_topo()
@@ -3723,7 +3757,12 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         """
         Machinery: the window redrawn for its state: the maps (full_refresh), the markers, then, while
         running, the computations the state asks for (needs_topo / needs_ldos / needs_spec, the
-        same functions as before) and the panels of the view.  With RUN off and `last_run` (a decomp step:
+        same functions as before; needs_mag / needs_spec_mag, the mag channel alone of what is shown and
+        kept without it) and the panels of the view.  The LDOS is computed as its total channel; its mag
+        channel (|m| or m) only while Mag is on, for what is shown (the Line / Path LDOS, Map's maps, the
+        marker spectra): with them, or, when Mag is turned on, alone for what is kept without it (the total
+        not computed again); the display shows the total, or the mag channel while Mag is on
+        (_combine_ldos_display).  With RUN off and `last_run` (a decomp step:
         _decomp_click; a view change into Map: _build_ui) the panels of the view (the spectrum, the legend panel, the heatmaps, the maps) are
         drawn from the data of the last run, nothing computed, when the view has them (_has_last_run);
         otherwise, with RUN off, nothing more is drawn.  Map's energies, data and caches are its own (map_*,
@@ -3852,7 +3891,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
             typed = (float(self.s_emin.val), float(self.s_emax.val), nepts)
             reform = compute and (self.map_e_idx is None or typed != self.map_typed)
             needs_ldos = compute and (
-                needs_topo or self.map_ld_up_gpu is None or self.map_window != (e_lo, e_hi) or
+                needs_topo or self.map_ld_total_gpu is None or self.map_window != (e_lo, e_hi) or
                 self.map_d_ldos != decay_model or
                 (reform and not np.array_equal(
                     self._map_sample_indices(np.linspace(self.s_emin.val, self.s_emax.val, nepts)), self.map_e_idx)))
@@ -3869,6 +3908,24 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
             needs_spec = compute and (needs_ldos or (self.mode == 'Single Point' and (
                 self.cached_marker_coords is None or not np.array_equal(self.marker_coords, self.cached_marker_coords)
                 or self.cached_spec_z_key != self._ldos_topo_key(v_b, decay_model))))
+        # Mag on (a run with a mag channel) and what is shown kept without its mag channel (computed while Mag was
+        # off; Mag turned on since): its mag channel alone (want_mag 'only'), at the points, tip heights, samples and
+        # decay model its kept total was computed at, which are the window's (needs_ldos / needs_spec False); the
+        # total is not computed again.  needs_mag: the Line / Path LDOS (cached_ld_mag_gpu) or Map's maps
+        # (map_ld_mag_gpu); needs_spec_mag: the marker spectra of Single Point (cached_spec_mag_gpu) or Map
+        # (map_spec_mag_gpu).
+        mag_on = compute and self.show_mag and self._has_mag_channel()
+        if self.mode in ('Line', 'Path'):
+            needs_mag = (mag_on and not needs_ldos and self.cached_ld_total_gpu is not None
+                         and self.cached_ld_mag_gpu is None)
+        elif self.mode == 'Map':
+            needs_mag = mag_on and not needs_ldos and self.map_ld_total_gpu is not None and self.map_ld_mag_gpu is None
+        else:
+            needs_mag = False
+        spec_kept = ((self.map_spec_total_gpu, self.map_spec_mag_gpu) if self.mode == 'Map'
+                     else (self.cached_spec_total_gpu, self.cached_spec_mag_gpu))
+        needs_spec_mag = (mag_on and not needs_spec and self.mode in ('Single Point', 'Map')
+                          and spec_kept[0] is not None and spec_kept[1] is None)
 
         if compute and self.mode in ('Line', 'Path'):
             # The LDOS topo at the window's key (_ensure_ldos_topo: from memory, its cache, or converged and saved),
@@ -3924,16 +3981,17 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
             # (map_bias, map_ldos_h) and the records they were taken with (the window, the decay model and the
             # broadening: map_window, map_d_ldos, map_broadening; the spectrum's energies are kept with Map's marker
             # spectra, below).  The heights: the LDOS topo at the window's key (_ensure_ldos_topo, before the maps;
-            # from memory when needs_topo took it above).
+            # from memory when needs_topo took it above).  The total channel, and the mag channel only while Mag is
+            # on (want_mag; map_ld_mag None otherwise).
             z_ldos = self._ensure_ldos_topo(v_b, decay_model)
             topo_new = self.map_z is None or not np.array_equal(self.map_z, z_ldos)
             grid_z = cp.hstack([self.grid_xy_gpu, cp.asarray(z_ldos, dtype=cp.float32)[:, None]])
-            ld_up, ld_dn, _, cur = self._calculate_ldos_at_points_gpu(
+            ld_total, ld_mag, _, cur = self._calculate_ldos_at_points_gpu(
                 grid_z, None, None, decay_model=decay_model, preserve_orbitals=True, with_current=True,
-                samples=self.map_e_idx, progress='Map energy maps')
-            self.map_ld_up = cp.asnumpy(ld_up)
-            self.map_ld_dn = cp.asnumpy(ld_dn) if ld_dn is not None else None
-            self.map_ld_up_gpu, self.map_ld_dn_gpu = ld_up, ld_dn
+                samples=self.map_e_idx, progress='Map energy maps', want_mag=self.show_mag)
+            self.map_ld_total = cp.asnumpy(ld_total)
+            self.map_ld_mag = cp.asnumpy(ld_mag) if ld_mag is not None else None
+            self.map_ld_total_gpu, self.map_ld_mag_gpu = ld_total, ld_mag
             self.map_current = cur
             self.map_current_E = cp.asarray((self.map_e_idx - self.k0).astype(np.float32)) * self.e_step32 + self.e032
             self.map_z = np.array(z_ldos, copy=True)
@@ -3951,32 +4009,58 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         elif needs_ldos:
             if self.mode in ('Line', 'Path'):
                 l_idx = self._display_indices(self.s_emin.val, self.s_emax.val)
-                # At the view's own tip heights: Line's (current_z_line) or Path's (current_z_path).
+                # At the view's own tip heights: Line's (current_z_line) or Path's (current_z_path).  The total
+                # channel, and the mag channel only while Mag is on (want_mag; cached_ld_mag None otherwise).
                 z_view = self.current_z_line if self.mode == 'Line' else self.current_z_path
-                ld_up, ld_dn, eg, cur = self._calculate_ldos_at_points_gpu(
+                ld_total, ld_mag, eg, cur = self._calculate_ldos_at_points_gpu(
                     np.hstack([p_xy, z_view[:, None]]),
                     None, None,
                     decay_model=decay_model, preserve_orbitals=True, with_current=True,
-                    samples=l_idx, progress=f"{self.mode} points")
+                    samples=l_idx, progress=f"{self.mode} points", want_mag=self.show_mag)
                 # The current from the same pass, stored with its samples' GPU energies e0 + (i - k0) step.
                 self.cached_current = cur
                 self.cached_current_E = cp.asarray((l_idx - self.k0).astype(np.float32)) * self.e_step32 + self.e032
             else:
-                ld_up, ld_dn = None, None
+                ld_total, ld_mag = None, None
 
-            if ld_up is not None:
+            if ld_total is not None:
                 # The line's LDOS and its energies, kept together (Single Point's spectra keep theirs: cached_spec_eg),
                 # and the view that computed them (cached_ld_mode: Line's data are never sent with Path's markers).
-                self.cached_ld_up = cp.asnumpy(ld_up)
-                self.cached_ld_dn = cp.asnumpy(ld_dn) if ld_dn is not None else None
-                self.cached_ld_up_gpu, self.cached_ld_dn_gpu = ld_up, ld_dn
+                self.cached_ld_total = cp.asnumpy(ld_total)
+                self.cached_ld_mag = cp.asnumpy(ld_mag) if ld_mag is not None else None
+                self.cached_ld_total_gpu, self.cached_ld_mag_gpu = ld_total, ld_mag
                 self.cached_eg = cp.asnumpy(eg)
                 self.cached_ld_mode = self.mode
             self.cached_emin, self.cached_emax = e_lo, e_hi
             self.cached_d_ldos = decay_model
             self.cached_mode = self.mode
 
-        if needs_spec and self.mode in ['Single Point', 'Map']:
+        if needs_mag:
+            # The mag channel alone (want_mag 'only') of the view's kept LDOS (Mag on, the LDOS kept without it),
+            # into its record beside the kept total, which is not computed again.
+            if self.mode == 'Map':
+                # At the LDOS-topo heights, the energies and the decay model Map's kept maps were computed at (map_z,
+                # map_e_idx, map_d_ldos).
+                grid_z = cp.hstack([self.grid_xy_gpu, cp.asarray(self.map_z, dtype=cp.float32)[:, None]])
+                _, ld_mag, _ = self._calculate_ldos_at_points_gpu(
+                    grid_z, None, None, decay_model=self.map_d_ldos, preserve_orbitals=True,
+                    samples=self.map_e_idx, progress='Map energy maps', want_mag='only')
+                self.map_ld_mag = cp.asnumpy(ld_mag)
+                self.map_ld_mag_gpu = ld_mag
+            else:
+                # At the view's own tip heights (current_z_line or current_z_path) and the window's samples, as the
+                # kept total.
+                l_idx = self._display_indices(self.s_emin.val, self.s_emax.val)
+                z_view = self.current_z_line if self.mode == 'Line' else self.current_z_path
+                _, ld_mag, _ = self._calculate_ldos_at_points_gpu(
+                    np.hstack([p_xy, z_view[:, None]]),
+                    None, None,
+                    decay_model=decay_model, preserve_orbitals=True,
+                    samples=l_idx, progress=f"{self.mode} points", want_mag='only')
+                self.cached_ld_mag = cp.asnumpy(ld_mag)
+                self.cached_ld_mag_gpu = ld_mag
+
+        if (needs_spec or needs_spec_mag) and self.mode in ['Single Point', 'Map']:
             # The markers' tip heights: the LDOS topo at the window's key (_ensure_ldos_topo; in Map from memory, taken
             # before its maps), at the grid point nearest each marker's place wrapped into the cell, in Single Point
             # as in Map: shared with Map, so they no longer depend on which view ran last.
@@ -4002,47 +4086,75 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
 
             pt_gpu = cp.array(np.hstack([m_coords, z_marks[:, None]]), dtype=cp.float32)
             spec_idx = self._display_indices(self.s_emin.val, self.s_emax.val)
-            s_up, s_dn, _, s_cur = self._calculate_ldos_at_points_gpu(
-                pt_gpu, None, None,
-                decay_model=decay_model, preserve_orbitals=True, with_current=True,
-                samples=spec_idx, progress='marker spectra')
+            if needs_spec:
+                # A marker's release or creation, or new data: the total channel, and the mag channel only while Mag
+                # is on (want_mag; None otherwise), with the current from the total's pass.
+                s_total, s_mag, _, s_cur = self._calculate_ldos_at_points_gpu(
+                    pt_gpu, None, None,
+                    decay_model=decay_model, preserve_orbitals=True, with_current=True,
+                    samples=spec_idx, progress='marker spectra', want_mag=self.show_mag)
 
-            spec_ldos = self._combine_ldos_display(s_up, s_dn, self.show_mag)
-            if self.mode == 'Map':
-                # Map's own marker spectra (map_spec_*), apart from Single Point's, with their energies and the
-                # markers they were computed for.
-                self.map_spec_ldos_gpu = spec_ldos
-                self.map_spec_ldos = cp.asnumpy(spec_ldos)
-                self.map_marker_coords = np.array(self.marker_coords).copy()
-                self.map_eg = self.energies[spec_idx]          # their energies, kept with them
-                # The markers' current from the same pass, stored with its samples' GPU energies e0 + (i - k0) step.
-                self.map_spec_current = s_cur
-                self.map_spec_current_E = cp.asarray((spec_idx - self.k0).astype(np.float32)) * self.e_step32 + self.e032
-                # The decay model and the broadening they were computed with: kept through a Decay or broadening
-                # change, they are not sent for the decomposition while these differ from the window's (sim_wrapper).
-                self.map_spec_d_ldos, self.map_spec_broadening = decay_model, dict(self.extra_broadening)
+                if self.mode == 'Map':
+                    # Map's own marker spectra (map_spec_*), apart from Single Point's: their two channels (the
+                    # spectra as shown are formed below), with their energies and the markers they were computed for.
+                    self.map_spec_total_gpu, self.map_spec_mag_gpu = s_total, s_mag
+                    self.map_marker_coords = np.array(self.marker_coords).copy()
+                    self.map_eg = self.energies[spec_idx]          # their energies, kept with them
+                    # The markers' current from the same pass, stored with its samples' GPU energies e0 + (i - k0) step.
+                    self.map_spec_current = s_cur
+                    self.map_spec_current_E = cp.asarray((spec_idx - self.k0).astype(np.float32)) * self.e_step32 + self.e032
+                    # The decay model and the broadening they were computed with: kept through a Decay or broadening
+                    # change, they are not sent for the decomposition while these differ from the window's (sim_wrapper).
+                    self.map_spec_d_ldos, self.map_spec_broadening = decay_model, dict(self.extra_broadening)
+                else:
+                    # Single Point's: their two channels (the spectra as shown are formed below).
+                    self.cached_spec_total_gpu, self.cached_spec_mag_gpu = s_total, s_mag
+                    self.cached_marker_coords = np.array(self.marker_coords).copy()
+                    self.cached_spec_window = (e_lo, e_hi)
+                    self.cached_spec_z_key = self.ldos_z_key          # the LDOS topo's key their tip heights were taken at
+                    self.cached_spec_eg = self.energies[spec_idx]      # their energies, kept with them
+                    # The markers' current from the same pass, stored with its samples' GPU energies e0 + (i - k0) step.
+                    self.cached_spec_current = s_cur
+                    self.cached_spec_current_E = cp.asarray((spec_idx - self.k0).astype(np.float32)) * self.e_step32 + self.e032
             else:
-                self.cached_spec_ldos_gpu = spec_ldos
-                self.cached_spec_ldos = cp.asnumpy(spec_ldos)
-                self.cached_marker_coords = np.array(self.marker_coords).copy()
-                self.cached_spec_window = (e_lo, e_hi)
-                self.cached_spec_z_key = self.ldos_z_key          # the LDOS topo's key their tip heights were taken at
-                self.cached_spec_eg = self.energies[spec_idx]      # their energies, kept with them
-                # The markers' current from the same pass, stored with its samples' GPU energies e0 + (i - k0) step.
-                self.cached_spec_current = s_cur
-                self.cached_spec_current_E = cp.asarray((spec_idx - self.k0).astype(np.float32)) * self.e_step32 + self.e032
+                # needs_spec_mag (Mag turned on, the markers' spectra kept without their mag channel): the mag channel
+                # alone (want_mag 'only'), at the same markers, tip heights, samples and decay model as the kept
+                # total, into the view's record beside it (the spectra as shown are formed below).
+                _, s_mag, _ = self._calculate_ldos_at_points_gpu(
+                    pt_gpu, None, None,
+                    decay_model=decay_model, preserve_orbitals=True,
+                    samples=spec_idx, progress='marker spectra', want_mag='only')
+                if self.mode == 'Map':
+                    self.map_spec_mag_gpu = s_mag
+                else:
+                    self.cached_spec_mag_gpu = s_mag
 
-        # The view's own LDOS as displayed: Line / Path the line's (cached_ld_*), Map its own (map_ld_*).
+        # The marker spectra as shown (Single Point, Map: each view's own): the total, or the mag channel while Mag
+        # is on (_combine_ldos_display, no copy), formed again (with the NumPy copy sim_wrapper reads) only when what
+        # is shown changes: new spectra, a new mag channel, or Mag turned on or off.
+        if self.mode == 'Map':
+            shown = self._combine_ldos_display(self.map_spec_total_gpu, self.map_spec_mag_gpu, self.show_mag)
+            if shown is not self.map_spec_ldos_gpu:
+                self.map_spec_ldos_gpu = shown
+                self.map_spec_ldos = cp.asnumpy(shown) if shown is not None else None
+        elif self.mode == 'Single Point':
+            shown = self._combine_ldos_display(self.cached_spec_total_gpu, self.cached_spec_mag_gpu, self.show_mag)
+            if shown is not self.cached_spec_ldos_gpu:
+                self.cached_spec_ldos_gpu = shown
+                self.cached_spec_ldos = cp.asnumpy(shown) if shown is not None else None
+
+        # The view's own LDOS as displayed: Line / Path the line's (cached_ld_*), Map its own (map_ld_*): the total,
+        # or the mag channel while Mag is on (_combine_ldos_display).
         if self.mode in ('Line', 'Path'):
-            ld_up_kept, ld_dn_kept, iv_which = self.cached_ld_up_gpu, self.cached_ld_dn_gpu, 'grid'
+            ld_total_kept, ld_mag_kept, iv_which = self.cached_ld_total_gpu, self.cached_ld_mag_gpu, 'grid'
         elif self.mode == 'Map':
-            ld_up_kept, ld_dn_kept, iv_which = self.map_ld_up_gpu, self.map_ld_dn_gpu, 'map'
+            ld_total_kept, ld_mag_kept, iv_which = self.map_ld_total_gpu, self.map_ld_mag_gpu, 'map'
         else:
-            ld_up_kept, ld_dn_kept, iv_which = None, None, None
-        if ld_up_kept is not None:
-            f_up = ld_up_kept.copy()
-            f_dn = ld_dn_kept.copy() if ld_dn_kept is not None else None
-            f_ldos_raw = self._combine_ldos_display(f_up, f_dn, self.show_mag)
+            ld_total_kept, ld_mag_kept, iv_which = None, None, None
+        if ld_total_kept is not None:
+            f_total = ld_total_kept.copy()
+            f_mag = ld_mag_kept.copy() if ld_mag_kept is not None else None
+            f_ldos_raw = self._combine_ldos_display(f_total, f_mag, self.show_mag)
             if self.feenstra:
                 # 'Feenstra': every partition of a point divided by that point's total I/V at each energy
                 # (Map: at the sample each map's LDOS is taken at); 'Norm', when on, then acts on the ratio.
@@ -4059,8 +4171,10 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
             spec_disp = feenstra.divide(spec_disp, self._feenstra_iv('map_spec' if self.mode == 'Map' else 'spec'))
 
         # --- Determine whether mag data is signed (for colormap selection) ---
+        # The magnetization colour maps only while the view's mag channel is kept: until it is computed (Mag
+        # turned on with RUN off) the total is shown in its place (_combine_ldos_display), in the LDOS's.
         mag_signed = self._mag_is_signed()
-        has_mag = self._has_mag_channel()
+        has_mag = self._has_mag_channel() and ld_mag_kept is not None
         use_diverging = self.show_mag and has_mag and mag_signed
 
         if self.mode in ('Line', 'Path'):
@@ -4948,16 +5062,18 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
 
     def _redraw_map_slice(self, i):
         target_e = self.map_e_targets[i]
-        f_up = self.map_ld_up_gpu.copy()
-        f_dn = self.map_ld_dn_gpu.copy() if self.map_ld_dn_gpu is not None else None
-        f_ldos_raw = self._combine_ldos_display(f_up, f_dn, self.show_mag)
+        # Map's kept maps as displayed: the total, or the mag channel while Mag is on (_combine_ldos_display).
+        f_total = self.map_ld_total_gpu.copy()
+        f_mag = self.map_ld_mag_gpu.copy() if self.map_ld_mag_gpu is not None else None
+        f_ldos_raw = self._combine_ldos_display(f_total, f_mag, self.show_mag)
         if self.feenstra:
             # 'Feenstra': every map divided by I/V at the sample its LDOS is taken at (as in _update_all).
             f_ldos_raw = feenstra.divide(f_ldos_raw, self._feenstra_iv('map'))
         partitions = self.decomp.partitions(f_ldos_raw, self.atomtypes, self.atomnums, self.orbitals, self.dos_up_gpu)
 
+        # The magnetization colour maps only while Map's mag channel is kept (as in _update_all).
         mag_signed = self._mag_is_signed()
-        has_mag = self._has_mag_channel()
+        has_mag = self._has_mag_channel() and self.map_ld_mag_gpu is not None
         use_diverging = self.show_mag and has_mag and mag_signed
 
         m_coords_np = np.array(self.marker_coords)
@@ -5078,18 +5194,18 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
     def _has_last_run(self):
         """
         Machinery: whether the view holds the last run's data a RUN-off redraw draws from (_update_all,
-        last_run): Line / Path the line's LDOS computed in this view (cached_ld_up_gpu, cached_mode); Single
+        last_run): Line / Path the line's LDOS computed in this view (cached_ld_total_gpu, cached_mode); Single
         Point its marker spectra (cached_spec_ldos_gpu), one for every marker; Map its maps' LDOS
-        (map_ld_up_gpu) and its own marker spectra (map_spec_ldos_gpu), one for every marker.  False when they
+        (map_ld_total_gpu) and its own marker spectra (map_spec_ldos_gpu), one for every marker.  False when they
         are not there (no run in the view yet, data dropped by a change made while stopped, a marker added
         while stopped).
         """
         spec = self.map_spec_ldos_gpu if self.mode == 'Map' else self.cached_spec_ldos_gpu
         spec_ok = spec is not None and len(spec) >= len(self.marker_coords)
         if self.mode in ('Line', 'Path'):
-            return self.cached_ld_up_gpu is not None and getattr(self, 'cached_mode', None) == self.mode
+            return self.cached_ld_total_gpu is not None and getattr(self, 'cached_mode', None) == self.mode
         if self.mode == 'Map':
-            return self.map_ld_up_gpu is not None and self.map_e_idx is not None and spec_ok
+            return self.map_ld_total_gpu is not None and self.map_e_idx is not None and spec_ok
         return spec_ok
 
     def _decomp_changed(self):
@@ -5318,25 +5434,33 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
             # broadening (map_broadening).
             # While the window's broadening differs from Map's (changed since, while stopped or in another view), the
             # DOS is rebuilt at Map's for this one call (_apply_extra_broadening) and then at the window's again.
+            # The total channel, and the mag channel only while Mag is on and Map's maps keep theirs (want_mag; with
+            # none kept the maps show the total, so the dragged map's mag channel has no maps to join).
             kept_broad = self.map_broadening is not None and self.map_broadening != self.extra_broadening
             if kept_broad:
                 window_broad, self.extra_broadening = self.extra_broadening, dict(self.map_broadening)
                 self._apply_extra_broadening()
             try:
                 grid_z = cp.hstack([self.grid_xy_gpu, cp.asarray(self.map_z, dtype=cp.float32)[:, None]])
-                t_up, t_dn, _, t_cur = self._calculate_ldos_at_points_gpu(
+                t_total, t_mag, _, t_cur = self._calculate_ldos_at_points_gpu(
                     grid_z, None, None, decay_model=self.map_d_ldos, preserve_orbitals=True,
-                    with_current=True, samples=[e_idx], progress='dragged map')
+                    with_current=True, samples=[e_idx], progress='dragged map',
+                    want_mag=self.show_mag and self.map_ld_mag_gpu is not None)
             finally:
                 if kept_broad:
                     self.extra_broadening = window_broad
                     self._apply_extra_broadening()
             # Into Map's own caches (map_*): its LDOS columns, the NumPy and the GPU copies.
-            self.map_ld_up[:, idx:idx + 1] = cp.asnumpy(t_up[:, 0:1])
-            self.map_ld_up_gpu[:, idx:idx + 1] = t_up[:, 0:1]
-            if t_dn is not None and self.map_ld_dn is not None:
-                self.map_ld_dn[:, idx:idx + 1] = cp.asnumpy(t_dn[:, 0:1])
-                self.map_ld_dn_gpu[:, idx:idx + 1] = t_dn[:, 0:1]
+            self.map_ld_total[:, idx:idx + 1] = cp.asnumpy(t_total[:, 0:1])
+            self.map_ld_total_gpu[:, idx:idx + 1] = t_total[:, 0:1]
+            if t_mag is not None:
+                self.map_ld_mag[:, idx:idx + 1] = cp.asnumpy(t_mag[:, 0:1])
+                self.map_ld_mag_gpu[:, idx:idx + 1] = t_mag[:, 0:1]
+            else:
+                # Mag off (or no mag channel kept): the dragged map's mag channel is not computed, so a kept one, now
+                # without that map, is dropped; it is computed again, every map, when Mag is turned on (_update_all,
+                # needs_mag).
+                self.map_ld_mag = self.map_ld_mag_gpu = None
             # Its current, from the same call, into column idx, and its sample's GPU energy e0 + (i - k0) step.
             self.map_current[:, idx] = t_cur[:, 0]
             self.map_current_E[idx] = self.e032 + np.float32(e_idx - self.k0) * self.e_step32
@@ -5351,12 +5475,12 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
                 o_gpu = cp.asarray(order)
                 self.map_e_idx = self.map_e_idx[order]
                 self.map_e_targets = self.map_e_targets[order]
-                self.map_ld_up = self.map_ld_up[:, order]
-                self.map_ld_up_gpu = self.map_ld_up_gpu[:, o_gpu]
-                if self.map_ld_dn is not None:
-                    self.map_ld_dn = self.map_ld_dn[:, order]
-                if self.map_ld_dn_gpu is not None:
-                    self.map_ld_dn_gpu = self.map_ld_dn_gpu[:, o_gpu]
+                self.map_ld_total = self.map_ld_total[:, order]
+                self.map_ld_total_gpu = self.map_ld_total_gpu[:, o_gpu]
+                if self.map_ld_mag is not None:
+                    self.map_ld_mag = self.map_ld_mag[:, order]
+                if self.map_ld_mag_gpu is not None:
+                    self.map_ld_mag_gpu = self.map_ld_mag_gpu[:, o_gpu]
                 self.map_current = self.map_current[:, o_gpu]
                 self.map_current_E = self.map_current_E[o_gpu]
                 self._spec_emarkers = [self._spec_emarkers[j] for j in order]

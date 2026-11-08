@@ -260,7 +260,7 @@ class StmDecompSession:
                 print("[WRAPPER] no computed spectra yet — press RUN first "
                       "(nothing was sent).")
                 return None
-            if sim.cached_ld_up is None:
+            if sim.cached_ld_total is None:
                 print("[WRAPPER] no line LDOS cached — press RUN first "
                       "(nothing was sent).")
                 return None
@@ -276,9 +276,9 @@ class StmDecompSession:
             # it (cached_eg, written only with cached_ld_*).
             eg = np.asarray(sim.cached_eg, dtype=np.float64)
             f_raw = sim._combine_ldos_display(
-                sim.cached_ld_up.copy(),
-                (sim.cached_ld_dn.copy()
-                 if sim.cached_ld_dn is not None else None),
+                sim.cached_ld_total.copy(),
+                (sim.cached_ld_mag.copy()
+                 if sim.cached_ld_mag is not None else None),
                 sim.show_mag)
             offsets = np.asarray(sim.marks.get_offsets())
             for i, r in enumerate(sim.marker_ratios):
