@@ -2547,8 +2547,8 @@ class Arrangement(QtWidgets.QWidget):
         free_size, when it gives no size for 'h', or when the two fit in no room (the group is then sized in
         the room the readable minimum leaves, as without free_size).  Not asked in minimum_px's search
         (_base_lim set, _candidates_at): there 'h' is sized in the room the readable minimum leaves, as
-        without free_size, so that the window's minimum width does not hold this row and a narrower window
-        takes 'v' by the tall_rule (3.7).
+        without free_size, so that the window's minimum width does not hold this row: a narrower window
+        takes 'v' by the tall_rule, and the minimum width is 'v''s (_minimum_now, 3.7).
         """
         fn = self._free_size_fn
         if fn is None:
@@ -3093,7 +3093,9 @@ class Arrangement(QtWidgets.QWidget):
         row 'h' holds at free_size and the tall_rule takes 'v' there: 3.7) and the bottom widget under them
         (bottom), in every candidate
         the window allows (layouts: the largest of their smallest sizes, so the limits hold in whichever is
-        taken; _min_of).  None without a floor, or while the floor's panel has no plot box or no minimum yet.
+        taken; _min_of; with tall_rule the width is the second's narrowest, 'v''s in Single Point, the rule
+        taking the second below the first's narrowest width: _minimum_now, 3.7).  None without a floor, or
+        while the floor's panel has no plot box or no minimum yet.
         A floor is never combined with free_scored (the class docstring): _balanced would keep the floor's
         group below its floor size, and the search would find no size a screen has.
         Worked out again only when the groups' shapes, the window's text zoom or portrait setting, the floor's
