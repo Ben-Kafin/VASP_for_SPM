@@ -1,6 +1,6 @@
 # Plan: the views-layout decisions, the bias toggles, the topos, the LDOS speed-up, |m| and m on demand, the caches folder, the console lines and the shading
 
-Draft of 2026-11-07, for Benjamin's approval. Nothing in it is implemented. Your answers to the questions are written into the sections. One question is still open, in section 11. Section 12 holds what the check of the briefs against your other documents found still missing.
+Draft of 2026-11-07, for Benjamin's approval. Nothing in it is implemented. Your answers to the questions are written into the sections. No questions are open. Section 12 holds what the check of the briefs against your other documents found still missing.
 
 ## 0. Sources
 
@@ -102,7 +102,17 @@ Draft of 2026-11-07, for Benjamin's approval. Nothing in it is implemented. Your
 **Change:**
 - In the simulator's windows, the toolbar drops Home, Pan and Zoom. Save and the coordinates readout stay exactly where they are, and the readout's text stays "x=…  y=…".
 - Since Pan and Zoom are gone, the decomp clicks' Pan / Zoom exception goes with them (12.3).
-- Everything else of your rule is already true. Whether the readout should also show over colour bars is in section 11.
+- **The value under the mouse** (your rule, 2026-11-08): on a panel that shows data as colour, the readout adds the value that corresponds to the colour under the mouse: "x=…  y=…  value=…".
+  - The global topo and the LDOS topo panels (with Line's corridor and Path's rectangle): the height there, in Å.
+  - The stripe: the tip height of the segment under the mouse.
+  - The Line / Path heatmaps: the value of the cell under the mouse.
+  - The energy maps: the map's value there, contoured or shaded.
+  - For a filled-contour panel (60 bands) the value is the data interpolated at the mouse's point, as the contours are made from it, not the band's edge.
+  - A tiled panel takes the value of the periodic data at that point.
+  - Curve panels (the spectra, Tip Height) keep x and y only.
+- **Over a colour bar** the readout stays blank, as now.
+- It goes in `qtgui`'s readout (`NavigationToolbar.show_coords`), with each colour artist giving its value at a point. So every `qtgui` window gets it on its own colour panels.
+- Everything else of your rule is already true.
 
 ### 3.3 The topo sub-section (every view)
 
@@ -445,9 +455,9 @@ Draft of 2026-11-07, for Benjamin's approval. Nothing in it is implemented. Your
 - **Where the code goes:** the light's state, the two panels' drawing and their drag rules go in `cmap_shading.py` with the box, so sm4_Browser can take them as it is meant to take the module. The simulator places them.
 - **The info panel:** lists the darkness, the azimuth and the elevation with the other settings.
 
-## 11. Open question
+## 11. Open questions
 
-1. **3.2, the readout over colour bars:** today the toolbar's coordinates go blank over a colour bar, but your rule says "any panel". Show them over colour bars too? **R: yes**, since a colour bar is a panel of the window.
+None.
 
 ## 12. Gaps from your other documents
 
