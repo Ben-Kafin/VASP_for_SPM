@@ -57,7 +57,11 @@ Draft of 2026-11-07, for Benjamin's approval. Nothing in it is implemented. Your
 - The LDOS topo becomes "LDOS Topo: bias … V, height … Å".
 
 **Prints:**
-- "[*] Map Local Setpoint LDOS: …" and "[*] Path Setpoint LDOS: …" become one print, "[*] LDOS Topo Setpoint LDOS: …", for both the LDOS topo and the stripes.
+- **The setpoint prints** (your rule, 2026-11-08) name what is converged, with "LDOS" said only once:
+  - the LDOS topo: "[*] LDOS Topo Setpoint: …", was "Map Local Setpoint LDOS";
+  - the global topo: "[*] Global Setpoint: …", was "Global Setpoint LDOS";
+  - Line's stripe: "[*] Line Setpoint: …", was "Path Setpoint LDOS", even in Line;
+  - Path's stripe: "[*] Path Setpoint: …", was "Path Setpoint LDOS".
 - "Map Topo" and "Line Topo" in comments and docstrings become "LDOS topo"; the README follows.
 - Outside the simulator, `sim_wrapper` reads `global_z_map`, which keeps its name. Nothing outside reads the other renamed names.
 
