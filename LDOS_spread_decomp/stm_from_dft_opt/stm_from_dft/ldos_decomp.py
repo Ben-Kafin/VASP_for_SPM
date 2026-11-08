@@ -76,9 +76,11 @@ def _column_orbitals(orbitals):
     Machinery: the orbital names of the displayed LDOS columns, in column order, each once: every name of
     `orbitals` without its spin suffix (_orbit_base).  In a spin-polarised run `orbitals` has a name for each
     column of both spin channels ('s_up', 's_down', 'py_up', ...), while each channel's DOS (dos_up) has one
-    column per orbital and the displayed LDOS combines the two channels column by column (the spin sum, or
-    their difference under 'Mag': the simulator's _combine_ldos_display), so a column is named by its base
-    orbital (s, py, pz, ...); without spin channels the names are the columns' own.
+    column per orbital and the displayed LDOS is one channel per orbital column: the total (up + down), or
+    under 'Mag' the magnetization (m = up - down, or NCL |m|), each from its own DOS in one pass (collinear
+    polarized dos_total_* and dos_m_*, NCL dos_up_* and dos_dn_*; the simulator's _combine_ldos_display picks
+    one), so a column is named by its base orbital (s, py, pz, ...); without spin channels the names are the
+    columns' own.
     """
     return list(dict.fromkeys(_orbit_base(o) for o in orbitals))
 

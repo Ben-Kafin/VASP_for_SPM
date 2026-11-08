@@ -181,15 +181,15 @@ def gpu_decay_off_factor(phi, d):
 # Which lines are which: the lines marked 'Physics' in the source transcribe the physics: exact_weight's
 # S and dS/dV (and w, dw/dV), the two integrands, and the sums that make dI/dV and I.  Everything else is
 # machinery: one thread per (tip point, requested V, atom), the grid's x over the launch's (tip point, requested
-# V) pairs, tp = t n_p + pl (requested sample t at tip point p0 + pl: a warp's threads share one V at consecutive
-# tip points), its y over the atoms; each thread loops over its atom's images and does its one V's work for each;
-# out (n_p, n_t, n_atoms, N_ORB) += dI/dV; cur (n_p, n_t, n_atoms) += the current, each thread in its own (tip
-# point, V, atom) slot (summed over its images; the caller sums cur over atoms; no atomics); want_cur = 0 skips the
-# current and does not touch cur (NULL then); the stencil, f(0), the pieces and the pairs
-# (quadrature.integral_from_zero's rule); a sample's energy formed from its span index j as e0 + (j - kz) step in
-# float32 (step, e0 and kz, the span index of k0, passed in; no energy array); float for every value, pointer and
-# output, expf / sqrtf and the f suffix on every literal; the launch chunked by the caller by the (requested V,
-# sample) pairs per tip point.
+# V) pairs, tp = t n_p + pl (requested sample t at tip point p0 + pl: consecutive threads are consecutive tip
+# points at one V, then the next V; with one tip point per launch, consecutive V), its y over the atoms; each
+# thread loops over its atom's images and does its one V's work for each; out (n_p, n_t, n_atoms, N_ORB) += dI/dV;
+# cur (n_p, n_t, n_atoms) += the current, each thread in its own (tip point, V, atom) slot (summed over its
+# images; the caller sums cur over atoms; no atomics); want_cur = 0 skips the current and does not touch cur
+# (NULL then); the stencil, f(0), the pieces and the pairs (quadrature.integral_from_zero's rule); a sample's
+# energy formed from its span index j as e0 + (j - kz) step in float32 (step, e0 and kz, the span index of k0,
+# passed in; no energy array); float for every value, pointer and output, expf / sqrtf and the f suffix on every
+# literal; the launch chunked by the caller by the (requested V, sample) pairs per tip point.
 _EXACT_SWEEP_SRC = r'''
 // Physics: the exact tilted barrier (gpu_exact_factor): a = phi - E + V, b = phi - E, kd = k d;
 // w = exp(-S), dw/dV = -(dS/dV) w.  Three branches: under the barrier at both ends (the forms with no division
@@ -1260,10 +1260,10 @@ class Unified_STM_Simulator:
             return (_compute_channel(barrier_pot, self.dos_up_gpu, self.dos_up_collapsed)[0],
                     None, calc_energies_gpu)
 
-        # The total channel, one pass, every run (but with want_mag 'only'), both against the total barrier:
-        # collinear polarized the precomputed up + down (dos_total_*); NCL_SOC dos_up_gpu IS already ρ_total per
-        # orbital; COLLINEAR_UNPOL dos_up_gpu IS the single channel (its console line has no channel label).  The
-        # current (with_current) comes from this pass.
+        # The total channel, one pass (every call but want_mag 'only'), against the total barrier as the mag channel
+        # below: collinear polarized the precomputed up + down (dos_total_*); NCL_SOC dos_up_gpu IS already ρ_total
+        # per orbital; COLLINEAR_UNPOL dos_up_gpu IS the single channel (its console line has no channel label).
+        # The current (with_current) comes from this pass.
         has_mag = self._has_mag_channel()
         ld_total = cur = None
         if want_mag != 'only':
@@ -1874,7 +1874,9 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         # One list defines every toggle: label and the attribute it drives.  'exact' and 'linearized' sit indented
         # under 'Decay': the Decay-on model, exactly one of them on ('linearized' drives decay_linearized, 'exact'
         # shows its opposite and drives nothing itself: None); a click on one turns it on and the other off
-        # (_on_toggle).  show_decay_toggle=False hides the three.
+        # (_on_toggle).  show_decay_toggle=False hides the three.  'Mag' shows the mag channel (|m| or m) in place of
+        # the total; it is computed only while Mag is on (turning it on, while running, computes it for what is shown
+        # and kept without it: _update_all).
         toggle_defs = [('Atoms', 'show_atoms'), ('Decay', 'use_decay'),
                        ('exact', None), ('linearized', 'decay_linearized'),
                        ('Norm', 'normalize'), ('Feenstra', 'feenstra'),
