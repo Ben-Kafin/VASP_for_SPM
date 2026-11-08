@@ -61,6 +61,7 @@ SPECS = {
     'Segmentation': _spec('check', 1.2, 0.3),                       # spread_collapse: under Horizontal
     'Norm': _spec('check', 0.7, 0.3),                               # state_decomposition_plot: per-curve normalization
     'cmap norm': _spec('check', 1.1, 0.3),                          # the simulator's Map view: each energy map its own colour scale (the sm4_Browser Map window's toggle)
+    'bias': _spec('check', 0.5, 0.3),                               # the simulator: beside E Min and beside E Max, which end of the energy window is the bias (exactly one on)
     # --- toggle boxes (several rows) ---
     'sim toggles': _spec('checks', 1.2, 1.4, labels=['Atoms', 'Decay', 'exact', 'linearized', 'Norm', 'Feenstra', 'Mag', 'Cell', 'Extend']),   # the simulator ('exact' and 'linearized' indented under 'Decay')
     'broadening': _spec('checks', 0.6, 0.6, labels=None),           # the simulator: one row per atom type (labels per file)
@@ -88,6 +89,7 @@ SPECS = {
     'Topo h': _spec('value', 0.6, 0.24, vmin=0.0, vmax=None, decimals=3),      # tip heights (Å); the window passes vmax
     'LDOS h': _spec('value', 0.6, 0.24, vmin=0.0, vmax=None, decimals=3),
     'σ broad': _spec('value', 0.5, 0.22, fs=7, vmin=0.0, vmax=1.0, decimals=2),   # the simulator: extra broadening per atom type (eV), labelled 'σ <type>'
+    'darkness': _spec('value', 0.5, 0.24, vmin=0.0, vmax=1.0, decimals=2),     # the simulator's shading sub-section (Map): the shading's darkness, 0 none to 1 the darkest point black
     'σ (eV)': _spec('value', 0.6, 0.24, decimals=3),                           # SigmaBox: the window passes the limits
     'γ': _spec('text', 0.45, 0.24, fs=7),                                      # GammaBox (plane slice)
     'LDOS γ': _spec('text', 0.45, 0.24, fs=7),                                 # GammaBox (the simulator's heatmaps)

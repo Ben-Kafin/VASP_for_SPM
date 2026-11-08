@@ -88,7 +88,9 @@ window.
 
 Also here: the events the windows connect to (FigureCanvas.mpl_connect:
 MouseEvent, KeyEvent, PickEvent, CloseEvent), the navigation toolbar
-(NavigationToolbar: Home, Pan, Zoom, Save), the saving of a figure, exactly
+(NavigationToolbar: Home, Pan, Zoom, which a window may drop, Figure.set_navigation;
+Save; the coordinates readout, with the value under the mouse on a panel that
+shows data as colour, value_at of its colour artists), the saving of a figure, exactly
 what the window shows (Figure.savefig: PDF / EPS / SVG through mplexport, the
 plots at their on-screen places and sizes and the full info panel below them,
 the controls left out with their places empty; an SVG of the whole window as
@@ -2614,6 +2616,8 @@ class AxesImage(Artist):
     translated topography).  origin 'upper' puts row 0 at the top edge.  A
     3D (RGB / RGBA) array is drawn as given.  NaN pixels are transparent.
     A page without a size (an empty or degenerate extent) is not drawn.
+    value_at(x, y): the value of the pixel under a data point (the toolbar's
+    readout, NavigationToolbar.show_coords).
     """
 
     zorder_default = 0.0
@@ -2746,9 +2750,40 @@ class AxesImage(Artist):
     def get_clim(self):
         return self.norm.vmin, self.norm.vmax
 
+    def value_at(self, x, y):
+        """
+        The value the colour under data point (x, y) stands for (the toolbar's readout): the entry of the
+        2D array whose pixel covers the point, the transform added by set_transform undone, then the
+        extent (origin 'upper': row 0 at the top edge, as drawn).  None for an RGB(A) image (its
+        colours are given, no value), outside the image, or on a NaN pixel.
+        """
+        if self._rgb or self._A is None or self._extent is None or self._A.ndim != 2:
+            return None
+        px, py = float(x), float(y)
+        if self._affine is not None:
+            try:
+                inv = np.linalg.inv(self._affine.get_matrix())
+            except np.linalg.LinAlgError:
+                return None
+            px, py = (inv @ np.array([px, py, 1.0]))[:2]
+        ny, nx = self._A.shape
+        l, r, b, t = self._extent
+        if not (r != l and t != b and np.isfinite(px) and np.isfinite(py)):
+            return None
+        col = int(np.floor((px - l) / (r - l) * nx))
+        drawn = int(np.floor((py - b) / (t - b) * ny))           # the drawn row: row 0 of the drawn array sits at b (_refresh)
+        if not (0 <= col < nx and 0 <= drawn < ny):
+            return None
+        row = drawn if self.origin == 'lower' else ny - 1 - drawn
+        v = float(self._A[row, col])
+        return v if np.isfinite(v) else None
+
 
 class QuadMesh(Artist):
-    """pcolormesh: filled quads (QuadItem) coloured from the norm and the colour map."""
+    """
+    pcolormesh: filled quads (QuadItem) coloured from the norm and the colour map.
+    value_at(x, y): the value of the cell under a data point (the toolbar's readout).
+    """
 
     zorder_default = 1.0
 
@@ -2758,6 +2793,7 @@ class QuadMesh(Artist):
         self.cmap = to_cmap(cmap)
         self.norm = norm if norm is not None else Normalize(vmin, vmax)
         self._alpha = alpha
+        self._qbounds = None           # the quads' bounding boxes, made at the readout's first question (value_at)
         X = np.asarray(X, dtype=np.float64)
         Y = np.asarray(Y, dtype=np.float64)
         C = np.asarray(np.ma.filled(np.ma.asarray(C, dtype=np.float64), np.nan), dtype=np.float64)
@@ -2829,6 +2865,71 @@ class QuadMesh(Artist):
         if self.colorbar is not None:
             self.colorbar.update_normal(self)
 
+    def _quad_bounds(self):
+        """The quads' bounding boxes (x min, x max, y min, y max), one entry per cell, made once per mesh (its cells never move)."""
+        if self._qbounds is None:
+            q = self._quads
+            with np.errstate(invalid='ignore'):
+                self._qbounds = (q[..., 0].min(axis=1), q[..., 0].max(axis=1), q[..., 1].min(axis=1), q[..., 1].max(axis=1))
+        return self._qbounds
+
+    def value_at(self, x, y):
+        """
+        The value the colour under data point (x, y) stands for (the toolbar's readout): the value of the
+        cell whose quad holds the point (the first found where cells share an edge), the mesh's own value.
+        None outside every cell or on a NaN cell.
+        """
+        if not len(self._quads) or not (np.isfinite(x) and np.isfinite(y)):
+            return None
+        x0, x1, y0, y1 = self._quad_bounds()
+        with np.errstate(invalid='ignore'):
+            near = np.nonzero((x0 <= x) & (x <= x1) & (y0 <= y) & (y <= y1))[0]
+        if not len(near):
+            return None
+        # The point inside a quad: on the same side of its four edges (the cross products of each edge and
+        # the point all of one sign; a mesh's quads are convex).
+        Q = self._quads[near]
+        E = np.roll(Q, -1, axis=1) - Q
+        R = np.array([float(x), float(y)]) - Q
+        cr = E[..., 0] * R[..., 1] - E[..., 1] * R[..., 0]
+        inside = np.all(cr >= 0.0, axis=1) | np.all(cr <= 0.0, axis=1)
+        flat = np.asarray(self._C, dtype=np.float64).reshape(-1)
+        for k in near[inside]:
+            v = float(flat[k])
+            if np.isfinite(v):
+                return v
+        return None
+
+
+def _grid_value(xs, ys, Z, x, y):
+    """
+    Z (ny, nx), given at the grid's nodes xs (nx) and ys (ny), each increasing or decreasing,
+    interpolated bilinearly at (x, y) (a filled contour's data between its nodes); None outside
+    the grid or where a corner of the point's cell is NaN.
+    """
+    def cell(a, v):
+        n = len(a)
+        if n < 2:
+            return None
+        up = a[-1] >= a[0]
+        b = a if up else a[::-1]
+        if not (b[0] <= v <= b[-1]):
+            return None
+        i = int(np.clip(np.searchsorted(b, v, side='right') - 1, 0, n - 2))
+        t = (v - b[i]) / ((b[i + 1] - b[i]) or 1.0)
+        return (i, t) if up else (n - 2 - i, 1.0 - t)
+    xs, ys = np.asarray(xs, dtype=np.float64).ravel(), np.asarray(ys, dtype=np.float64).ravel()
+    Z = np.asarray(Z, dtype=np.float64)
+    if Z.ndim != 2 or Z.shape != (len(ys), len(xs)) or not (np.isfinite(x) and np.isfinite(y)):
+        return None
+    cx, cy = cell(xs, float(x)), cell(ys, float(y))
+    if cx is None or cy is None:
+        return None
+    (i, tx), (j, ty) = cx, cy
+    q = Z[j:j + 2, i:i + 2]
+    v = float(q[0, 0] * (1 - tx) * (1 - ty) + q[0, 1] * tx * (1 - ty) + q[1, 0] * (1 - tx) * ty + q[1, 1] * tx * ty)
+    return v if np.isfinite(v) else None
+
 
 def _band_levels(z, levels):
     """
@@ -2859,7 +2960,8 @@ class ContourSet(Artist):
     """
     contourf on a regular grid: the bands drawn as an image (one colour per band between
     levels, the base map at the norm of each band's midpoint; `norm`, or vmin / vmax, else the
-    levels' range).
+    levels' range).  value_at(x, y): the data at a point, interpolated between the grid's
+    nodes, not a band's edge (the toolbar's readout).
     """
 
     zorder_default = 1.0
@@ -2897,6 +2999,17 @@ class ContourSet(Artist):
         for it in self._items:
             it.setOpacity(1.0 if a is None else float(a))
 
+    def value_at(self, x, y):
+        """
+        The value the colour under data point (x, y) stands for (the toolbar's readout): the data
+        interpolated bilinearly at the point between the grid's nodes (_grid_value), as the bands are
+        made from it, not the edge of the band it falls in; None outside the grid.
+        """
+        X, Y, Z = self._args[0], self._args[1], self._args[2]
+        xs = X[0] if np.ndim(X) == 2 else X
+        ys = Y[:, 0] if np.ndim(Y) == 2 else Y
+        return _grid_value(xs, ys, Z, x, y)
+
 
 class TriContourSet(Artist):
     """
@@ -2908,7 +3021,10 @@ class TriContourSet(Artist):
     band's midpoint; `norm`, or vmin / vmax, else the levels' range).  `offsets` draws the same
     raster at each (dx, dy): a window that tiles a periodic map computes it once and moves it
     (never re-imaged).  A new colour scale rebuilds the table, not the raster (set_cmap,
-    set_norm).  The arguments are kept (_args) for the publication export.
+    set_norm).  The arguments are kept (_args) for the publication export.  value_at(x, y): the
+    data at a point, interpolated by the same linear model the raster is made from (kept,
+    _interp), in the copy (offsets) that covers it: a tiled panel gives the periodic data's value
+    (the toolbar's readout).
     """
 
     zorder_default = 1.0
@@ -2932,6 +3048,7 @@ class TriContourSet(Artist):
         self._alpha = alpha
         self._band = None
         self._rect = None
+        self._interp = None            # the linear model the raster is made from, kept for the readout (value_at)
         if len(x) >= 3:
             x0, x1, y0, y1 = float(x.min()), float(x.max()), float(y.min()), float(y.max())
             w, h = x1 - x0, y1 - y0
@@ -2944,7 +3061,9 @@ class TriContourSet(Artist):
                 Zr = None
                 try:
                     from scipy.interpolate import LinearNDInterpolator
-                    Zr = LinearNDInterpolator(np.column_stack([x, y]), z)(GX, GY)
+                    interp = LinearNDInterpolator(np.column_stack([x, y]), z)
+                    Zr = interp(GX, GY)
+                    self._interp = interp          # the readout's value at a point (value_at): the same model
                 except Exception as exc:
                     print(f"tricontourf: the points cannot be triangulated ({exc}); nothing drawn.")
                 if Zr is not None:
@@ -3005,6 +3124,24 @@ class TriContourSet(Artist):
 
     get_facecolors = get_facecolor
 
+    def value_at(self, x, y):
+        """
+        The value the colour under data point (x, y) stands for (the toolbar's readout): the data
+        interpolated at the point by the linear model over the points' triangulation the raster is made
+        from (_interp), not the edge of the band it falls in; drawn at several offsets (a tiled periodic
+        map), the first copy whose points' hull holds the point gives it, so a tiled panel reads the
+        periodic data's value there.  None outside every copy, or when nothing is drawn.
+        """
+        if self._interp is None or not (np.isfinite(x) and np.isfinite(y)):
+            return None
+        pts = np.array([[float(x) - dx, float(y) - dy] for dx, dy in self._offsets], dtype=np.float64)
+        try:
+            v = np.asarray(self._interp(pts), dtype=np.float64).ravel()
+        except Exception:
+            return None
+        ok = np.isfinite(v)
+        return float(v[ok][0]) if ok.any() else None
+
 
 class LineCollection(Artist):
     """
@@ -3014,6 +3151,8 @@ class LineCollection(Artist):
     one line style; one SegmentsItem, drawn once Axes.add_collection attaches it.  set_segments,
     get_segments, set_array, set_color(s), set_linewidth(s), set_alpha; a picker makes
     contains_px test the distance to the nearest segment and PickEvent.ind holds its index.
+    value_at(x, y): coloured by an array, the value of the segment under a data point (the
+    toolbar's readout).
     """
 
     zorder_default = 2.0
@@ -3145,6 +3284,39 @@ class LineCollection(Artist):
                 best, best_i = d, i
         self._hit_index = best_i
         return best <= tol
+
+    def value_at(self, x, y):
+        """
+        The value the colour under data point (x, y) stands for (the toolbar's readout), for a collection
+        coloured by an array (set_array: the simulator's tip-height stripe): the value of the segment nearest
+        the point on screen, when the point lies on its stroke (within half its drawn width, pt2px of its
+        line width, as SegmentsItem draws it).  None for a collection of plain colours, off every stroke, or
+        on a NaN value.
+        """
+        if self._array is None or not len(self._array) or self.cmap is None or self.axes is None or not self._segments:
+            return None
+        if not (np.isfinite(x) and np.isfinite(y)):
+            return None
+        n = len(self._segments)
+        arr = self._array if len(self._array) == n else np.resize(self._array, (n,))
+        lw = self._lw if len(self._lw) == n else np.resize(self._lw, (n,))
+        drawn = [i for i, sg in enumerate(self._segments) if len(sg) >= 2]      # SegmentsItem draws only these
+        if not drawn:
+            return None
+        tr = self.axes.transData
+        px, py = tr.transform([[float(x), float(y)]])[0]
+        # Every drawn segment's vertices on screen in one transform, then split per segment.
+        pts = tr.transform(np.vstack([self._segments[i] for i in drawn]))
+        ends = np.cumsum([len(self._segments[i]) for i in drawn])[:-1]
+        best, best_i = np.inf, None
+        for i, xy in zip(drawn, np.split(pts, ends)):
+            d = _polyline_distance(px, py, xy)
+            if d < best:
+                best, best_i = d, i
+        if best_i is None or best > 0.5 * max(pt2px(float(lw[best_i])), 0.5):
+            return None
+        v = float(arr[best_i])
+        return v if np.isfinite(v) else None
 
     def _legend_sample(self):
         lw = float(self._lw[0]) if len(self._lw) else 1.5
@@ -4220,6 +4392,7 @@ class Axes:
         self._ylabel = ''
         self._colorbar = None
         self._is_colorbar = False
+        self._readout_colorbar = False  # set_readout_colorbar: the readout blank over this axes, as over a colour bar
         self._home = None
         # The view changed with the toolbar's Pan or Zoom since its last Home or since the window last set
         # its limits (_nav_follow, _nav_clear): its view line in the info panel, under this key, meanwhile.
@@ -4749,6 +4922,15 @@ class Axes:
 
     def get_navigate(self):
         return True
+
+    def set_readout_colorbar(self, flag=True):
+        """
+        The axes marked as a colour bar for the toolbar's coordinates readout (NavigationToolbar.show_coords):
+        while the mouse is over it the readout stays blank, as over a colour bar Figure.colorbar made (a
+        window's own bar drawn on a plain axes: the simulator's topo colour bar, a ramp image).  Nothing
+        else about the axes changes; the mark is the window's and stays through clear().
+        """
+        self._readout_colorbar = bool(flag)
 
     # --- the view changed with the toolbar's Pan or Zoom: a line in the window's info panel ---
 
@@ -6340,8 +6522,13 @@ class NavigationToolbar(QtWidgets.QToolBar):
     """
     A figure's navigation toolbar (matplotlib's): Home (the views as the
     window set them), Pan (left drag pans, right drag / wheel zooms), Zoom
-    (a rectangle), Save, and the cursor's coordinates.  Works for a figure
-    in its own window and for a figure embedded in a layout.
+    (a rectangle), Save, and the cursor's coordinates at its right end
+    (show_coords: "x=…  y=…", with "value=…" after them on a panel that shows
+    data as colour).  A window may drop Home, Pan and Zoom (set_navigation,
+    through Figure.set_navigation); Save and the readout then stay where they
+    are, on the same pixels: an empty room as wide as the dropped items keeps
+    their place (_nav_room_px).  Works for a figure in its own window and for
+    a figure embedded in a layout.
     """
 
     def __init__(self, figure, parent=None, coordinates=True):
@@ -6355,7 +6542,7 @@ class NavigationToolbar(QtWidgets.QToolBar):
         self.a_home = a = self.addAction(st.standardIcon(sp.SP_DirHomeIcon), 'Home')
         a.setToolTip('Reset the views to where the window put them')
         a.triggered.connect(self._home)
-        self.addSeparator()
+        self._sep_home = self.addSeparator()       # the separator after Home (dropped with it: set_navigation)
         self.a_pan = self.addAction(_icon('pan'), 'Pan')
         self.a_pan.setCheckable(True)
         self.a_pan.setToolTip('Pan with the left button, zoom with the right button or the wheel')
@@ -6364,7 +6551,7 @@ class NavigationToolbar(QtWidgets.QToolBar):
         self.a_zoom.setCheckable(True)
         self.a_zoom.setToolTip('Zoom to a rectangle drawn with the left button')
         self.a_zoom.toggled.connect(lambda on: self._mode('zoom rect' if on else ''))
-        self.addSeparator()
+        self._sep_nav = self.addSeparator()        # the separator after Pan and Zoom (dropped with them: set_navigation)
         a = self.addAction(st.standardIcon(sp.SP_DialogSaveButton), 'Save')
         a.setToolTip('Save the figure: PDF / EPS / SVG for publication (matplotlib), PNG / TIFF / SVG as on screen, or the curves as CSV')
         a.triggered.connect(self._save)
@@ -6376,7 +6563,57 @@ class NavigationToolbar(QtWidgets.QToolBar):
         self.coords.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         if coordinates:
             self.addWidget(self.coords)
+        # The room Home, Pan, Zoom and their separators leave when a window drops them (set_navigation): an
+        # empty widget in their first slot, as wide as they were (_nav_room_px), so that Save stays on its pixels.
+        self._room = QtWidgets.QWidget()
+        self._a_room = self.insertWidget(self.a_home, self._room)
+        self._a_room.setVisible(False)
+        # A new icon size (Figure._apply_zoom) resizes the dropped buttons too: the room follows them.  Connected
+        # after the buttons' own connections (made as each action was added), so it measures them resized.
+        self.iconSizeChanged.connect(self._fit_nav_room)
         figure._toolbars.append(self)
+        self.set_navigation(getattr(figure, '_navigation', True))     # the figure's option (Figure.set_navigation)
+
+    def set_navigation(self, flag):
+        """
+        Home, Pan and Zoom shown (True, every window's default) or dropped (False: the simulator's windows,
+        whose panels the mouse never pans or zooms), with the separators that go with them; Save and the
+        coordinates readout stay where they are: in place of the dropped items an empty room as wide as they
+        were (_nav_room_px), so Save keeps its pixels after it, and the readout stays at the row's right end.
+        Dropping them turns Pan and Zoom off (the navigation mode '': the window's own mouse handling).
+        """
+        flag = bool(flag)
+        if not flag:
+            for a in (self.a_pan, self.a_zoom):
+                if a.isChecked():
+                    a.setChecked(False)                # its toggled handler sets the mode to '' (_mode)
+        for a in (self.a_home, self._sep_home, self.a_pan, self.a_zoom, self._sep_nav):
+            a.setVisible(flag)
+        self._fit_nav_room()
+        self._a_room.setVisible(not flag)
+
+    def _nav_room_px(self):
+        """
+        The width (px) Home, Pan, Zoom and their two separators take in the toolbar's row: each one's widget
+        (QToolBar.widgetForAction) at its size hint, as the toolbar's layout sizes it (the hint within the
+        widget's minimum and maximum sizes), and the layout's spacing between them, less the one spacing the
+        room's own slot keeps before Save.  Measured from the widgets, shown or hidden (a hint does not
+        depend on it), so it follows the icon size and the style.
+        """
+        sp = max(int(self.layout().spacing()), 0)
+        w, n = 0, 0
+        for a in (self.a_home, self._sep_home, self.a_pan, self.a_zoom, self._sep_nav):
+            wd = self.widgetForAction(a)
+            if wd is None:
+                continue
+            hint = wd.sizeHint().expandedTo(wd.minimumSizeHint()).boundedTo(wd.maximumSize()).expandedTo(wd.minimumSize())
+            w += max(hint.width(), 0)
+            n += 1
+        return w + sp * max(n - 1, 0)
+
+    def _fit_nav_room(self, *args):
+        """The empty room of the dropped items (set_navigation) made as wide as they are now (_nav_room_px)."""
+        self._room.setFixedWidth(self._nav_room_px())
 
     @property
     def mode(self):
@@ -6441,12 +6678,20 @@ class NavigationToolbar(QtWidgets.QToolBar):
             QtWidgets.QApplication.restoreOverrideCursor()
 
     def show_coords(self, px, py):
+        """
+        The readout at canvas pixel (px, py) (from the top left; None: the mouse left the canvas):
+        "x=…  y=…" in the coordinates of the panel under the mouse, the values its axes are labelled in
+        (a turned panel's screen axes swapped back, Axes.set_rotated); on a panel that shows data as
+        colour, "x=…  y=…  value=…", the value that corresponds to the colour under the mouse
+        (_value_under); a panel of curves only keeps x and y.  Blank off every panel and over a colour
+        bar (Figure.colorbar's, or an axes the window marked so, Axes.set_readout_colorbar).
+        """
         fig = self.figure
         if px is None:
             self.coords.setText('')
             return
         ax = fig._axes_at(px, py)
-        if ax is None or ax._is_colorbar:
+        if ax is None or ax._is_colorbar or ax._readout_colorbar:
             self.coords.setText('')
             return
         (xa, xb), (ya, yb) = ax.vb.viewRange()
@@ -6459,7 +6704,27 @@ class NavigationToolbar(QtWidgets.QToolBar):
         x, y = xa + fx * (xb - xa), ya + fy * (yb - ya)
         if ax._rotated:
             x, y = y, x
-        self.coords.setText(f"x={x:.5g}  y={y:.5g}")
+        v = self._value_under(ax, x, y)
+        self.coords.setText(f"x={x:.5g}  y={y:.5g}" + ("" if v is None else f"  value={v:.5g}"))
+
+    @staticmethod
+    def _value_under(ax, x, y):
+        """
+        The value under data point (x, y) of `ax`: each visible colour artist (AxesImage, QuadMesh,
+        ContourSet, TriContourSet, a LineCollection coloured by an array) gives its value at a point
+        (value_at), asked from the top one down (the highest zorder first, the later drawn first among
+        equals, as they are drawn); the first that has one there gives it.  None on a panel of curves
+        only, or where no colour artist covers the point.
+        """
+        arts = [a for a in reversed(ax._children) if hasattr(a, 'value_at') and a.get_visible()]
+        for a in sorted(arts, key=lambda a: -float(a.get_zorder())):
+            try:
+                v = a.value_at(x, y)
+            except Exception:
+                v = None
+            if v is not None:
+                return v
+        return None
 
 
 class FigureManager:
@@ -6610,6 +6875,7 @@ class Figure:
         """
         _app()
         self._toolbars = []
+        self._navigation = True        # Home, Pan and Zoom in the figure's toolbars (set_navigation)
         self._embedded = bool(embed)
         self.number = int(num) if num is not None else (max(_figures) + 1 if _figures else 1)
         w_px, h_px = float(figsize[0]) * DPI, float(figsize[1]) * DPI
@@ -6661,6 +6927,22 @@ class Figure:
         # The info panel whose font and width the saved files' info text takes (mplexport._info_lines):
         # the window's own panel; a figure inside another window is given that window's.
         self.export_info_panel = getattr(self.manager, 'info', None)
+
+    # --- the toolbar ---
+
+    def set_navigation(self, flag):
+        """
+        The figure's toolbar option: Home, Pan and Zoom in its toolbars (True, every window's default) or
+        dropped (False: the simulator's windows); Save and the coordinates readout stay where they are
+        (NavigationToolbar.set_navigation), and Pan and Zoom are off.  A toolbar made for the figure later
+        (NavigationToolbar(fig) of an embedded figure) takes the option too.
+        """
+        self._navigation = bool(flag)
+        for tb in self._toolbars:
+            try:
+                tb.set_navigation(self._navigation)
+            except RuntimeError:               # the toolbar's window is already gone
+                pass
 
     # --- the info panel: the details cut from the titles ---
 

@@ -2327,18 +2327,44 @@ class Arrangement(QtWidgets.QWidget):
     rest of its slot up to `free_cap(rects)` ((max w, max h) for the groups' rects in that
     candidate, never below the readable minimum; the simulator sets none: its curve panels take
     the room the groups leave), at the top left of its slot, and the part of the slot it leaves
-    counts as blank.  With `free_scored` (the simulator's Single Point view) the free widget is a
-    first-class panel instead: it is scored as a group (its scale against the whole window) and
-    the one group and it are sized to one scale.  `group_cap` (A, B, k, box_a, box_b): group A's
+    counts as blank.  With `free_scored` the free widget is a first-class panel instead: it is
+    scored as a group (its scale against the whole window) and the one group and it are sized to
+    one scale (_balanced).  Never with a `floor`: at one scale the group stays below its size
+    alone in the window, so the floor's group, limited to its floor size in the minimum size's
+    search, never reaches it at any finite width (the free widget's scale, its slot against the
+    whole window, is always below 1), and minimum_px finds a size far larger than any screen or
+    none; the simulator's Single Point view, which has a floor, sizes its spectrum by free_cap at
+    one topo panel's size and chooses `h` or `v` by tall_rule instead (3.7).  `group_cap` (A, B, k, box_a, box_b): group A's
     plot box never more than k times group B's in width or in height (box_a(rect), box_b(rect):
-    their plot boxes (w, h) in a region; the simulator: the topographies at most twice a heatmap);
-    a candidate that breaks it is sized again with A limited (_candidates).  `fill_slot`: a shaped
+    their plot boxes (w, h) in a region; the simulator: the topographies at most twice a heatmap
+    or a map); a candidate that breaks it is sized again with A limited (_keep_limits).
+    `group_min` (with group_cap): the lower limit, group A's plot box never less than group_min
+    times group B's in width or in height (the simulator's Map: 1.0, a map no larger than a topo
+    panel); a candidate that breaks it is sized again with B limited, the room B gives up left
+    blank (_lower).  `floor` (G, box_of, min_box): the placement-panel minimum, a floor on one
+    given panel's plot box: box_of(rect) is that panel's plot box (w, h) when its shaped group G
+    has the region rect (x, y, w, h), min_box() the smallest plot box (w, h) it may have (the
+    simulator's _placement_min); where the floor and the 2x cap cannot both hold, the floor holds
+    and the cap gives way (A limited no further than the floor allows, _keep_limits).  `bottom`
+    (widget, size_of): a widget pinned to the bottom edge at the left (the simulator's Map: the
+    shading row, its fourth sub-section and last row), size_of(rects) its size (w, h) for a
+    candidate's regions above it ({widget: (x, y, w, h)}; None: the widget's size hint), so that
+    its panels follow the candidate's (a map panel's size); each candidate is sized in the room
+    above it (_with_bottom), and the height the window leaves over goes between the candidate's
+    regions and the widget, never below it.  With a floor the widget's smallest size is the
+    smallest at which these limits all hold (minimum_px, minimumSizeHint), so the window's
+    minimum size follows from them.  `fill_slot`: a shaped
     group (the simulator's Line / Path heatmap row) sized and scored as every group, then placed in
     its whole slot of the chosen candidate instead of its shaped size at the slot's top left
     (_slot), its fill panels stretching to it (qtplot.PanelCell.fill_as).  `layouts`: the
     candidates the window allows (a list of their names, below), every one when None (the
-    default); the simulator's Line view allows only `row_top`, its two rows.  `best_score()` is
-    the best candidate's score at the widget's size, nothing placed (the simulator compares its
+    default); the simulator allows each view only its own: Line and Path `row_top`, Map `a_top`,
+    Single Point `h` and `v` under its tall-window rule.  `tall_rule` (first, second): the choice
+    between two allowed candidates by that rule instead of by score: the first, and the second
+    exactly when the first would leave an empty band below its row (more than half a pixel
+    between its lowest region, the free widget's after free_cap, and the bottom edge), and back
+    when it no longer would (_pick; no hysteresis).  `best_score()` is
+    the chosen candidate's score at the widget's size, nothing placed (the simulator compares its
     unit-cell panels' two orientations with it).  The candidate arrangements for two groups A, B and the free widget F:
 
         row_top   A and B in one row across the top, F below
@@ -2361,21 +2387,32 @@ class Arrangement(QtWidgets.QWidget):
     `blank_fraction()` the blank share of the area; `scales()` the groups' scales.
     """
 
+    BIG_PX = 1.0e5                    # a room larger than any screen: the other side of the minimum size's searches (minimum_px)
+
     def __init__(self, shaped, free=None, spacing=8, hysteresis=0.05, free_min=None, free_cap=None,
-                 free_scored=False, group_cap=None, fill_slot=None, layouts=None):
+                 free_scored=False, group_cap=None, fill_slot=None, layouts=None, tall_rule=None,
+                 group_min=None, floor=None, bottom=None):
         super().__init__()
         self.shaped = [w for w in shaped if w is not None]
         self.free = free
         self._fill_slot = fill_slot       # the group placed in its whole slot once a candidate is chosen (_slot)
         self._layouts = None if layouts is None else tuple(layouts)    # the candidates allowed, None: every one (_candidates_at)
-        for w in self.shaped + ([free] if free is not None else []):
+        self._tall_rule = None if tall_rule is None else tuple(tall_rule)   # (first, second): the tall-window rule's choice (_pick)
+        self._bottom, self._bottom_size = (None, None) if bottom is None else (bottom[0], bottom[1])   # the widget pinned to the bottom (_with_bottom)
+        for w in self.shaped + ([free] if free is not None else []) + ([self._bottom] if self._bottom is not None else []):
             w.setParent(self)
             w.show()
             w.installEventFilter(self)
         self._sp, self._hys = spacing / (1000 / 72) * plt.em_px(), float(hysteresis)
         self._free_min_fn, self._free_cap_fn, self._free_scored = free_min, free_cap, bool(free_scored)
         self._group_cap = group_cap       # (A, B, k, box_a, box_b): group A's plot box at most k times group B's
-        self._lim = {}                    # {group: (max w, max h)} while a candidate is sized under group_cap
+        self._group_min = None if group_min is None else float(group_min)   # with group_cap: A's plot box at least this times B's (_above)
+        self._floor = floor               # (G, box_of, min_box): the floor on one panel's plot box (_floor_ok)
+        self._lim = {}                    # {group: (max w, max h)} while a candidate is sized under its limits
+        self._base_lim = {}               # the limits every candidate starts from: {} but in the minimum size's search (minimum_px)
+        self._min_cache = None            # (key, minimum_px's value): worked out again only when the key changes
+        self._min_told = None             # the minimum size the layout above was last told of (_arrange: updateGeometry)
+        self._fmin_seen = None            # the free widget's minimum at the last arrangement (minimum_px reads it)
         self.layout_name = None
         self._placed = None               # {widget: QRectF} of the last arrangement
         self._blank = 0.0
@@ -2398,13 +2435,15 @@ class Arrangement(QtWidgets.QWidget):
         # width, a tick value or a colour bar's label changes nothing (the panels stay where they are).
         # The window's text zoom, control zoom or portrait setting changed since the last arrangement
         # arranges again too (they follow a resize: the figure applies them after this widget's
-        # resizeEvent, Figure._relayout).
-        if self._shapes() != getattr(self, '_last_shapes', None) or self._window_state() != getattr(self, '_last_state', None):
+        # resizeEvent, Figure._relayout), and so does a change of the bottom widget's size hint (its
+        # contents: a box's width, a control shown or hidden), which places that row anew (_bottom_hint).
+        if (self._shapes() != getattr(self, '_last_shapes', None) or self._window_state() != getattr(self, '_last_state', None)
+                or self._bottom_hint() != getattr(self, '_last_bottom', None)):
             self._arrange()
 
     def _shapes(self):
-        """The groups' panel shapes (_panel_shapes of each shaped group)."""
-        return tuple(_panel_shapes(w) for w in self.shaped)
+        """The groups' panel shapes (_panel_shapes of each shaped group, and of the bottom widget when there is one)."""
+        return tuple(_panel_shapes(w) for w in self.shaped + ([self._bottom] if self._bottom is not None else []))
 
     def _window_state(self):
         """The text zoom, control zoom and portrait setting of the figure whose canvas holds this widget (font_zoom, control_zoom, portrait), None outside a figure's canvas."""
@@ -2444,7 +2483,12 @@ class Arrangement(QtWidgets.QWidget):
         return super().event(ev)
 
     def minimumSizeHint(self):
-        return QtCore.QSize(round(200 / (1000 / 72) * plt.em_px()), round(150 / (1000 / 72) * plt.em_px()))
+        """The fixed smallest size, raised to the size at which the limits hold (minimum_px: with a floor), so that the window cannot be made smaller than its panels' limits allow (Figure._fit_controls raises the canvas's smallest size to its layout's)."""
+        w, h = round(200 / (1000 / 72) * plt.em_px()), round(150 / (1000 / 72) * plt.em_px())
+        m = self.minimum_px()
+        if m is not None:
+            w, h = max(w, int(np.ceil(m[0]))), max(h, int(np.ceil(m[1])))
+        return QtCore.QSize(w, h)
 
     def sizeHint(self):
         return QtCore.QSize(round(1000 / (1000 / 72) * plt.em_px()), round(700 / (1000 / 72) * plt.em_px()))
@@ -2534,7 +2578,7 @@ class Arrangement(QtWidgets.QWidget):
         return best
 
     def _sz(self, w, W, H):
-        """_shaped_size of a group inside W x H, within its limit while one is set (_lim, group_cap)."""
+        """_shaped_size of a group inside W x H, within its limit while one is set (_lim: group_cap, group_min, the floor's group in the minimum size's search)."""
         lim = self._lim.get(w)
         if lim is not None:
             W, H = min(float(W), lim[0]), min(float(H), lim[1])
@@ -2551,38 +2595,213 @@ class Arrangement(QtWidgets.QWidget):
             return True
         return all(x is None or y is None or x <= k * y + 0.5 for x, y in zip(a, b))
 
+    def _above(self, cand):
+        """Whether a candidate keeps group_min: group A's plot box at least group_min times group B's in every dimension (box_a, box_b of their rects, as _within; a side or a box not known yet counts as kept)."""
+        A, B, k, box_a, box_b = self._group_cap
+        rects = cand[2]
+        if A not in rects or B not in rects:
+            return True
+        a, b = box_a(rects[A]), box_b(rects[B])
+        if a is None or b is None:
+            return True
+        m = self._group_min
+        return all(x is None or y is None or x + 0.5 >= m * y for x, y in zip(a, b))
+
+    def _floor_box(self):
+        """The floor's smallest plot box (floor min_box(), as a tuple of floats, None while it has none), asked once per layout pass (plt.pass_cached)."""
+        def now():
+            m = self._floor[2]()
+            return None if m is None else tuple(None if v is None else float(v) for v in m)
+        return plt.pass_cached(self, 'floor_box', now)
+
+    def _floor_ok(self, cand):
+        """Whether a candidate keeps the floor: the floor's panel's plot box (box_of of its group's rect) at least min_box() in every dimension (half a pixel spare; a side, a box or a minimum not known yet counts as kept)."""
+        if self._floor is None:
+            return True
+        G, box_of = self._floor[0], self._floor[1]
+        r = cand[2].get(G)
+        if r is None:
+            return True
+        b, m = box_of(r), self._floor_box()
+        if b is None or m is None:
+            return True
+        return all(x is None or y is None or x + 0.5 >= y for x, y in zip(b, m))
+
+    def _names(self):
+        """The names of the candidates the window allows (layouts), in the order _candidates_at makes them."""
+        if len(self.shaped) == 1:
+            names = ('a',) if self.free is None else ('h', 'v')
+        else:
+            names = ('row_top', 'a_left', 'a_top', 'ab_left') + (('abf_row', 'abf_col') if self.free is not None else ())
+        return [n for n in names if self._layouts is None or n in self._layouts]
+
+    def _one(self, W, H, name, fmin):
+        """Candidate `name` alone at W x H, the groups within their limits now (_lim); None when it cannot be made."""
+        return next((c for c in self._candidates_at(W, H, only=name, fmin=fmin) if c[0] == name), None)
+
     def _candidates(self, W, H):
         """
-        [(name, blank, {widget: (x, y, w, h)}, valid)] at the size W x H (_candidates_at); with
-        group_cap, a candidate whose group A is more than k times group B (their plot boxes) is
-        sized again with A limited to the largest share of its size that keeps the cap (a
-        bisection of 7 steps on that candidate alone; the room A gives up goes to B and the free
-        widget as the candidate's geometry gives it).
+        [(name, blank, {widget: (x, y, w, h)}, valid)] at the size W x H: the allowed candidates within
+        the limits (_limited); with a bottom widget, each candidate sized in the room above it, the widget
+        pinned to the bottom edge (_with_bottom).
         """
-        self._lim = {}
         fmin = self._free_min(W, H)                 # measured once per search (Qt calls behind it)
-        base = self._candidates_at(W, H, fmin=fmin)
+        if self._bottom is None:
+            return self._limited(W, H, fmin=fmin)
+        out = []
+        for name in self._names():
+            c = self._with_bottom(W, H, name, fmin)
+            if c is not None:
+                out.append(c)
+        return out
+
+    def _limited(self, W, H, only=None, fmin=None):
+        """
+        [(name, blank, {widget: (x, y, w, h)}, valid)] at the size W x H (_candidates_at; `only`: that
+        candidate alone), each within the limits between the two groups and the floor (_keep_limits:
+        group_cap, the floor where the cap gives way, group_min).  Every candidate starts from the base
+        limits (_base_lim: none, but in the minimum size's search, minimum_px).
+        """
+        base_lim = dict(self._base_lim)
+        self._lim = dict(base_lim)
+        fmin = self._free_min(W, H) if fmin is None else fmin
+        base = self._candidates_at(W, H, only=only, fmin=fmin)
         if self._group_cap is None or len(self.shaped) < 2:
             return base
+        out = [self._keep_limits(cand, W, H, fmin, base_lim) for cand in base]
+        self._lim = dict(base_lim)
+        return out
+
+    def _keep_limits(self, cand, W, H, fmin, base_lim):
+        """
+        A candidate within the limits.  With group_cap, a candidate whose group A is more than k times
+        group B (their plot boxes) is sized again with A limited to the largest share of its size that
+        keeps the cap (a bisection of 7 steps on that candidate alone; the room A gives up goes to B and
+        the free widget as the candidate's geometry gives it).  With a floor, where the floor's panel then
+        falls below its minimum, the floor holds and the 2x cap gives way: A limited to the smallest share,
+        at or above the cap's, at which the floor holds (a bisection of 7 steps), or A as large as its room
+        allows when even that does not hold it (the window below its minimum size, minimum_px).  Then
+        group_min: B limited until A is at least group_min times it (_lower).
+        """
         A = self._group_cap[0]
-        out = []
-        for cand in base:
-            if self._within(cand):
-                out.append(cand)
-                continue
-            name, ra = cand[0], cand[2][A]
-            lo, hi, best = 0.05, 1.0, None
+        name = cand[0]
+        out, lim_a = cand, None
+        if not self._within(cand):
+            ra = cand[2][A]
+            lo, hi, best, best_lim = 0.05, 1.0, None, None
             for _ in range(7):
                 f = 0.5 * (lo + hi)
-                self._lim = {A: (ra[2] * f, ra[3] * f)}
-                c = next((c for c in self._candidates_at(W, H, only=name, fmin=fmin) if c[0] == name), None)
+                lim = dict(base_lim)
+                lim[A] = (ra[2] * f, ra[3] * f)
+                self._lim = lim
+                c = self._one(W, H, name, fmin)
                 if c is not None and self._within(c):
-                    best, lo = c, f
+                    best, best_lim, lo = c, lim[A], f
                 else:
                     hi = f
-            self._lim = {}
-            out.append(best if best is not None else cand)
+            if best is not None and self._floor is not None and not self._floor_ok(best):
+                # The placement-panel minimum holds and the 2x cap gives way (3.6).
+                held, held_lim = None, None
+                if self._floor_ok(cand):
+                    lo2, hi2 = lo, 1.0
+                    for _ in range(7):
+                        f = 0.5 * (lo2 + hi2)
+                        lim = dict(base_lim)
+                        lim[A] = (ra[2] * f, ra[3] * f)
+                        self._lim = lim
+                        c = self._one(W, H, name, fmin)
+                        if c is not None and self._floor_ok(c):
+                            held, held_lim, hi2 = c, lim[A], f
+                        else:
+                            lo2 = f
+                best, best_lim = held, held_lim              # None: A uncapped, as large as its room allows
+            if best is not None:
+                out, lim_a = best, best_lim
+        self._lim = dict(base_lim)
+        if self._group_min is not None and not self._above(out):
+            out = self._lower(out, W, H, fmin, base_lim, lim_a)
         return out
+
+    def _lower(self, cand, W, H, fmin, base_lim, lim_a):
+        """
+        group_min: a candidate sized again with group B limited to the largest share of its size at which
+        group A's plot box is at least group_min times B's (a bisection of 10 steps from no share to its
+        full size; A keeps the limit lim_a, None: none of its own); the room B gives up is left blank.  The
+        candidate itself when no share keeps it.
+        """
+        A, B = self._group_cap[0], self._group_cap[1]
+        rb = cand[2][B]
+        lo, hi, best = 0.0, 1.0, None
+        for _ in range(10):
+            f = 0.5 * (lo + hi)
+            lim = dict(base_lim)
+            if lim_a is not None:
+                lim[A] = lim_a
+            lim[B] = (rb[2] * f, rb[3] * f)
+            self._lim = lim
+            c = self._one(W, H, cand[0], fmin)
+            if c is not None and self._above(c):
+                best, lo = c, f
+            else:
+                hi = f
+        self._lim = dict(base_lim)
+        return best if best is not None else cand
+
+    def _bottom_wh(self, rects):
+        """The bottom widget's size (w, h) for a candidate's regions above it: bottom size_of(rects), or the widget's size hint when that gives None (no panel to follow yet)."""
+        s = self._bottom_size(rects) if self._bottom_size is not None else None
+        if s is None:
+            hint = self._bottom.sizeHint()
+            return float(max(hint.width(), 1)), float(max(hint.height(), 1))
+        return float(s[0]), float(s[1])
+
+    def _bottom_hint(self):
+        """The bottom widget's size hint (w, h), None without one: a change of its contents arranges again (its layout request, _later; _arrange's signature; minimum_px's key)."""
+        if self._bottom is None:
+            return None
+        hint = self._bottom.sizeHint()
+        return (hint.width(), hint.height())
+
+    def _with_bottom(self, W, H, name, fmin):
+        """
+        Candidate `name` with the bottom widget: the candidate sized in the room above it, W x H_up, within
+        the limits (_limited), and the widget, at its size for that candidate's regions (_bottom_wh), pinned
+        to the bottom edge at the left.  H_up is the largest room whose candidate leaves the widget's height
+        and one spacing below it (a bisection of 10 steps: a larger room makes the candidate's panels, and so
+        the widget, larger), so the height the window leaves over goes between the candidate's regions and the
+        widget, never below it.  The widget's region and the room around it count as blank; a widget wider
+        than W, or taller than the room under the least room above it, makes the candidate not valid.  None
+        when the candidate cannot be made.
+        """
+        sp = self._sp
+
+        def up(h):
+            c = next((c for c in self._limited(W, h, only=name, fmin=fmin) if c[0] == name), None)
+            return (None, None) if c is None else (c, self._bottom_wh(c[2]))
+        h_up = max(H - sp, 1.0)
+        c, s = up(h_up)
+        if c is not None and h_up + sp + s[1] > H + 0.5:
+            lo, hi, best = 1.0, h_up, None
+            for _ in range(10):
+                mid = 0.5 * (lo + hi)
+                cm, sm = up(mid)
+                if cm is not None and mid + sp + sm[1] <= H:
+                    best, lo = (cm, sm, mid), mid
+                else:
+                    hi = mid
+            if best is not None:
+                c, s, h_up = best
+            else:
+                h_up = 1.0                              # no room above it leaves the widget its height: the least room
+                c, s = up(h_up)
+        if c is None:
+            return None
+        blank, rects, valid = c[1], dict(c[2]), c[3]
+        wb, hb = min(s[0], W), min(s[1], H)
+        rects[self._bottom] = (0.0, H - hb, wb, hb)
+        blank += W * (H - h_up) - wb * hb
+        valid = bool(valid) and s[0] <= W + 0.5 and h_up + sp + s[1] <= H + 0.5
+        return (name, float(blank), rects, valid)
 
     def _candidates_at(self, W, H, only=None, fmin=None):
         """[(name, blank, {widget: (x, y, w, h)}, valid)] at the size W x H, the groups within their limits (_lim), the allowed candidates only (layouts); `only`: that candidate alone (two groups); `fmin`: the free widget's minimum, measured by the caller."""
@@ -2719,8 +2938,34 @@ class Arrangement(QtWidgets.QWidget):
             solo.append(s[0] * s[1] if s else 0.0)
         return [(self._score(c, solo, W, H), c) for c in valid]
 
+    def _band_below(self, cand, H):
+        """The empty band below a candidate's row at the height H: from the lowest bottom edge of its groups' and free widget's regions (the free widget's as free_cap cut it) down to the widget's bottom edge, or to the bottom widget's top less the spacing."""
+        rects = cand[2]
+        edge = H
+        if self._bottom is not None and self._bottom in rects:
+            edge = rects[self._bottom][1] - self._sp
+        bottoms = [r[1] + r[3] for w, r in rects.items() if w is not self._bottom]
+        return edge - max(bottoms) if bottoms else 0.0
+
+    def _pick(self, scored, H):
+        """
+        tall_rule (first, second): the candidate the rule takes from `scored` ([((score, area, scales),
+        candidate)], _scored): the first unless it leaves an empty band below its row (_band_below more than
+        half a pixel), then the second; so the second exactly while the first would leave one, and the first
+        again as soon as it no longer would (no hysteresis).  The first when the second is not among them,
+        the second when the first is not; None without the rule or with neither (the score decides).
+        """
+        if self._tall_rule is None:
+            return None
+        first, second = self._tall_rule
+        t1 = next((t for t in scored if t[1][0] == first), None)
+        t2 = next((t for t in scored if t[1][0] == second), None)
+        if t1 is not None and (t2 is None or self._band_below(t1[1], H) <= 0.5):
+            return t1
+        return t2
+
     def best_score(self):
-        """(score, name) of the best candidate at the widget's size now, nothing placed; None before the widget has a size."""
+        """(score, name) of the candidate the arrangement takes at the widget's size now (the tall-window rule's choice with tall_rule, else the best score), nothing placed; None before the widget has a size."""
         W, H = float(self.width()), float(self.height())
         if W <= 0 or H <= 0 or not self.shaped:
             return None
@@ -2728,13 +2973,19 @@ class Arrangement(QtWidgets.QWidget):
         scored = self._scored(W, H)
         if not scored:
             return None
-        best = max(scored, key=lambda t: (round(t[0][0], 3), t[0][1]))
+        best = self._pick(scored, H)
+        if best is None:
+            best = max(scored, key=lambda t: (round(t[0][0], 3), t[0][1]))
         return float(best[0][0]), best[1][0]
 
     def _choose(self, W, H):
         scored = self._scored(W, H)
         if not scored:
             return None
+        picked = self._pick(scored, H)
+        if picked is not None:
+            self._scales = picked[0][2]                # the tall-window rule: no score, no hysteresis
+            return picked[1]
         best = max(scored, key=lambda t: (round(t[0][0], 3), t[0][1]))
         cur = next((t for t in scored if t[1][0] == self.layout_name), None)
         if cur is not None and cur is not best and cur[0][0] >= best[0][0] - self._hys:
@@ -2761,15 +3012,154 @@ class Arrangement(QtWidgets.QWidget):
             out.append((c[0], round(score, 3), round(c[1] / (W * H), 3), [round(v, 2) for v in scales], c[3]))
         return sorted(out, key=lambda t: -t[1])
 
+    # --- the minimum size: the limits' (3.6) ---
+
+    def minimum_px(self):
+        """
+        (w, h) px: the smallest size of this widget at which the limits all hold: the floor's panel at its
+        minimum, group A at most k times group B (group_cap, the cap kept) and at least group_min times it,
+        the free widget at its readable minimum and the bottom widget under them (bottom), in every candidate
+        the window allows (layouts: the largest of their smallest sizes, so the limits hold in whichever is
+        taken; _min_of).  None without a floor, or while the floor's panel has no plot box or no minimum yet.
+        A floor is never combined with free_scored (the class docstring): _balanced would keep the floor's
+        group below its floor size, and the search would find no size a screen has.
+        Worked out again only when the groups' shapes, the window's text zoom or portrait setting, the floor's
+        minimum, the free widget's minimum or the bottom widget's size hint changed (kept in _min_cache; the
+        controls' own zoom is left out: Figure._fit_controls changes it while it measures the layout).
+        """
+        if self._floor is None or not self.shaped or self._floor[0] not in self.shaped:
+            return None
+        m = self._floor_box()
+        fmin = self._fmin_seen                     # the free widget's minimum at the last arrangement (_arrange)
+        if fmin is None:
+            fmin = self._free_min(0.0, 0.0)
+        state = self._window_state()
+        key = (self._shapes(), None if state is None else (state[0], state[2]), m,
+               (round(float(fmin[0]), 1), round(float(fmin[1]), 1)), self._bottom_hint())
+        hit = self._min_cache
+        if hit is not None and hit[0] == key:
+            return hit[1]
+        saved = (self._lim, self._base_lim)
+        try:
+            res = self._minimum_now(m, fmin)
+        finally:
+            self._lim, self._base_lim = saved
+        self._min_cache = (key, res)
+        return res
+
+    def _minimum_now(self, m, fmin):
+        """minimum_px's search: the floor's group limited to its size at the floor (_floor_size, the base limit _base_lim, so that the rest of the room goes to the others), then each allowed candidate's smallest size (_min_of); the largest width and the largest height among them."""
+        if m is None:
+            return None
+        G = self._floor[0]
+        gf = self._floor_size(G, m)
+        if gf is None:
+            return None
+        self._base_lim = {G: (gf[0] + 0.5, gf[1] + 0.5)}
+        boxes = [b for b in (self._min_of(name, gf, fmin) for name in self._names()) if b is not None]
+        if not boxes:
+            return None
+        return (max(b[0] for b in boxes), max(b[1] for b in boxes))
+
+    def _floor_size(self, G, m):
+        """The floor's group G's shaped size (w, h) at the floor: in a room of any width (BIG_PX), the lowest room height at which its panel's plot box (floor box_of) is at least the minimum `m` (a bisection of 30 steps); None when no height reaches it."""
+        box_of = self._floor[1]
+
+        def at(h):
+            s = _shaped_size(G, self.BIG_PX, h)
+            if s is None:
+                return None, False
+            b = box_of((0.0, 0.0, s[0], s[1]))
+            return s, b is not None and all(x is None or y is None or x + 0.5 >= y for x, y in zip(b, m))
+        best, ok = at(self.BIG_PX)
+        if not ok:
+            return None
+        lo, hi = 1.0, self.BIG_PX
+        for _ in range(30):
+            mid = 0.5 * (lo + hi)
+            s, ok = at(mid)
+            if ok:
+                best, hi = s, mid
+            else:
+                lo = mid
+        return best
+
+    def _held(self, name, W, H, fmin):
+        """
+        Candidate `name` at W x H, the floor's group limited to its floor size (_base_lim), when it holds the
+        limits: valid, and the free widget's region at least its readable minimum in width and in height
+        (fmin, a pixel spare), the floor's panel at its minimum (_floor_ok), group A at most k times group B
+        (_within: the cap kept, not given way) and, with group_min, B limited until A is at least group_min
+        times it (_lower); with a bottom widget, that widget no wider than W.  None when it does not hold them.
+        """
+        base_lim = dict(self._base_lim)
+        self._lim = dict(base_lim)
+        c = self._one(W, H, name, fmin)
+        if c is None or not c[3] or not self._floor_ok(c):
+            return None
+        F = self.free
+        if F is not None and F in c[2] and (c[2][F][2] < fmin[0] - 1 or c[2][F][3] < fmin[1] - 1):
+            return None
+        if self._group_cap is not None and len(self.shaped) >= 2:
+            if not self._within(c):
+                return None
+            if self._group_min is not None and not self._above(c):
+                c = self._lower(c, W, H, fmin, base_lim, None)
+        self._lim = dict(base_lim)
+        if self._bottom is not None and self._bottom_wh(c[2])[0] > W + 0.5:
+            return None
+        return c
+
+    def _min_of(self, name, gf, fmin):
+        """
+        Candidate `name`'s smallest size (w, h) at which it holds the limits (_held), the floor's group at
+        its floor size gf: its narrowest width in a room of any height (BIG_PX), then the lowest height at
+        that width (with a bottom widget: the lowest room above it, the widget's height at that candidate
+        and one spacing added).  Each by a bracket that doubles from the widget's size (16 times at most)
+        and a bisection of 12 steps; None when no bracket holds the limits.
+        """
+        BIG = self.BIG_PX
+
+        def least(ok, lo, hi):
+            for _ in range(16):
+                if ok(hi):
+                    break
+                lo, hi = hi, 2.0 * hi
+            else:
+                return None
+            for _ in range(12):
+                mid = 0.5 * (lo + hi)
+                if ok(mid):
+                    hi = mid
+                else:
+                    lo = mid
+            return hi
+        w_lo = max(float(gf[0]), 1.0)
+        w = least(lambda W: self._held(name, W, BIG, fmin) is not None, w_lo, max(float(self.width()), 2.0 * w_lo))
+        if w is None:
+            return None
+        h_lo = max(float(gf[1]), 1.0)
+        h = least(lambda H: self._held(name, w, H, fmin) is not None, h_lo, max(float(self.height()), 2.0 * h_lo))
+        if h is None:
+            return None
+        if self._bottom is not None:
+            c = self._held(name, w, h, fmin)
+            h += self._sp + (self._bottom_wh(c[2])[1] if c is not None else 0.0)
+        return (w, h)
+
     def _arrange(self):
         W, H = float(self.width()), float(self.height())
         if W <= 0 or H <= 0 or not self.shaped:
             return
         plt.new_arrangement()
-        # The same size, the same group shapes and the same free minimum as the last arrangement give the
-        # same arrangement: it is applied again without the search (rearrange() or a show at the same size).
-        sig = (round(W, 1), round(H, 1), tuple(_shaped_size(w, W, H) for w in self.shaped), self._free_min(W, H),
-               self._free_scored, self.layout_name)
+        # The same size, the same group shapes, the same free minimum, the same floor and the same bottom
+        # widget as the last arrangement give the same arrangement: it is applied again without the search
+        # (rearrange() or a show at the same size).
+        fmin = self._free_min(W, H)
+        self._fmin_seen = fmin                      # the free widget's minimum, for the minimum size's search (minimum_px)
+        sig = (round(W, 1), round(H, 1), tuple(_shaped_size(w, W, H) for w in self.shaped), fmin,
+               self._free_scored, self.layout_name, self._floor_box() if self._floor is not None else None,
+               self._bottom_hint())
         if self._placed and sig == getattr(self, '_last_sig', None):
             rects = self._placed
         else:
@@ -2778,9 +3168,10 @@ class Arrangement(QtWidgets.QWidget):
                 return
             name, blank, rects, _ = best
             self.layout_name, self._blank, self._placed = name, blank, rects
-            self._last_sig = (sig[0], sig[1], sig[2], sig[3], sig[4], name)
+            self._last_sig = (sig[0], sig[1], sig[2], sig[3], sig[4], name, sig[6], sig[7])
         self._last_shapes = self._shapes()          # a child's layout request arranges again only when they change
         self._last_state = self._window_state()     # arranged again when the window's text zoom, control zoom or portrait setting changes (_later)
+        self._last_bottom = sig[7]                  # the bottom widget's size hint: arranged again when its contents change it (_later)
         for w, (x, y, ww, hh) in rects.items():
             if w is self._fill_slot:
                 # fill_slot: sized and scored at its shaped size, placed in its whole slot.
@@ -2788,6 +3179,12 @@ class Arrangement(QtWidgets.QWidget):
                 if s is not None:
                     x, y, ww, hh = s
             w.setGeometry(int(round(x)), int(round(y)), max(int(round(ww)), 1), max(int(round(hh)), 1))
+        if self._floor is not None:
+            # The window's minimum size follows the limits (minimumSizeHint): the layout above is told when it changed.
+            m = self.minimum_px()
+            if m != self._min_told:
+                self._min_told = m
+                self.updateGeometry()
         if self._cb is not None:
             self._cb(self.layout_name)
 
@@ -2798,11 +3195,14 @@ class Arrangement(QtWidgets.QWidget):
         at the other group's or the free widget's region (less the spacing), else at the widget's
         edge, so it never takes room from the other group's slot or the free widget's.  None (the
         group keeps its shaped rect) without two groups and a free widget, or while the group has no
-        shape (a row with no panel in it yet).
+        shape (a row with no panel in it yet).  With a bottom widget the widget's edge is that widget's
+        top less the spacing: a slot never reaches into it.
         """
         F = self.free
         if len(self.shaped) != 2 or w not in self.shaped or F is None or F not in rects:
             return None
+        if self._bottom is not None and self._bottom in rects:
+            H = rects[self._bottom][1] - self._sp
         hfw = getattr(w, 'height_for_width', None)
         if hfw is None or hfw(float(rects[w][2])) is None:
             return None
