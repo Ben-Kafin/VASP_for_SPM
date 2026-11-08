@@ -115,7 +115,7 @@ as on screen, or the curves as CSV.
 
 Every count and value is a number box: type a value and press Enter, or select a digit and press
 Up or Down to step it (a Value stops at its limits; a step applies at once). Markers, line ends,
-path nodes and the energy markers of the Map view are dragged with the mouse (an energy marker only while running: nothing is computed with RUN off); a left click on a
+path nodes and the energy markers of the Map view are dragged with the mouse (an energy marker dropped with RUN off keeps its snapped energy and nothing is computed; RUN then computes its map and re-sorts the maps); a left click on a
 curve of the Partitioned LDOS panel, or on its entry in the legend panel at its right, descends a
 level (partition, atom types, orbitals) and a right click anywhere in the panel (on a curve, on
 empty space, on its tick labels, axis labels or title) or in its legend panel, or the legend
@@ -164,8 +164,8 @@ on, a matching file is loaded and nothing is computed (no stripe convergence, no
 the data are computed and saved under that key. Each decay model has its own files, so a change of
 model, a rerun or a return to earlier settings loads them when they are there; in memory only the
 shown data are kept. An energy map dragged to a new sample changes the map energies' samples, so the
-maps are then saved under the file of the new key (their `_mag` file too, while their mag channel is
-whole). The markers' spectra (Single Point, Map) are not
+maps are then saved under the file of the new key, at RUN for a drag made with RUN off (their `_mag`
+file too, while their mag channel is whole). The markers' spectra (Single Point, Map) are not
 cached: they are computed on a marker's release or creation; the Line and Path markers' spectra are
 rows of the cached Line / Path LDOS. A file's size is about points × energies × atoms × orbitals ×
 4 bytes: 72 × 350 × 300 × 9 × 4 B ≈ 270 MB for a Line run, grid points × maps × atoms × orbitals ×

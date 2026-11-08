@@ -1577,6 +1577,11 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         # columns and marks only its own missing (a bool per map, True = missing; None while no mag channel is kept
         # or no column is missing); when Mag is on again only the missing columns are computed (_update_all, needs_mag).
         self.map_ld_mag_missing = None
+        # The maps whose column is stale (the owner, 2026-11-08: nothing is computed with RUN off): an energy marker
+        # dropped with RUN off keeps its snapped energy (map_e_idx) while its column still holds the old sample's
+        # map (a bool per map, True = stale; None while none is); at RUN those maps are computed and the maps
+        # re-sorted (_update_all: _dragged_maps_computed).
+        self.map_ld_stale = None
         self.map_current, self.map_current_E = None, None
         self.map_eg, self.map_window, self.map_d_ldos, self.map_broadening = None, None, None, None
         self.map_z, self.map_bias, self.map_ldos_h = None, None, None
@@ -4289,6 +4294,18 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
             self.map_e_targets = self.energies[self.map_e_idx]
             self.map_typed, self.cached_nepts = typed, nepts
 
+        if compute and self.mode == 'Map' and self.map_ld_stale is not None and self.map_ld_stale.any():
+            # Energy markers dropped with RUN off (_on_rel: nothing computed then, the marker left at its snapped
+            # energy): at RUN their maps are computed at those energies and the maps re-sorted into increasing
+            # energy (_dragged_maps_computed, which also saves them under their new key; the panels take the new
+            # data below, _fill_map), unless every map is computed again anyway (needs_ldos: then only the sort, so
+            # the maps are computed in increasing energy).
+            if needs_ldos:
+                self._resort_maps()
+                self.map_ld_stale = None
+            else:
+                self._dragged_maps_computed(np.flatnonzero(self.map_ld_stale))
+
         if needs_ldos and self.mode == 'Map':
             # Every map energy (the kept ones, or those just formed) in one call: the LDOS at each grid point, at
             # each map energy's sample, and the current at those samples only (one column per map), into Map's
@@ -4329,6 +4346,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
             self.map_ld_mag = ld_mag_np
             self.map_ld_total_gpu, self.map_ld_mag_gpu = ld_total, ld_mag
             self.map_ld_mag_missing = None               # a new mag channel, or none: no column missing (14.4)
+            self.map_ld_stale = None                     # every map computed now: none stale
             self.map_current = cur
             self.map_current_E = cp.asarray((self.map_e_idx - self.k0).astype(np.float32)) * self.e_step32 + self.e032
             self.map_z = np.array(z_ldos, copy=True)
@@ -5635,10 +5653,9 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
             top = ldos_decomp.top_artist(hits)
             if top is not None and top.get_label().startswith('emarker_') and event.button == plt.MouseButton.LEFT:
                 # A Map energy marker on top under a left press: its drag at level 0 (not on a double click's
-                # press), nothing at the other levels, and only while running: its release computes its map
-                # (_on_rel), and nothing is computed with RUN off (the owner, 2026-11-08), as the Rerun buttons do
-                # nothing then.
-                if self.plot_level == 0 and not event.dblclick and self.is_running:
+                # press), nothing at the other levels; running or not (with RUN off nothing is computed: the marker
+                # keeps its dropped energy and its map is computed at RUN, _on_rel).
+                if self.plot_level == 0 and not event.dblclick:
                     self.active_obj = ('emarker', int(top.get_label().split('_')[1]))
                 return
             item = self._spec_curves[self._spec_lines.index(top)] if top in self._spec_lines else None
@@ -5917,10 +5934,113 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         self._drag_moved = True
         self.fig.canvas.draw_idle()
 
+    def _resort_maps(self):
+        """
+        Machinery: Map's maps back in increasing energy (after an energy marker's drag: _dragged_maps_computed, or
+        at RUN before every map is computed again, _update_all): a stable sort of the snapped Map energies, applied
+        together to the snapped energies and indices, the cached columns and their GPU copies (the total, the mag
+        channel and its missing marks, the stale marks), the current and its energies, and the energy markers and
+        their labels (marker i at map i's energy).  Returns the permutation applied (new position i holds the old
+        map order[i]; the identity when nothing moved).  Nothing is drawn.
+        """
+        order = np.argsort(self.map_e_targets, kind='stable')
+        if np.array_equal(order, np.arange(len(order))):
+            return order
+        o_gpu = cp.asarray(order)
+        self.map_e_idx = self.map_e_idx[order]
+        self.map_e_targets = self.map_e_targets[order]
+        self.map_ld_total = self.map_ld_total[:, order]
+        self.map_ld_total_gpu = self.map_ld_total_gpu[:, o_gpu]
+        if self.map_ld_mag is not None:
+            self.map_ld_mag = self.map_ld_mag[:, order]
+        if self.map_ld_mag_gpu is not None:
+            self.map_ld_mag_gpu = self.map_ld_mag_gpu[:, o_gpu]
+        if self.map_ld_mag_missing is not None:
+            self.map_ld_mag_missing = self.map_ld_mag_missing[order]
+        if self.map_ld_stale is not None:
+            self.map_ld_stale = self.map_ld_stale[order]
+        self.map_current = self.map_current[:, o_gpu]
+        self.map_current_E = self.map_current_E[o_gpu]
+        self._spec_emarkers = [self._spec_emarkers[j] for j in order]
+        for i, line in enumerate(self._spec_emarkers):
+            line.set_label(f'emarker_{i}')
+        return order
+
+    def _dragged_maps_computed(self, idxs, samples_changed=True):
+        """
+        Machinery: the maps idxs (energy markers dragged: the one released while running, _on_rel; those dropped
+        with RUN off, together, when RUN is pressed, _update_all) computed again at their snapped samples
+        (map_e_idx, set at the release) by the same call and at the same tip heights as the full Map computation:
+        Map's kept LDOS-topo heights (map_z, not the shared ldos_z_map), under Map's kept model: its decay model
+        (map_d_ldos: 'decay_exact', 'decay_linearized' or 'decay_k0', _effective_decay_model's names) and its
+        broadening (map_broadening).  While the window's broadening differs from Map's (changed since, while
+        stopped or in another view), the DOS is rebuilt at Map's for this one call (_apply_extra_broadening) and
+        then at the window's again.  The total channel, and the mag channel only while Mag is on and Map's maps
+        keep theirs (want_mag; with none kept the maps show the total, so a dragged map's mag channel has no maps
+        to join); with Mag off and a mag channel kept, only these maps' mag columns are marked missing (14.4), the
+        others kept.  Into Map's own caches (map_*): the LDOS columns, the NumPy and the GPU copies, the current
+        and its samples' GPU energies e0 + (i - k0) step; these maps' stale marks cleared.  Then the maps back in
+        increasing energy (_resort_maps) and, when the map energies' samples changed (samples_changed), saved under
+        the file of their new key (Map's LDOS disk cache, map_ldos_*.npz in caches/; _ldos_cache_key of Map's kept
+        records: map_bias, map_ldos_h, the new map_e_idx, map_window, map_d_ldos, map_broadening): their total,
+        their energies, their current and the LDOS topo heights they were calculated at (map_z), and the mag
+        channel's file beside it while their mag channel is kept whole (14.4: not while a column is missing; it is
+        saved when the missing columns are computed, _update_all).  Returns the panel positions to redraw, in
+        order: these maps' new positions, then every other map whose position changed.  Nothing is arranged,
+        resized, rebuilt or drawn here.
+        """
+        idxs = [int(i) for i in idxs]
+        kept_broad = self.map_broadening is not None and self.map_broadening != self.extra_broadening
+        if kept_broad:
+            window_broad, self.extra_broadening = self.extra_broadening, dict(self.map_broadening)
+            self._apply_extra_broadening()
+        try:
+            grid_z = cp.hstack([self.grid_xy_gpu, cp.asarray(self.map_z, dtype=cp.float32)[:, None]])
+            t_total, t_mag, _, t_cur = self._calculate_ldos_at_points_gpu(
+                grid_z, None, None, decay_model=self.map_d_ldos, preserve_orbitals=True,
+                with_current=True, samples=[int(self.map_e_idx[i]) for i in idxs], progress='dragged map',
+                want_mag=self.show_mag and self.map_ld_mag_gpu is not None)
+        finally:
+            if kept_broad:
+                self.extra_broadening = window_broad
+                self._apply_extra_broadening()
+        for j, idx in enumerate(idxs):
+            self.map_ld_total[:, idx:idx + 1] = cp.asnumpy(t_total[:, j:j + 1])
+            self.map_ld_total_gpu[:, idx:idx + 1] = t_total[:, j:j + 1]
+            if t_mag is not None:
+                self.map_ld_mag[:, idx:idx + 1] = cp.asnumpy(t_mag[:, j:j + 1])
+                self.map_ld_mag_gpu[:, idx:idx + 1] = t_mag[:, j:j + 1]
+                if self.map_ld_mag_missing is not None:
+                    self.map_ld_mag_missing[idx] = False
+            elif self.map_ld_mag is not None:
+                if self.map_ld_mag_missing is None:
+                    self.map_ld_mag_missing = np.zeros(len(self.map_e_idx), dtype=bool)
+                self.map_ld_mag_missing[idx] = True
+            self.map_current[:, idx] = t_cur[:, j]
+            self.map_current_E[idx] = self.e032 + np.float32(int(self.map_e_idx[idx]) - self.k0) * self.e_step32
+            if self.map_ld_stale is not None:
+                self.map_ld_stale[idx] = False
+        if self.map_ld_stale is not None and not self.map_ld_stale.any():
+            self.map_ld_stale = None
+        order = self._resort_maps()
+        redraw = [int(np.flatnonzero(order == idx)[0]) for idx in idxs]      # these maps' new positions
+        redraw += [i for i in range(len(order)) if order[i] != i and i not in redraw]
+        if samples_changed:
+            map_key = self._ldos_cache_key('Map', self.map_bias, self.map_ldos_h, self.map_window, self.map_d_ldos,
+                                           self.map_broadening, samples=self.map_e_idx)
+            self._save_ldos_cache('Map', map_key, {'ld_total': self.map_ld_total,
+                                                   'energies': self.energies[self.map_e_idx],
+                                                   'current': cp.asnumpy(self.map_current), 'z': self.map_z})
+            if self.map_ld_mag is not None and not (self.map_ld_mag_missing is not None
+                                                    and bool(self.map_ld_mag_missing.any())):
+                self._save_ldos_cache('Map', map_key, {'ld_mag': self.map_ld_mag}, mag=True)
+        return redraw
+
     def _on_rel(self, event):
-        """Machinery: a mouse release: a Map energy marker's map (its drag starts only while running, _on_press: nothing is computed with RUN off) computed again at its snapped sample under Map's
-        kept model, and, when that changed the map energies' samples, the maps saved under their new key's file
-        (Map's LDOS disk cache: _save_ldos_cache); a moved line end, path node or Single Point / Map marker, its
+        """Machinery: a mouse release: a Map energy marker's map, while running, computed again at its snapped sample
+        under Map's kept model, the maps re-sorted and, when that changed the map energies' samples, saved under
+        their new key's file (_dragged_maps_computed); with RUN off nothing is computed: the marker keeps its
+        snapped energy and its map is marked stale (map_ld_stale), computed when RUN is pressed (_update_all); a moved line end, path node or Single Point / Map marker, its
         work done once (_update_all); a Line / Path marker, the markers put back in their order
         (_resort_line_markers); a held light panel's dot let go, the light where the last motion set it
         (LightPanel.release; the maps were shaded live, _light_motion), nothing more."""
@@ -5942,88 +6062,20 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
             for line in self.ax_spec.get_lines():
                 if line.get_label() == f'emarker_{idx}':
                     line.set_xdata([self.map_e_targets[idx], self.map_e_targets[idx]])
-            # The dragged map by the same call and at the same tip heights as the full Map computation: Map's kept
-            # LDOS-topo heights (map_z, not the shared ldos_z_map), under Map's kept model: its decay model
-            # (map_d_ldos: 'decay_exact', 'decay_linearized' or 'decay_k0', _effective_decay_model's names) and its
-            # broadening (map_broadening).
-            # While the window's broadening differs from Map's (changed since, while stopped or in another view), the
-            # DOS is rebuilt at Map's for this one call (_apply_extra_broadening) and then at the window's again.
-            # The total channel, and the mag channel only while Mag is on and Map's maps keep theirs (want_mag; with
-            # none kept the maps show the total, so the dragged map's mag channel has no maps to join).
-            kept_broad = self.map_broadening is not None and self.map_broadening != self.extra_broadening
-            if kept_broad:
-                window_broad, self.extra_broadening = self.extra_broadening, dict(self.map_broadening)
-                self._apply_extra_broadening()
-            try:
-                grid_z = cp.hstack([self.grid_xy_gpu, cp.asarray(self.map_z, dtype=cp.float32)[:, None]])
-                t_total, t_mag, _, t_cur = self._calculate_ldos_at_points_gpu(
-                    grid_z, None, None, decay_model=self.map_d_ldos, preserve_orbitals=True,
-                    with_current=True, samples=[e_idx], progress='dragged map',
-                    want_mag=self.show_mag and self.map_ld_mag_gpu is not None)
-            finally:
-                if kept_broad:
-                    self.extra_broadening = window_broad
-                    self._apply_extra_broadening()
-            # Into Map's own caches (map_*): its LDOS columns, the NumPy and the GPU copies.
-            self.map_ld_total[:, idx:idx + 1] = cp.asnumpy(t_total[:, 0:1])
-            self.map_ld_total_gpu[:, idx:idx + 1] = t_total[:, 0:1]
-            if t_mag is not None:
-                self.map_ld_mag[:, idx:idx + 1] = cp.asnumpy(t_mag[:, 0:1])
-                self.map_ld_mag_gpu[:, idx:idx + 1] = t_mag[:, 0:1]
-                if self.map_ld_mag_missing is not None:
-                    self.map_ld_mag_missing[idx] = False
-            elif self.map_ld_mag is not None:
-                # Mag off with a mag channel kept (14.4): the other maps' mag columns are kept, and only the dragged
-                # map's is marked missing (its column holds the old sample's); when Mag is turned on again only the
-                # missing columns are computed (_update_all, needs_mag).
-                if self.map_ld_mag_missing is None:
-                    self.map_ld_mag_missing = np.zeros(len(self.map_e_idx), dtype=bool)
-                self.map_ld_mag_missing[idx] = True
-            # Its current, from the same call, into column idx, and its sample's GPU energy e0 + (i - k0) step.
-            self.map_current[:, idx] = t_cur[:, 0]
-            self.map_current_E[idx] = self.e032 + np.float32(e_idx - self.k0) * self.e_step32
-            # The maps back in increasing energy: a stable sort of the snapped Map energies, applied together
-            # to the snapped energies and indices, the cached columns and their GPU copies, the current and its
-            # energies, and the energy markers and their labels (marker i at map i's energy).  Every map panel whose
-            # map changed position is redrawn in place with its new map (_redraw_map_slice: every partition row),
-            # and the dragged map; nothing is arranged, resized or rebuilt, and nothing more is computed.
-            order = np.argsort(self.map_e_targets, kind='stable')
-            redraw = [int(np.flatnonzero(order == idx)[0])]                  # the dragged map's new position
-            if not np.array_equal(order, np.arange(len(order))):
-                o_gpu = cp.asarray(order)
-                self.map_e_idx = self.map_e_idx[order]
-                self.map_e_targets = self.map_e_targets[order]
-                self.map_ld_total = self.map_ld_total[:, order]
-                self.map_ld_total_gpu = self.map_ld_total_gpu[:, o_gpu]
-                if self.map_ld_mag is not None:
-                    self.map_ld_mag = self.map_ld_mag[:, order]
-                if self.map_ld_mag_gpu is not None:
-                    self.map_ld_mag_gpu = self.map_ld_mag_gpu[:, o_gpu]
-                if self.map_ld_mag_missing is not None:
-                    self.map_ld_mag_missing = self.map_ld_mag_missing[order]
-                self.map_current = self.map_current[:, o_gpu]
-                self.map_current_E = self.map_current_E[o_gpu]
-                self._spec_emarkers = [self._spec_emarkers[j] for j in order]
-                for i, line in enumerate(self._spec_emarkers):
-                    line.set_label(f'emarker_{i}')
-                redraw += [i for i in range(len(order)) if order[i] != i and i != redraw[0]]
-            if samples_changed:
-                # The map energies' samples changed: the maps, in their new order, saved under the file of the new
-                # key (Map's LDOS disk cache, map_ldos_*.npz in caches/; _ldos_cache_key of Map's kept records:
-                # map_bias, map_ldos_h, the new map_e_idx, map_window, map_d_ldos, map_broadening): their total,
-                # their energies, their current and the LDOS topo heights they were calculated at (map_z), and the
-                # mag channel's file beside it while their mag channel is kept whole (14.4: not while a column is
-                # missing; it is saved when the missing columns are computed, _update_all).
-                map_key = self._ldos_cache_key('Map', self.map_bias, self.map_ldos_h, self.map_window, self.map_d_ldos,
-                                               self.map_broadening, samples=self.map_e_idx)
-                self._save_ldos_cache('Map', map_key, {'ld_total': self.map_ld_total,
-                                                       'energies': self.energies[self.map_e_idx],
-                                                       'current': cp.asnumpy(self.map_current), 'z': self.map_z})
-                if self.map_ld_mag is not None and not (self.map_ld_mag_missing is not None
-                                                        and bool(self.map_ld_mag_missing.any())):
-                    self._save_ldos_cache('Map', map_key, {'ld_mag': self.map_ld_mag}, mag=True)
-            for i in redraw:
-                self._redraw_map_slice(i)
+            if not self.is_running:
+                # RUN off: nothing is computed (the owner, 2026-11-08).  The marker keeps the energy it was dropped at
+                # (snapped); its map is marked stale (map_ld_stale) and is computed, and the maps re-sorted, when RUN
+                # is pressed (_update_all: _dragged_maps_computed).  The map panels keep what they showed.
+                if samples_changed:
+                    if self.map_ld_stale is None:
+                        self.map_ld_stale = np.zeros(len(self.map_e_idx), dtype=bool)
+                    self.map_ld_stale[idx] = True
+            else:
+                # Running: the dragged map computed now, the maps re-sorted and saved (_dragged_maps_computed), and
+                # every map panel whose map changed position redrawn in place with its new map (_redraw_map_slice:
+                # every partition row), and the dragged map; nothing is arranged, resized or rebuilt.
+                for i in self._dragged_maps_computed([idx], samples_changed):
+                    self._redraw_map_slice(i)
             self._map_energies_changed()           # the info panel's map energies line: the snapped energies, in map order
             self.fig.canvas.draw_idle()
         elif (self.active_obj is not None and self._drag_moved
