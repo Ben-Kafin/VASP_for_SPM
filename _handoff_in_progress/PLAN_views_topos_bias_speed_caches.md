@@ -1,6 +1,6 @@
 # Plan: the views-layout decisions, the bias toggles, the topos, the LDOS speed-up, |m| and m on demand, the caches folder, the console lines and the shading
 
-Draft of 2026-11-07, for Benjamin's approval. Nothing in it is implemented. Your answers to the questions are written into the sections. No questions are open. Section 12 holds what the check of the briefs against your other documents found still missing.
+Approved 2026-11-08; stages 1 to 4 implement sections 2 to 12, stage 5 (section 14) the answers given since the runs began. Your answers to the questions are written into the sections. No questions are open. Section 12 holds what the check of the briefs against your other documents found still missing.
 
 ## 0. Sources
 
@@ -473,9 +473,7 @@ Draft of 2026-11-07, for Benjamin's approval. Nothing in it is implemented. Your
 
 ## 11. Open questions
 
-1. **The Topo h rerun:** it also resets Map's records, so Map recomputes all its energy maps, although they use the LDOS topo, which a Topo h change does not touch. Remove that reset? **R: yes.**
-2. **A map dragged with Mag off while |m| is kept:** today the kept |m| of every map is dropped and recomputed when Mag comes back on. (a) keep the others and compute only the dragged map's when Mag is on again; (b) as now. **R: (a).**
-3. **Mag turned on with RUN off:** (a) nothing changes until RUN, then |m| is computed and shown; (b) pressing Mag computes |m| even with RUN off. **R: (a).**
+None. Every question answered since the runs began is in section 14 (stage 5).
 
 ## 12. Gaps from your other documents
 
@@ -528,3 +526,30 @@ Draft of 2026-11-07, for Benjamin's approval. Nothing in it is implemented. Your
 - `stm_from_dft_opt/README.md` and `run_DFT_STM.py` (comments and docs).
 - `mo_ldos_decomp/mo_ldos_projection/sim_wrapper.py` (8: the renamed channels only).
 - `stm_from_dft/plot_dos_cursors_levels.py` (12.1), `stm_from_dft/doscar_parser.py` (12.6), and the simulator's decomp clicks, legend panel and window lines (12.2 to 12.5).
+
+## 14. Stage 5: the answers given since the runs began (your rule, 2026-11-08)
+
+Stage 5 runs after stage 4. It implements, or checks, every answer below, exactly as written, and a separate reviewer checks each item against this list. The result is reported to you item by item. Nothing else is done in stage 5.
+
+**To implement:**
+
+14.1 **A straight Path** (answer 1, 2026-11-08). When every sample point of the path lies on one line, the minimum-area rectangle has no area. Path's LDOS topo panel then uses Line's 2:3 box centred on the path, drawn as Line's corridor is: the LDOS topo tiled, turned into the path's frame and cropped to it, with the path, its nodes and the markers. Any other path keeps the rectangle rule of 3.5. (`simulator.py`: `_path_rectangle`, the Path branch of `_fill_heat_row`, the Path box aspect in `_build_ui`.)
+
+14.2 **The Topo h rerun** (answer 2, 2026-11-08). `_on_topo_height_rerun` no longer resets Map's records (`cached_bias_energy_map`, `cached_d_topo_map`). A Topo h rerun recomputes only the global topo. The energy maps and the LDOS topo are not recomputed by it. Its docstring and comment follow. (`simulator.py`.)
+
+14.3 **Single Point's narrowest window** (answer 3, 2026-11-08). The window may be narrower than the one row ('h') needs. Below that width the tall rule takes 'v', and the window's minimum width is 'v''s. In `controls.Arrangement` (both package `qtgui` copies, identical), `_h_fit` is not used while `minimum_px`'s search runs, so 'h' is sized there as in stage 1. The docstrings of `minimum_px`, `_h_fit` and `_candidates_at` follow.
+
+14.4 **A map dragged with Mag off while |m| / m is kept** (answer 5, 2026-11-08). The other maps' mag columns are kept. Only the dragged map's mag column is marked missing. When Mag is turned on again, only the missing columns are computed. (`simulator.py`: `_on_rel`'s dragged-map branch, and the Mag-on path that computes a missing mag channel.)
+
+**To check (already the behaviour; changed only if the check shows otherwise):**
+
+14.5 **A very small window** (answer 4, 2026-11-08). Readability wins: when a topo panel's plot box is smaller than the spectrum's readable minimum, the spectrum stays at its readable minimum, a little larger than a topo panel, in Single Point and in Map.
+
+14.6 **Mag turned on with RUN off** (answer 6, 2026-11-08). Nothing is computed until RUN. Then |m| / m is computed and shown. Until then the panels show what they showed before Mag was pressed (the total).
+
+**Done already (listed for completeness):**
+
+14.7 **Nothing outside `LDOS_spread_decomp/`** (2026-11-08). Stage 1's root `qtgui/` edits were taken back out (commit `8eb1de8`). The root `qtgui/widgets.py` line from the linearized toggle (commit `e38f7cf`) stays as it is, by your answer ("don't do anything else about it").
+
+14.8 **`sim_wrapper.py`** (2026-11-08). Your approval stands. Its lines follow the renamed channels (stage 3, commit `0263117`).
+
