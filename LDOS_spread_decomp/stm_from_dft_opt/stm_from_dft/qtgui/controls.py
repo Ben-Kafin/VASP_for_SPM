@@ -2335,7 +2335,8 @@ class Arrangement(QtWidgets.QWidget):
     at the slot's top left, the part of the slot it leaves blank: _capped), and in the one-group
     candidate 'h' (without free_scored) the group is sized so that it and the free widget at that
     size fit the width side by side, instead of in the room the readable minimum alone leaves
-    (_h_fit); the tall_rule judges 'h' with the free widget at that size (_band_below).  The
+    (_h_fit; but in the minimum size's search, minimum_px, where 'h' is sized in that room, so that the
+    window may be narrower than that row); the tall_rule judges 'h' with the free widget at that size (_band_below).  The
     simulator's Single Point (3.7): in 'h' the spectrum with its legend panel at one topo panel's
     plot box, the row as large as the two allow; in 'v' None, the spectrum filling the bottom row,
     the full width and all the height the topo sub-section leaves.  With `free_scored` the free widget is a first-class panel instead: it is
@@ -2544,7 +2545,10 @@ class Arrangement(QtWidgets.QWidget):
         they fit in it, else found by a bisection of H_FIT_STEPS from 1 px (the group's width and height, and
         so the free widget's size, grow with the room), so the row is as large as both allow.  None without
         free_size, when it gives no size for 'h', or when the two fit in no room (the group is then sized in
-        the room the readable minimum leaves, as without free_size).
+        the room the readable minimum leaves, as without free_size).  Not asked in minimum_px's search
+        (_base_lim set, _candidates_at): there 'h' is sized in the room the readable minimum leaves, as
+        without free_size, so that the window's minimum width does not hold this row and a narrower window
+        takes 'v' by the tall_rule (3.7).
         """
         fn = self._free_size_fn
         if fn is None:
@@ -2866,7 +2870,7 @@ class Arrangement(QtWidgets.QWidget):
         return (name, float(blank), rects, valid)
 
     def _candidates_at(self, W, H, only=None, fmin=None):
-        """[(name, blank, {widget: (x, y, w, h)}, valid)] at the size W x H, the groups within their limits (_lim), the allowed candidates only (layouts); `only`: that candidate alone (two groups); `fmin`: the free widget's minimum, measured by the caller.  The free widget's region in each is cut to its size there (_capped: free_size, free_cap); in the one-group 'h' with free_size the group is sized so that it and the free widget at that size fit side by side (_h_fit)."""
+        """[(name, blank, {widget: (x, y, w, h)}, valid)] at the size W x H, the groups within their limits (_lim), the allowed candidates only (layouts); `only`: that candidate alone (two groups); `fmin`: the free widget's minimum, measured by the caller.  The free widget's region in each is cut to its size there (_capped: free_size, free_cap); in the one-group 'h' with free_size the group is sized so that it and the free widget at that size fit side by side (_h_fit), but in minimum_px's search (_base_lim set), where it is sized in the room the free widget's readable minimum leaves, as without free_size (3.7: the window may be narrower than that row, the tall_rule taking 'v' there)."""
         want = lambda name: (only is None or only == name) and (self._layouts is None or name in self._layouts)
         sp = self._sp
         fw, fh = self._free_min(W, H) if fmin is None else fmin
@@ -2892,8 +2896,10 @@ class Arrangement(QtWidgets.QWidget):
                 a = b[0] if b else None
             else:
                 # With free_size: the group and the free widget at its size beside it fit the width (_h_fit, asked
-                # only while 'h' is wanted); else the group in the room the free widget's readable minimum leaves.
-                a = (self._h_fit(A, W, H, fw) if want('h') else None) or self._sz(A, W - fw - sp, H)
+                # only while 'h' is wanted, and never in minimum_px's search, _base_lim set: there 'h' is sized as
+                # without free_size, so that the window may be narrower than that row, 3.7); else the group in the
+                # room the free widget's readable minimum leaves.
+                a = (self._h_fit(A, W, H, fw) if want('h') and not self._base_lim else None) or self._sz(A, W - fw - sp, H)
             if a:                                                 # h: A at the left
                 wA = a[0]
                 put('h', {A: (0, 0, a[0], a[1]), F: (wA + sp, 0, W - wA - sp, H)}, wA * (H - a[1]),
@@ -3082,8 +3088,10 @@ class Arrangement(QtWidgets.QWidget):
         """
         (w, h) px: the smallest size of this widget at which the limits all hold: the floor's panel at its
         minimum, group A at most k times group B (group_cap, the cap kept) and at least group_min times it,
-        the free widget at its readable minimum (in 'h' with free_size, at its size there, the group sized so
-        that the two fit: _h_fit) and the bottom widget under them (bottom), in every candidate
+        the free widget at its readable minimum (in 'h' with free_size too: the group sized in the room the
+        readable minimum leaves, _h_fit not asked in this search, so that the window may be narrower than the
+        row 'h' holds at free_size and the tall_rule takes 'v' there: 3.7) and the bottom widget under them
+        (bottom), in every candidate
         the window allows (layouts: the largest of their smallest sizes, so the limits hold in whichever is
         taken; _min_of).  None without a floor, or while the floor's panel has no plot box or no minimum yet.
         A floor is never combined with free_scored (the class docstring): _balanced would keep the floor's
@@ -3115,7 +3123,16 @@ class Arrangement(QtWidgets.QWidget):
         return res
 
     def _minimum_now(self, m, fmin):
-        """minimum_px's search: the floor's group limited to its size at the floor (_floor_size, the base limit _base_lim, so that the rest of the room goes to the others), then each allowed candidate's smallest size (_min_of); the largest width and the largest height among them."""
+        """
+        minimum_px's search: the floor's group limited to its size at the floor (_floor_size, the base limit
+        _base_lim, so that the rest of the room goes to the others), then each allowed candidate's smallest
+        size (_min_of); the largest width and the largest height among them.  With tall_rule (first, second),
+        when the second holds the limits at some size, the width is the second's narrowest instead (3.7,
+        Single Point: the window may be narrower than the row 'h' needs, and its minimum width is 'v''s):
+        below the first's narrowest width its group is under its floor size, and with the free widget cut to
+        the row (free_cap, free_size) the first leaves an empty band below its row at any height of at least
+        the second's lowest, so the rule takes the second there (_pick), and the limits hold in it.
+        """
         if m is None:
             return None
         G = self._floor[0]
@@ -3123,10 +3140,14 @@ class Arrangement(QtWidgets.QWidget):
         if gf is None:
             return None
         self._base_lim = {G: (gf[0] + 0.5, gf[1] + 0.5)}
-        boxes = [b for b in (self._min_of(name, gf, fmin) for name in self._names()) if b is not None]
+        boxes = {name: b for name, b in ((n, self._min_of(n, gf, fmin)) for n in self._names()) if b is not None}
         if not boxes:
             return None
-        return (max(b[0] for b in boxes), max(b[1] for b in boxes))
+        w = max(b[0] for b in boxes.values())
+        second = self._tall_rule[1] if self._tall_rule is not None else None
+        if second in boxes:
+            w = boxes[second][0]                   # the tall_rule's second: the window's minimum width (3.7)
+        return (w, max(b[1] for b in boxes.values()))
 
     def _floor_size(self, G, m):
         """The floor's group G's shaped size (w, h) at the floor: in a room of any width (BIG_PX), the lowest room height at which its panel's plot box (floor box_of) is at least the minimum `m` (a bisection of 30 steps); None when no height reaches it."""

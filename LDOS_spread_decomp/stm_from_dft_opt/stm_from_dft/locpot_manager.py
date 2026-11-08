@@ -6,7 +6,6 @@ Handles ISPIN=1, ISPIN=2, and non-collinear SOC LOCPOT files.
 Author: Benjamin Kafin
 """
 
-import os
 import numpy as np
 from os.path import exists, join, getsize
 from pymatgen.io.vasp import Locpot
@@ -16,32 +15,37 @@ from .doscar_parser import SpinMode
 
 class LocpotManager:
     """
-    Dedicated handler for VASP LOCPOT data extraction and caching.
+    Machinery: dedicated handler for VASP LOCPOT data extraction and caching.
     Auto-detects spin mode from the number of volumetric data sections.
-    The cache, LOCPOT.npy, is written to and looked for in the folder
-    "caches" inside the VASP folder (made when first needed). A LOCPOT.npy
+    The cache, LOCPOT.npy, is written to and looked for at the path the
+    caller gives (cache_path). The Simulator gives its one caches path,
+    _cache_path('LOCPOT.npy') = <VASP folder>/caches/LOCPOT.npy, which also
+    makes the folder; this class has no folder rule of its own. A LOCPOT.npy
     left directly in the VASP folder is neither moved nor read.
     """
 
-    def __init__(self, filepath, spin_mode=None):
+    def __init__(self, filepath, spin_mode=None, *, cache_path):
         """
+        Machinery: the handler for the LOCPOT in filepath, its cache at
+        cache_path.
+
         Parameters
         ----------
         filepath : str
-            Directory containing LOCPOT (the VASP folder). Its "caches"
-            subfolder holds the LOCPOT.npy cache.
+            Directory containing LOCPOT (the VASP folder).
         spin_mode : SpinMode or None
             If provided, used directly.  If None, auto-detected from LOCPOT
             section count.
+        cache_path : str
+            The path of the LOCPOT.npy cache, read and written as given (the
+            Simulator's _cache_path('LOCPOT.npy'), whose folder it has made).
         """
         self.filepath = filepath
         self.locpot_path = join(filepath, "LOCPOT")
-        # The cache lives in <VASP folder>/caches/ under its usual name,
-        # LOCPOT.npy. The folder is made only when the cache is first
-        # written (_rebuild_cache). An older LOCPOT.npy directly in the
-        # VASP folder is not looked at, so it is neither moved nor read.
-        self.cache_dir = join(filepath, "caches")
-        self.cache_path = join(self.cache_dir, "LOCPOT.npy")
+        # The cache at the caller's path (the Simulator's one caches path,
+        # <VASP folder>/caches/LOCPOT.npy). An older LOCPOT.npy directly in
+        # the VASP folder is not looked at, so it is neither moved nor read.
+        self.cache_path = cache_path
         self.spin_mode = spin_mode
         self.data = None
 
@@ -58,7 +62,7 @@ class LocpotManager:
         return self._rebuild_cache()
 
     def _is_cache_valid(self):
-        """Validates existence and dimensionality of the .npy cache in caches/."""
+        """Machinery: validates existence and dimensionality of the .npy cache at cache_path."""
         if not exists(self.cache_path) or getsize(self.cache_path) == 0:
             return False
         try:
@@ -73,9 +77,9 @@ class LocpotManager:
 
     def _rebuild_cache(self):
         """
-        Parses raw LOCPOT and applies spin-mode-appropriate extraction.
+        Machinery: parses raw LOCPOT and applies spin-mode-appropriate extraction.
         Auto-detects spin mode from section count if not pre-set.
-        Saves the result as caches/LOCPOT.npy, making caches/ if needed.
+        Saves the result at cache_path (its folder made by the caller).
         """
         if not exists(self.locpot_path):
             raise FileNotFoundError(f"Source LOCPOT not found: {self.locpot_path}")
@@ -115,8 +119,6 @@ class LocpotManager:
             # ISPIN=1: single section
             self.data = vol_sections[0]
 
-        # The caches folder is made here, when the cache is first written.
-        os.makedirs(self.cache_dir, exist_ok=True)
         np.save(self.cache_path, self.data)
         print(f"[*] Saved LOCPOT cache to {self.cache_path} with shape {self.data.shape}")
         return self.data

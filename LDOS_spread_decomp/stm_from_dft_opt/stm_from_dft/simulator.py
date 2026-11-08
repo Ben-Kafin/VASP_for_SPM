@@ -33,9 +33,10 @@ import numpy as np
 import cupy as cp
 import cupyx.scipy.ndimage as cp_ndimage
 from os.path import exists, getsize, join
-from os import chdir
+from os import chdir, makedirs
 from numpy.linalg import norm, inv
 import colorsys
+import hashlib
 from time import time
 
 from .qtgui import qtplot as plt
@@ -869,7 +870,8 @@ class Unified_STM_Simulator:
                 current_global += 1
 
         # --- LOCPOT: auto-detects from section count ---
-        lpt_mgr = LocpotManager(self.filepath, spin_mode=self.spin_mode)
+        # Its cache, LOCPOT.npy, at the one caches path (_cache_path: <VASP folder>/caches/LOCPOT.npy).
+        lpt_mgr = LocpotManager(self.filepath, spin_mode=self.spin_mode, cache_path=self._cache_path('LOCPOT.npy'))
         locpot_raw = cp.array(lpt_mgr.get_data(), dtype=cp.float32)
 
         if self.spin_mode == SpinMode.COLLINEAR_POL:
@@ -975,9 +977,13 @@ class Unified_STM_Simulator:
             self.dos_m_gpu = self.dos_up_gpu - self.dos_dn_gpu
             self.dos_m_collapsed = cp.ascontiguousarray(cp.sum(self.dos_m_gpu, axis=2))
 
-    def _broadening_cache_suffix(self):
-        """Machinery: generate cache filename suffix encoding active broadening state."""
-        active = sorted((t, s) for t, s in getattr(self, 'extra_broadening', {}).items() if s > 0)
+    def _broadening_cache_suffix(self, broadening=None):
+        """Machinery: generate cache filename suffix encoding active broadening state: the window's
+        (extra_broadening), or, given, the broadening {type: σ} some kept data were computed with (Map's
+        map_broadening, in the key of its LDOS disk cache: _ldos_cache_key)."""
+        if broadening is None:
+            broadening = getattr(self, 'extra_broadening', {})
+        active = sorted((t, s) for t, s in broadening.items() if s > 0)
         if not active:
             return ""
         return "_broad_" + "_".join(f"{t}{s:.3f}" for t, s in active)
@@ -1004,6 +1010,20 @@ class Unified_STM_Simulator:
 
     def _precision_cache_suffix(self):
         return "_f32"
+
+    def _cache_path(self, name):
+        """
+        Machinery: where the cache `name` is written and looked for: <VASP folder>/caches/<name> (the VASP folder
+        self.filepath), the folder made when first needed (the first time a cache's path is asked for).  The one
+        definition of the caches folder, for every cache the simulator makes: the global and LDOS topos
+        (global_topo_*.npy, ldos_topo_*.npy), the Line, Path and Map LDOS caches and their mag channel's files
+        (line_ldos_*, path_ldos_*, map_ldos_*.npz: _ldos_cache_name) and LOCPOT.npy (given to LocpotManager).  The
+        names are unchanged, how a height is spelled included; a cache left outside caches/ is neither moved nor
+        read.
+        """
+        folder = join(self.filepath, 'caches')
+        makedirs(folder, exist_ok=True)
+        return join(folder, name)
 
     def _display_indices(self, emin, emax):
         """
@@ -1501,7 +1521,8 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         self.cached_bias_energy_line, self.cached_bias_energy_map, self.cached_nepts = None, None, None
         # The Line / Path points' LDOS: its total channel and its mag channel (|m| or m; None until computed: only
         # while Mag is on, _calculate_ldos_at_points_gpu's want_mag) and its energies, kept together (sim_wrapper
-        # reads them).
+        # reads them); only the shown data in memory: on disk, with its current and the stripe's tip heights, in
+        # the view's LDOS cache in caches/ (_ldos_cache_key, _save_ldos_cache; the mag channel in its _mag file).
         self.cached_ld_total, self.cached_ld_mag, self.cached_eg = None, None, None
         self.cached_ld_mode = None                                      # the view that computed them, Line or Path, kept with them (sim_wrapper reads it)
         self.cached_ld_total_gpu, self.cached_ld_mag_gpu = None, None   # the GPU copies the display works from
@@ -1523,7 +1544,9 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         # the window's snapped ends (map_window), the decay model (map_d_ldos), the broadening (map_broadening, a
         # copy of extra_broadening) and the LDOS-topo heights (map_z, Map's copy of the LDOS topo ldos_z_map its maps
         # were computed at, which Map's LDOS topo panel, the contour slice and the shading are drawn from, with the
-        # bias map_bias and the LDOS h map_ldos_h they were computed at, that panel's title) they were computed with;
+        # bias map_bias and the LDOS h map_ldos_h they were computed at, that panel's title) they were computed with
+        # (the maps, their current, their energies and map_z also on disk under the key of these records, in Map's
+        # LDOS cache in caches/: _ldos_cache_key, _save_ldos_cache; the mag channel in its _mag file);
         # Map's marker spectra as shown (map_spec_ldos, with the GPU copy
         # map_spec_ldos_gpu; one of their two channels, the total map_spec_total_gpu and the mag channel
         # map_spec_mag_gpu, None until computed: only while Mag is on), their energies (map_eg), the markers they
@@ -1676,10 +1699,11 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         grid_xy_gpu = cp.array(grid_xy, dtype=cp.float32)
         z_fixed = cp.full(grid_xy_gpu.shape[0], self.z_highest_atom + topo_height, dtype=cp.float32)
         cache_name = f"global_topo_{self.global_topo_bias}V_{topo_height}A_{grid_res}px{self._broadening_cache_suffix()}{self._unit_cell_cache_suffix()}{self._decay_cache_suffix()}_fold{self._precision_cache_suffix()}.npy"
+        cache_file = self._cache_path(cache_name)          # in the VASP folder's caches/
         # The global topo (global_z_map, its own: the LDOS topo is ldos_z_map, _ensure_ldos_topo).
-        if self.reuse_cache and exists(cache_name):
+        if self.reuse_cache and exists(cache_file):
             print(f"[*] Loading Cached Global Topography: {cache_name}")
-            self.global_z_map = np.load(cache_name)
+            self.global_z_map = np.load(cache_file)
             z_map_gpu = cp.array(self.global_z_map, dtype=cp.float32)
         else:
             print(f"[*] Cache not found. Calculating Global Topography: {cache_name}")
@@ -1690,7 +1714,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
             z_map_gpu = self._converge_tip_height(z_fixed, grid_xy_gpu, t_samples, self.global_topo_bias, target_setp,
                                                   decay_model=self._effective_decay_model())
             self.global_z_map = cp.asnumpy(z_map_gpu)
-            np.save(cache_name, self.global_z_map)
+            np.save(cache_file, self.global_z_map)
         self.grid_xy = grid_xy
         self.grid_xy_gpu = grid_xy_gpu
         self.fig = plt.figure(figsize=DESIGN, fill_screen=True)   # opened on the screen's available area; never trimmed to its panels
@@ -3458,12 +3482,13 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
                 print(f"marker_positions=[{pos_str}]")
 
     def _recompute_global_topo(self):
-        """Machinery: re-run Phase 1 global topography with current broadened DOS (cache-aware), at global_topo_bias (V_b, the snapped topo_bias), into the global topo's own record global_z_map (the LDOS topo, ldos_z_map, is not touched)."""
+        """Machinery: re-run Phase 1 global topography with current broadened DOS (cache-aware: its global_topo_*.npy in the VASP folder's caches/, _cache_path), at global_topo_bias (V_b, the snapped topo_bias), into the global topo's own record global_z_map (the LDOS topo, ldos_z_map, is not touched)."""
         grid_res = int(np.sqrt(len(self.grid_xy)))
         cache_name = f"global_topo_{self.global_topo_bias}V_{self.topo_height}A_{grid_res}px{self._broadening_cache_suffix()}{self._unit_cell_cache_suffix()}{self._decay_cache_suffix()}_fold{self._precision_cache_suffix()}.npy"
-        if self.reuse_cache and exists(cache_name):
+        cache_file = self._cache_path(cache_name)
+        if self.reuse_cache and exists(cache_file):
             print(f"[*] Loading Cached Global Topography: {cache_name}")
-            self.global_z_map = np.load(cache_name)
+            self.global_z_map = np.load(cache_file)
         else:
             print(f"[*] Calculating Global Topography with broadening: {cache_name}")
             z_fixed = cp.full(self.grid_xy_gpu.shape[0], self.z_highest_atom + self.topo_height, dtype=cp.float32)
@@ -3474,17 +3499,96 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
             z_map_gpu = self._converge_tip_height(z_fixed, self.grid_xy_gpu, t_samples, self.global_topo_bias, target_setp,
                                                   decay_model=self._effective_decay_model())
             self.global_z_map = cp.asnumpy(z_map_gpu)
-            np.save(cache_name, self.global_z_map)
+            np.save(cache_file, self.global_z_map)
 
     def _ldos_topo_key(self, v_b, decay_model):
         """Machinery: the LDOS topo's key for the window's state at the bias V_b (_bias_sample) and the decay model decay_model (_effective_decay_model's names): (V_b, LDOS h, the decay model, the broadening as sorted (type, σ) pairs), the key ldos_z_key is kept with."""
         return (v_b, self.ldos_height, decay_model, tuple(sorted(self.extra_broadening.items())))
 
+    def _ldos_cache_key(self, view, v_b, ldos_h, ends, decay_model, broadening, samples=None):
+        """
+        Machinery: the key of a Line, Path or Map LDOS disk cache (_ldos_cache_name), as text, one 'name: value'
+        line each: the view (view: 'Line', 'Path' or 'Map') and, for Line and Path, the window's geometry (the
+        line ends p1 and p2, or the path nodes and Extend, and the point count npts); for Map the map energies'
+        samples (samples: DOS sample indices in map order, written as their energies); V_b and LDOS h (ldos_h,
+        spelled as in the topo cache names); the window's snapped ends (ends: _snap's (E Min, E Max), each written
+        as its sample's energy, or '0 V' for ZERO_V); the decay model (decay_model: _effective_decay_model's
+        names); the broadening (broadening, {type: σ}), the unit cells and the precision, spelled as in the topo
+        cache names (_broadening_cache_suffix, _unit_cell_cache_suffix, _precision_cache_suffix); and the grid size
+        (grid_res).  Floats are written exactly (repr).  The file's name holds the text's SHA-1; the text itself
+        is stored in the file and checked on load (_load_ldos_cache).
+        """
+        def num(x):
+            return repr(float(x))
+
+        def end(i):
+            return '0 V' if i is ZERO_V else f"{num(self.energies[i])} eV"
+
+        lines = [f"view: {view}"]
+        if view == 'Line':
+            lines.append(f"line ends: ({num(self.p1[0])}, {num(self.p1[1])}) ({num(self.p2[0])}, {num(self.p2[1])})")
+            lines.append(f"points: {int(self.npts)}")
+        elif view == 'Path':
+            lines.append("path nodes: " + " ".join(f"({num(n[0])}, {num(n[1])})" for n in self.path_nodes))
+            lines.append(f"extend: {bool(self.path_extend)}")
+            lines.append(f"points: {int(self.npts)}")
+        else:
+            lines.append("map samples: " + " ".join(f"{num(self.energies[int(i)])} eV" for i in samples))
+        lines += [f"V_b: {num(v_b)} V",
+                  f"LDOS h: {ldos_h} A",
+                  f"window: {end(ends[0])} to {end(ends[1])}",
+                  f"decay model: {decay_model}",
+                  f"broadening: {self._broadening_cache_suffix(broadening) or 'none'}",
+                  f"unit cells: {self._unit_cell_cache_suffix()}",
+                  f"precision: {self._precision_cache_suffix()}",
+                  f"grid: {int(np.sqrt(len(self.grid_xy)))} px"]
+        return "\n".join(lines)
+
+    def _ldos_cache_name(self, view, key, mag=False):
+        """Machinery: the name of a Line, Path or Map LDOS disk cache (in caches/: _cache_path), line_ldos_<hash>.npz,
+        path_ldos_<hash>.npz or map_ldos_<hash>.npz, <hash> the SHA-1 of the key's text (_ldos_cache_key); with mag,
+        its mag channel's file beside it, <view>_ldos_<hash>_mag.npz.  Each decay model so has its own files."""
+        digest = hashlib.sha1(key.encode('utf-8')).hexdigest()
+        return f"{view.lower()}_ldos_{digest}{'_mag' if mag else ''}.npz"
+
+    def _load_ldos_cache(self, view, key, mag=False):
+        """
+        Machinery: a Line, Path or Map LDOS disk cache at the key's text (_ldos_cache_key), or with mag its mag
+        channel's file, loaded with reuse_cache on: its arrays as a dict of NumPy arrays, the stored key left out
+        (Line / Path: 'ld_total', 'energies', 'current' and 'z', the stripe's tip heights; Map: 'ld_total',
+        'energies', 'current' and 'z', the LDOS topo heights map_z; a mag file: 'ld_mag').  None, so the data are
+        calculated and saved over it, when reuse_cache is off, when there is no such file in caches/, when it cannot
+        be read, or when the key stored in it is not this key.
+        """
+        if not self.reuse_cache:
+            return None
+        name = self._ldos_cache_name(view, key, mag)
+        path = self._cache_path(name)
+        if not exists(path):
+            return None
+        try:
+            with np.load(path) as f:
+                if str(f['key']) != key:
+                    return None
+                data = {k: f[k] for k in f.files if k != 'key'}
+        except Exception:
+            return None
+        print(f"[*] Loading Cached {view} LDOS{', mag channel' if mag else ''}: {name}")
+        return data
+
+    def _save_ldos_cache(self, view, key, arrays, mag=False):
+        """Machinery: a Line, Path or Map LDOS disk cache saved at the key's text (_ldos_cache_key), or with mag its mag
+        channel's file: the arrays (a dict of NumPy arrays, the names _load_ldos_cache reads) and the key itself
+        ('key', checked on load), uncompressed (np.savez), in caches/ under _ldos_cache_name, over any file of that
+        name."""
+        np.savez(self._cache_path(self._ldos_cache_name(view, key, mag)), key=np.array(key), **arrays)
+
     def _ensure_ldos_topo(self, v_b, decay_model):
         """
         Machinery: the LDOS topo (ldos_z_map, shared by every view) at the window's key (_ldos_topo_key: V_b, LDOS
         h, the decay model, the broadening), returned (grid_res x grid_res heights over grid_xy, NumPy): from
-        memory when ldos_z_key is that key; else from its cache ldos_topo_*.npy (reuse_cache on), or converged on
+        memory when ldos_z_key is that key; else from its cache ldos_topo_*.npy in the VASP folder's caches/
+        (_cache_path; reuse_cache on), or converged on
         the whole unit cell's grid and saved under that name, as Map's code did before: from the flat start
         z_highest_atom + LDOS h, the setpoint the largest current there (_topo_current at the frozen bias V_b),
         _converge_tip_height under decay_model.  ldos_z_map and ldos_z_key are set to it.  Callers: Map (before
@@ -3499,9 +3603,10 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
             return self.ldos_z_map
         grid_res = int(np.sqrt(len(self.grid_xy)))
         ldos_cache_name = f"ldos_topo_{v_b}V_{self.ldos_height}A_{grid_res}px{self._broadening_cache_suffix()}{self._unit_cell_cache_suffix()}{self._decay_cache_suffix()}_fold{self._precision_cache_suffix()}.npy"
-        if self.reuse_cache and exists(ldos_cache_name):
+        ldos_cache_file = self._cache_path(ldos_cache_name)
+        if self.reuse_cache and exists(ldos_cache_file):
             print(f"[*] Loading Cached LDOS Topography: {ldos_cache_name}")
-            z = np.load(ldos_cache_name)
+            z = np.load(ldos_cache_file)
         else:
             print(f"[*] Cache not found. Calculating LDOS Topography: {ldos_cache_name}")
             z_fixed = cp.full(self.grid_xy_gpu.shape[0], self.z_highest_atom + self.ldos_height, dtype=cp.float32)
@@ -3512,7 +3617,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
             z_map_gpu = self._converge_tip_height(z_fixed, self.grid_xy_gpu, t_samples, v_b, target_setp,
                                                   decay_model=decay_model)
             z = cp.asnumpy(z_map_gpu)
-            np.save(ldos_cache_name, z)
+            np.save(ldos_cache_file, z)
         self.ldos_z_map, self.ldos_z_key = z, key
         return z
 
@@ -3764,7 +3869,12 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         channel (|m| or m) only while Mag is on, for what is shown (the Line / Path LDOS, Map's maps, the
         marker spectra): with them, or, when Mag is turned on, alone for what is kept without it (the total
         not computed again); the display shows the total, or the mag channel while Mag is on
-        (_combine_ldos_display).  With RUN off and `last_run` (a decomp step:
+        (_combine_ldos_display).  The Line / Path LDOS (with the stripe's tip heights) and Map's maps (with their
+        LDOS topo heights) are also kept on disk, per decay model, in the VASP folder's caches/ under the key of
+        what they were computed at (_ldos_cache_key; the mag channel in a _mag file beside each, saved when it is
+        computed): with reuse_cache on, a matching file is loaded instead of computing them (no stripe convergence,
+        no LDOS); otherwise they are computed and saved.  In memory only the shown data are kept.  The markers'
+        spectra (Single Point, Map) are not cached.  With RUN off and `last_run` (a decomp step:
         _decomp_click; a view change into Map: _build_ui) the panels of the view (the spectrum, the legend panel, the heatmaps, the maps) are
         drawn from the data of the last run, nothing computed, when the view has them (_has_last_run);
         otherwise, with RUN off, nothing more is drawn.  Map's energies, data and caches are its own (map_*,
@@ -3914,8 +4024,9 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         # off; Mag turned on since): its mag channel alone (want_mag 'only'), at the points, tip heights, samples and
         # decay model its kept total was computed at, which are the window's (needs_ldos / needs_spec False); the
         # total is not computed again.  needs_mag: the Line / Path LDOS (cached_ld_mag_gpu) or Map's maps
-        # (map_ld_mag_gpu); needs_spec_mag: the marker spectra of Single Point (cached_spec_mag_gpu) or Map
-        # (map_spec_mag_gpu).
+        # (map_ld_mag_gpu), from the _mag file of their LDOS disk cache when there is one, also after a cache hit
+        # (below); needs_spec_mag: the marker spectra of Single Point (cached_spec_mag_gpu) or Map
+        # (map_spec_mag_gpu), not cached.
         mag_on = compute and self.show_mag and self._has_mag_channel()
         if self.mode in ('Line', 'Path'):
             needs_mag = (mag_on and not needs_ldos and self.cached_ld_total_gpu is not None
@@ -3935,29 +4046,49 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
             # (_fill_heat_row).
             self._ensure_ldos_topo(v_b, decay_model)
 
+        # The Line / Path LDOS disk cache (line_ldos_* / path_ldos_*.npz in caches/) at the window's key
+        # (_ldos_cache_key: the view and its geometry, V_b, LDOS h, the window's snapped ends, the decay model, the
+        # broadening, the unit cells, the precision, the grid size), wanted when the LDOS is computed (needs_ldos)
+        # or its mag channel (needs_mag: the kept LDOS is the window's).  With reuse_cache on, a matching file is
+        # loaded (ld_hit: its total, energies, current and the stripe's tip heights) and nothing is calculated: no
+        # stripe convergence, no LDOS; otherwise they are calculated and saved under that key.
+        ld_key, ld_hit = None, None
+        if self.mode in ('Line', 'Path') and (needs_ldos or needs_mag):
+            ld_key = self._ldos_cache_key(self.mode, v_b, self.ldos_height, (e_lo, e_hi), decay_model,
+                                          self.extra_broadening)
+            if needs_ldos:
+                ld_hit = self._load_ldos_cache(self.mode, ld_key)
+
         if needs_topo:
             if self.s_emin.val == 0.0 and self.s_emax.val == 0.0:
                 raise ValueError("Stabilization bias is 0: set a nonzero E Min or E Max before the constant-current window can be built.")
             if self.mode in ('Line', 'Path'):
-                # The stripe's own quick line convergence (no cache of its own; Line's and Path's heights kept
-                # under their own keys): its starting heights the LDOS topo interpolated at the sample points,
-                # bilinear and periodic in the cell's fractional coordinates (_ldos_topo_interp); its setpoint the
-                # LDOS topo's own, the current at the LDOS topo's tallest grid point (_ldos_topo_setpoint), so the
-                # stripe sits on the LDOS topo's tip height; then every point moved by the existing rule
-                # (_converge_tip_height: a point within 1 % of the setpoint is not moved again).
-                p_xy_gpu = cp.array(p_xy, dtype=cp.float32)
-                z_start = cp.array(self._ldos_topo_interp(p_xy), dtype=cp.float32)
-                target, l_samples = self._ldos_topo_setpoint(v_b, decay_model)
-                print(f"[*] {self.mode} Topo Setpoint: {float(target):.6e}")
-                z_line = self._converge_tip_height(z_start, p_xy_gpu, l_samples, v_b, target,
-                                                   decay_model=decay_model)
-                # Into the view's own record, with its key and the bias and decay model they were converged at.
+                if ld_hit is not None:
+                    # A Line / Path LDOS cache hit: the stripe's tip heights come from the cache, the heights its
+                    # LDOS was calculated at, and the stripe is not converged again.
+                    z_line = ld_hit['z']
+                else:
+                    # The stripe's own quick line convergence (no cache of its own: its heights are saved in the
+                    # Line / Path LDOS cache, with the LDOS calculated at them; Line's and Path's heights kept
+                    # under their own keys): its starting heights the LDOS topo interpolated at the sample points,
+                    # bilinear and periodic in the cell's fractional coordinates (_ldos_topo_interp); its setpoint
+                    # the LDOS topo's own, the current at the LDOS topo's tallest grid point (_ldos_topo_setpoint),
+                    # so the stripe sits on the LDOS topo's tip height; then every point moved by the existing rule
+                    # (_converge_tip_height: a point within 1 % of the setpoint is not moved again).
+                    p_xy_gpu = cp.array(p_xy, dtype=cp.float32)
+                    z_start = cp.array(self._ldos_topo_interp(p_xy), dtype=cp.float32)
+                    target, l_samples = self._ldos_topo_setpoint(v_b, decay_model)
+                    print(f"[*] {self.mode} Topo Setpoint: {float(target):.6e}")
+                    z_line = cp.asnumpy(self._converge_tip_height(z_start, p_xy_gpu, l_samples, v_b, target,
+                                                                  decay_model=decay_model))
+                # Into the view's own record, with its key and the bias and decay model they were converged at
+                # (here, or when the cache was saved).
                 if self.mode == 'Line':
-                    self.current_z_line = cp.asnumpy(z_line)
+                    self.current_z_line = z_line
                     self.cached_p1, self.cached_p2 = self.p1.copy(), self.p2.copy()
                     self.cached_bias_energy_line, self.cached_d_topo_line = v_b, decay_model
                 else:
-                    self.current_z_path = cp.asnumpy(z_line)
+                    self.current_z_path = z_line
                     self.cached_path_nodes = np.array(self.path_nodes).copy()
                     self.cached_path_extend = self.path_extend
                     self.cached_bias_energy_path, self.cached_d_topo_path = v_b, decay_model
@@ -3985,14 +4116,35 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
             # spectra, below).  The heights: the LDOS topo at the window's key (_ensure_ldos_topo, before the maps;
             # from memory when needs_topo took it above).  The total channel, and the mag channel only while Mag is
             # on (want_mag; map_ld_mag None otherwise).
-            z_ldos = self._ensure_ldos_topo(v_b, decay_model)
+            # Map's LDOS disk cache (map_ldos_*.npz in caches/) at the window's key (_ldos_cache_key: V_b, LDOS h,
+            # the map energies' samples, the window's snapped ends, the decay model, the broadening, the unit cells,
+            # the precision, the grid size): with reuse_cache on, a matching file is loaded (the maps' total, their
+            # current, their energies and the LDOS topo heights they were calculated at, map_z) and no LDOS is
+            # calculated; its mag channel, while Mag is on, then from its _mag file or calculated and saved
+            # (needs_mag, below).  Otherwise the maps are calculated and saved under that key, with their mag
+            # channel's file when it was calculated.
+            map_key = self._ldos_cache_key('Map', v_b, self.ldos_height, (e_lo, e_hi), decay_model,
+                                           self.extra_broadening, samples=self.map_e_idx)
+            ld_hit = self._load_ldos_cache('Map', map_key)
+            if ld_hit is not None:
+                z_ldos = ld_hit['z']
+                ld_total_np, ld_mag_np = ld_hit['ld_total'], None
+                ld_total, ld_mag, cur = cp.asarray(ld_total_np), None, cp.asarray(ld_hit['current'])
+            else:
+                z_ldos = self._ensure_ldos_topo(v_b, decay_model)
+                grid_z = cp.hstack([self.grid_xy_gpu, cp.asarray(z_ldos, dtype=cp.float32)[:, None]])
+                ld_total, ld_mag, _, cur = self._calculate_ldos_at_points_gpu(
+                    grid_z, None, None, decay_model=decay_model, preserve_orbitals=True, with_current=True,
+                    samples=self.map_e_idx, progress='Map energy maps', want_mag=self.show_mag)
+                ld_total_np = cp.asnumpy(ld_total)
+                ld_mag_np = cp.asnumpy(ld_mag) if ld_mag is not None else None
+                self._save_ldos_cache('Map', map_key, {'ld_total': ld_total_np, 'energies': self.energies[self.map_e_idx],
+                                                       'current': cp.asnumpy(cur), 'z': np.asarray(z_ldos)})
+                if ld_mag_np is not None:
+                    self._save_ldos_cache('Map', map_key, {'ld_mag': ld_mag_np}, mag=True)
             topo_new = self.map_z is None or not np.array_equal(self.map_z, z_ldos)
-            grid_z = cp.hstack([self.grid_xy_gpu, cp.asarray(z_ldos, dtype=cp.float32)[:, None]])
-            ld_total, ld_mag, _, cur = self._calculate_ldos_at_points_gpu(
-                grid_z, None, None, decay_model=decay_model, preserve_orbitals=True, with_current=True,
-                samples=self.map_e_idx, progress='Map energy maps', want_mag=self.show_mag)
-            self.map_ld_total = cp.asnumpy(ld_total)
-            self.map_ld_mag = cp.asnumpy(ld_mag) if ld_mag is not None else None
+            self.map_ld_total = ld_total_np
+            self.map_ld_mag = ld_mag_np
             self.map_ld_total_gpu, self.map_ld_mag_gpu = ld_total, ld_mag
             self.map_current = cur
             self.map_current_E = cp.asarray((self.map_e_idx - self.k0).astype(np.float32)) * self.e_step32 + self.e032
@@ -4011,15 +4163,37 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         elif needs_ldos:
             if self.mode in ('Line', 'Path'):
                 l_idx = self._display_indices(self.s_emin.val, self.s_emax.val)
-                # At the view's own tip heights: Line's (current_z_line) or Path's (current_z_path).  The total
-                # channel, and the mag channel only while Mag is on (want_mag; cached_ld_mag None otherwise).
-                z_view = self.current_z_line if self.mode == 'Line' else self.current_z_path
-                ld_total, ld_mag, eg, cur = self._calculate_ldos_at_points_gpu(
-                    np.hstack([p_xy, z_view[:, None]]),
-                    None, None,
-                    decay_model=decay_model, preserve_orbitals=True, with_current=True,
-                    samples=l_idx, progress=f"{self.mode} points", want_mag=self.show_mag)
-                # The current from the same pass, stored with its samples' GPU energies e0 + (i - k0) step.
+                if ld_hit is not None:
+                    # A Line / Path LDOS cache hit (ld_hit, above): the total, its energies, its current and the
+                    # stripe's tip heights it was calculated at, from the file, the view's heights set to those
+                    # (also when only the window changed); nothing is calculated.  Its mag channel, while Mag is
+                    # on, from its _mag file or calculated and saved (needs_mag, below).
+                    z_view = ld_hit['z']
+                    if self.mode == 'Line':
+                        self.current_z_line = z_view
+                    else:
+                        self.current_z_path = z_view
+                    ld_total_np, ld_mag_np, eg = ld_hit['ld_total'], None, ld_hit['energies']
+                    ld_total, ld_mag, cur = cp.asarray(ld_total_np), None, cp.asarray(ld_hit['current'])
+                else:
+                    # At the view's own tip heights: Line's (current_z_line) or Path's (current_z_path).  The total
+                    # channel, and the mag channel only while Mag is on (want_mag; cached_ld_mag None otherwise).
+                    z_view = self.current_z_line if self.mode == 'Line' else self.current_z_path
+                    ld_total, ld_mag, eg, cur = self._calculate_ldos_at_points_gpu(
+                        np.hstack([p_xy, z_view[:, None]]),
+                        None, None,
+                        decay_model=decay_model, preserve_orbitals=True, with_current=True,
+                        samples=l_idx, progress=f"{self.mode} points", want_mag=self.show_mag)
+                    ld_total_np = cp.asnumpy(ld_total)
+                    ld_mag_np = cp.asnumpy(ld_mag) if ld_mag is not None else None
+                    # Saved to the view's LDOS disk cache under the window's key (ld_key): the total, its energies,
+                    # its current and the stripe's tip heights it was calculated at; its mag channel's file beside
+                    # it when the mag channel was calculated.
+                    self._save_ldos_cache(self.mode, ld_key, {'ld_total': ld_total_np, 'energies': cp.asnumpy(eg),
+                                                              'current': cp.asnumpy(cur), 'z': np.asarray(z_view)})
+                    if ld_mag_np is not None:
+                        self._save_ldos_cache(self.mode, ld_key, {'ld_mag': ld_mag_np}, mag=True)
+                # The current from the same pass (or the file), stored with its samples' GPU energies e0 + (i - k0) step.
                 self.cached_current = cur
                 self.cached_current_E = cp.asarray((l_idx - self.k0).astype(np.float32)) * self.e_step32 + self.e032
             else:
@@ -4028,8 +4202,8 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
             if ld_total is not None:
                 # The line's LDOS and its energies, kept together (Single Point's spectra keep theirs: cached_spec_eg),
                 # and the view that computed them (cached_ld_mode: Line's data are never sent with Path's markers).
-                self.cached_ld_total = cp.asnumpy(ld_total)
-                self.cached_ld_mag = cp.asnumpy(ld_mag) if ld_mag is not None else None
+                self.cached_ld_total = ld_total_np
+                self.cached_ld_mag = ld_mag_np
                 self.cached_ld_total_gpu, self.cached_ld_mag_gpu = ld_total, ld_mag
                 self.cached_eg = cp.asnumpy(eg)
                 self.cached_ld_mode = self.mode
@@ -4037,30 +4211,53 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
             self.cached_d_ldos = decay_model
             self.cached_mode = self.mode
 
+        if mag_on and ld_hit is not None:
+            # A Line / Path / Map LDOS cache hit loads the total only: while Mag is on its mag channel is then wanted
+            # too (needs_mag: from its _mag file, or calculated and saved).
+            needs_mag = True
+
         if needs_mag:
-            # The mag channel alone (want_mag 'only') of the view's kept LDOS (Mag on, the LDOS kept without it),
-            # into its record beside the kept total, which is not computed again.
+            # The mag channel alone of the view's kept LDOS (Mag on, the LDOS kept without it), into its record
+            # beside the kept total, which is not computed again: from the _mag file beside its LDOS disk cache (with
+            # reuse_cache on, a matching file), else computed (want_mag 'only') and saved there.
             if self.mode == 'Map':
-                # At the LDOS-topo heights, the energies and the decay model Map's kept maps were computed at (map_z,
-                # map_e_idx, map_d_ldos).
-                grid_z = cp.hstack([self.grid_xy_gpu, cp.asarray(self.map_z, dtype=cp.float32)[:, None]])
-                _, ld_mag, _ = self._calculate_ldos_at_points_gpu(
-                    grid_z, None, None, decay_model=self.map_d_ldos, preserve_orbitals=True,
-                    samples=self.map_e_idx, progress='Map energy maps', want_mag='only')
-                self.map_ld_mag = cp.asnumpy(ld_mag)
-                self.map_ld_mag_gpu = ld_mag
+                # The key of Map's kept maps (_ldos_cache_key: their bias, LDOS h, samples, window, decay model and
+                # broadening, map_bias, map_ldos_h, map_e_idx, map_window, map_d_ldos, map_broadening).
+                map_key = self._ldos_cache_key('Map', self.map_bias, self.map_ldos_h, self.map_window, self.map_d_ldos,
+                                               self.map_broadening, samples=self.map_e_idx)
+                mag_hit = self._load_ldos_cache('Map', map_key, mag=True)
+                if mag_hit is not None:
+                    self.map_ld_mag = mag_hit['ld_mag']
+                    self.map_ld_mag_gpu = cp.asarray(self.map_ld_mag)
+                else:
+                    # At the LDOS-topo heights, the energies and the decay model Map's kept maps were computed at
+                    # (map_z, map_e_idx, map_d_ldos).
+                    grid_z = cp.hstack([self.grid_xy_gpu, cp.asarray(self.map_z, dtype=cp.float32)[:, None]])
+                    _, ld_mag, _ = self._calculate_ldos_at_points_gpu(
+                        grid_z, None, None, decay_model=self.map_d_ldos, preserve_orbitals=True,
+                        samples=self.map_e_idx, progress='Map energy maps', want_mag='only')
+                    self.map_ld_mag = cp.asnumpy(ld_mag)
+                    self.map_ld_mag_gpu = ld_mag
+                    self._save_ldos_cache('Map', map_key, {'ld_mag': self.map_ld_mag}, mag=True)
             else:
-                # At the view's own tip heights (current_z_line or current_z_path) and the window's samples, as the
-                # kept total.
-                l_idx = self._display_indices(self.s_emin.val, self.s_emax.val)
-                z_view = self.current_z_line if self.mode == 'Line' else self.current_z_path
-                _, ld_mag, _ = self._calculate_ldos_at_points_gpu(
-                    np.hstack([p_xy, z_view[:, None]]),
-                    None, None,
-                    decay_model=decay_model, preserve_orbitals=True,
-                    samples=l_idx, progress=f"{self.mode} points", want_mag='only')
-                self.cached_ld_mag = cp.asnumpy(ld_mag)
-                self.cached_ld_mag_gpu = ld_mag
+                # The window's key (ld_key, above: the kept LDOS is the window's).
+                mag_hit = self._load_ldos_cache(self.mode, ld_key, mag=True)
+                if mag_hit is not None:
+                    self.cached_ld_mag = mag_hit['ld_mag']
+                    self.cached_ld_mag_gpu = cp.asarray(self.cached_ld_mag)
+                else:
+                    # At the view's own tip heights (current_z_line or current_z_path) and the window's samples, as
+                    # the kept total.
+                    l_idx = self._display_indices(self.s_emin.val, self.s_emax.val)
+                    z_view = self.current_z_line if self.mode == 'Line' else self.current_z_path
+                    _, ld_mag, _ = self._calculate_ldos_at_points_gpu(
+                        np.hstack([p_xy, z_view[:, None]]),
+                        None, None,
+                        decay_model=decay_model, preserve_orbitals=True,
+                        samples=l_idx, progress=f"{self.mode} points", want_mag='only')
+                    self.cached_ld_mag = cp.asnumpy(ld_mag)
+                    self.cached_ld_mag_gpu = ld_mag
+                    self._save_ldos_cache(self.mode, ld_key, {'ld_mag': self.cached_ld_mag}, mag=True)
 
         if (needs_spec or needs_spec_mag) and self.mode in ['Single Point', 'Map']:
             # The markers' tip heights: the LDOS topo at the window's key (_ensure_ldos_topo; in Map from memory, taken
@@ -5415,8 +5612,10 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
 
     def _on_rel(self, event):
         """Machinery: a mouse release: a Map energy marker's map computed again at its snapped sample under Map's
-        kept model; a moved line end, path node or Single Point / Map marker, its work done once (_update_all); a
-        Line / Path marker, the markers put back in their order (_resort_line_markers)."""
+        kept model, and, when that changed the map energies' samples, the maps saved under their new key's file
+        (Map's LDOS disk cache: _save_ldos_cache); a moved line end, path node or Single Point / Map marker, its
+        work done once (_update_all); a Line / Path marker, the markers put back in their order
+        (_resort_line_markers)."""
         if self.active_obj is not None and self.active_obj[0] == 'emarker':
             idx = self.active_obj[1]
             target_e = self.map_e_targets[idx]
@@ -5425,6 +5624,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
             # snapped ends are map_window); the marker moves to that sample's energy, so it marks the energy its
             # map shows.
             e_idx = int(self._map_sample_indices([target_e], ends=self.map_typed[:2])[0])
+            samples_changed = int(self.map_e_idx[idx]) != e_idx       # the map energies' samples changed (a new key)
             self.map_e_idx[idx] = e_idx
             self.map_e_targets[idx] = self.energies[e_idx]
             for line in self.ax_spec.get_lines():
@@ -5489,6 +5689,19 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
                 for i, line in enumerate(self._spec_emarkers):
                     line.set_label(f'emarker_{i}')
                 redraw += [i for i in range(len(order)) if order[i] != i and i != redraw[0]]
+            if samples_changed:
+                # The map energies' samples changed: the maps, in their new order, saved under the file of the new
+                # key (Map's LDOS disk cache, map_ldos_*.npz in caches/; _ldos_cache_key of Map's kept records:
+                # map_bias, map_ldos_h, the new map_e_idx, map_window, map_d_ldos, map_broadening): their total,
+                # their energies, their current and the LDOS topo heights they were calculated at (map_z), and the
+                # mag channel's file beside it while their mag channel is kept.
+                map_key = self._ldos_cache_key('Map', self.map_bias, self.map_ldos_h, self.map_window, self.map_d_ldos,
+                                               self.map_broadening, samples=self.map_e_idx)
+                self._save_ldos_cache('Map', map_key, {'ld_total': self.map_ld_total,
+                                                       'energies': self.energies[self.map_e_idx],
+                                                       'current': cp.asnumpy(self.map_current), 'z': self.map_z})
+                if self.map_ld_mag is not None:
+                    self._save_ldos_cache('Map', map_key, {'ld_mag': self.map_ld_mag}, mag=True)
             for i in redraw:
                 self._redraw_map_slice(i)
             self._map_energies_changed()           # the info panel's map energies line: the snapped energies, in map order
