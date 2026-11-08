@@ -95,7 +95,7 @@ Draft of 2026-11-07, for Benjamin's approval. Nothing in it is implemented. Your
 
 **Now** (corrected: an earlier draft said there was none):
 - Every `qtgui` window has a toolbar across its top: Home, Pan, Zoom, Save, and at its right end a coordinates label (`qtplot.py` `NavigationToolbar.coords`, `show_coords`). It has been there since before this session.
-- On mouse motion the label shows "x=…  y=…" for the panel under the mouse, in that panel's own coordinates: the values its axes are labelled in. That holds on a turned panel too: `Axes.set_rotated` keeps the labels in data terms, and the readout swaps its screen axes back to match. On Line's corridor and Path's rectangle these are the panel's own "Perp." and "Position" axes. Off every panel it is blank.
+- On mouse motion the label shows "x=…  y=…" for the panel under the mouse, in that panel's own coordinates: the values its axes are labelled in. That holds on a turned panel too: `Axes.set_rotated` keeps the labels in data terms, and the readout swaps its screen axes back to match. On Line's corridor and Path's rectangle these are the panel's own "Perp." and "Position" axes. This reading of "axes coordinates" is confirmed by you (2026-11-08). Off every panel it is blank.
 - It is also blank over a colour bar.
 
 **Your later rule (2026-11-08):**
@@ -179,7 +179,7 @@ Draft of 2026-11-07, for Benjamin's approval. Nothing in it is implemented. Your
 - It turns 90° when wider than tall.
 - The LDOS h box moves above it.
 - `layouts=['row_top']`, and the second row is held to one row (`FlipBox` with `tall=0`, as in Line).
-- Path's two rows follow Line's sizing rule (3.4): the xy-spatial panels grow, keeping their ratio, up to what the row's width allows, and the 1D plots take the remaining height, with no empty band. This is read from "the same two rows as Line".
+- Path's two rows follow Line's sizing rule (3.4): the xy-spatial panels grow, keeping their ratio, up to what the row's width allows, and the 1D plots take the remaining height, with no empty band. This reading of "the same two rows as Line" is confirmed by you (2026-11-08).
 
 ### 3.6 Map
 
