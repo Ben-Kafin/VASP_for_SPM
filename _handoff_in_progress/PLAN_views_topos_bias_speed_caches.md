@@ -2,6 +2,34 @@
 
 Approved 2026-11-08; stages 1 to 4 implement sections 2 to 12, stage 5 (section 14) the answers given since the runs began. Your answers to the questions are written into the sections. No questions are open. Section 12 holds what the check of the briefs against your other documents found still missing.
 
+## HANDOFF: start here (the next session)
+
+The owner stopped the run on 2026-11-08 before stage 4's review, so another session can check and finish it. Do these in order. Everything in section 1 still applies, and so does this rule of the owner's: **the reviews are minimal**. One reviewer per step checks the code only against the plan items of that step (missing, wrong, beyond the plan, broken), then one fixer fixes what it found, within the plan. Branch: `claude/jolly-babbage-ppmbdj`.
+
+**Where things stand**
+- Stages 1, 2 and 3 are done, reviewed and committed: `602955d` and `8eb1de8` (qtgui), `60274d0` (views), `0263117` (kernel, |m| / m). The Single Point qtgui support is `0b9fef9`.
+- Stage 4's six implementing steps are done and committed in `657670f`, all compiled, but **not reviewed**: caches (9.1, 9.2), console (6.2), the shading row (10, the simulator side), Single Point's free_size wiring (3.7), the gaps (12.2 to 12.5), the docs (README.md, run_DFT_STM.py). Each step's change list, and the details it decided to make an approved item work, are in `STAGE4_CHANGES.md` (this folder).
+- The pieces outside simulator.py are done and reviewed (`f49169e`): cmap_shading.py (10, module side), locpot_manager.py (9.1), doscar_parser.py (12.6), plot_dos_cursors_levels.py (12.1).
+- Stage 5: item 14.3 is done and reviewed (`e08c95f`). Items 14.7 and 14.8 are done. Items 14.1, 14.2, 14.4 (to implement) and 14.5, 14.6 (to check) are not started.
+
+**Step 1: stage 4's review and fixes (minimal).**
+- One reviewer, no edits. Check `git diff 0263117 657670f -- LDOS_spread_decomp/stm_from_dft_opt` against sections 9, 6.2, 10 (the simulator side), 3.7, 12.2 to 12.5, and the docs, using `STAGE4_CHANGES.md`. Ignore the `qtgui/controls.py` hunks from `e08c95f` (stage 5's 14.3, already reviewed).
+- Report what is missing, wrong, beyond the plan, or broken, and judge each decided detail: is it needed to make the approved item work?
+- Then one fixer per file fixes the findings, within the plan. py_compile, commit, push.
+
+**Step 2: stage 5's remaining items (section 14).**
+- Implement 14.1 (a straight Path uses Line's 2:3 box), 14.2 (the Topo h rerun no longer resets Map's records), 14.4 (a map dragged with Mag off keeps the other maps' mag columns; only the missing ones are computed when Mag is on again). All three are in `simulator.py`.
+- Check 14.5 (readability wins in a very small window) and 14.6 (Mag turned on with RUN off: nothing computed until RUN). Change them only if the check shows they are not so.
+- One reviewer checks every item 14.1 to 14.8 against the code, one by one. One fixer fixes what it found. py_compile, commit, push.
+- Report to the owner item by item.
+
+**Step 3: finish.**
+- Delete this folder (`_handoff_in_progress/`) in the final commit, as before.
+- Fast-forward `main` to the branch: fast-forward only, no force push, every commit's history kept. The owner asked for this once everything is done (2026-11-08).
+- Then give the owner, as a download and **not** as a file in the repository, one `.md` file listing every update made to `LDOS_spread_decomp/` since 11/4, from the git history (the first such commit is `b051547` on 11/7) and the change lists. Organize it by part and stage, giving for each change what changed, in which file and function, and the commit.
+
+**Not in the repository:** the one-time kernel check script (`compare_exact_kernels.py`, plan 7.1) was sent to the owner directly on 2026-11-08. Nothing in the steps above needs it.
+
 ## 0. Sources
 
 - **Sections 2 to 5:** your simulator-views layout decisions document (`PART3_simulator_views_layout_decisions.md`, uploaded 2026-11-07 06:29Z). None of it was implemented. Its rules are quoted or closely transcribed here, each followed by what the code does now and the change.
