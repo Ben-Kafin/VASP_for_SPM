@@ -1347,6 +1347,46 @@ class _LegendEvents(QtCore.QObject):
         return False
 
 
+class _TopoRow(plt.RowWidget):
+    """
+    Machinery: a view's topo sub-section (in Map with the spectrum and its legend panel after it in the same
+    row) as one shaped group of the window's arrangement (controls.Arrangement, which asks a group's size by
+    its fit: controls._shaped_size): the row at the largest height, at most the region's, at which its panels
+    at that height fit the region's width (qtplot.PanelRow.width_for_height: the widths its own placement
+    gives them at that height, PanelRow.setGeometry).  A plain RowWidget is sized by PanelRow's
+    height_for_width, which holds each shaped panel to a nominal share of the width by its stretch; in a row
+    of differently shaped panels (Line's 2:3 corridor or Path's rectangle beside the global topo) that holds
+    the row below the height the width allows and leaves a blank at its right.  This completes Line's and
+    Path's sizing rule (the xy-spatial panels as large at their ratio as the row's width allows) where it fell
+    short of the arrangement (plan 3.4, 3.5).
+    """
+
+    FIT_STEPS = 24                     # the bisection's steps on the height (the region's height / 2**24: far below a pixel)
+
+    def fit(self, W, H):
+        """Machinery: the row's size (w, h) inside W x H (_fit_now), kept for the rest of the layout pass (qtplot.pass_cached): the arrangement asks it many times in one pass."""
+        key = ('topo_fit', round(float(W), 2), round(float(H), 2))
+        return plt.pass_cached(self, key, lambda: self._fit_now(float(W), float(H)))
+
+    def _fit_now(self, W, H):
+        """Machinery: the largest height h <= H at which the row's width at that height (PanelRow.width_for_height, increasing with h) is at most W, by bisection, with that width: (w, h); the least height when even it is wider than W; None while the row has no shaped panel (the arrangement then takes its size hint)."""
+        wfh = self.row.width_for_height
+        H = max(H, 1.0)
+        w = wfh(H)
+        if w is None:
+            return None
+        if w <= W:
+            return (float(w), H)
+        lo, hi = 1.0, H
+        for _ in range(self.FIT_STEPS):
+            mid = 0.5 * (lo + hi)
+            if wfh(mid) <= W:
+                lo = mid
+            else:
+                hi = mid
+        return (float(min(wfh(lo), W)), lo)
+
+
 class Interactive_STM_Simulator(Unified_STM_Simulator):
     """
     The simulator's window: one qtgui figure of DESIGN size whose panels are cells of its Qt
@@ -1354,12 +1394,13 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
     per view (_build_ui): the window's title (the spin mode), a left column with the view radio,
     the 'cmap set' choice, the broadening box, the boxes other windows add (add_control_box: the
     decomposition wrapper's σ box and its 'Send to decomp' buttons) and the RUN button with the
-    toggles; the panel area of the view (Single Point: Global Topo | Topo h | Partitioned LDOS,
-    its legend panel at its right; Line / Path: the top row Global Topo | Topo h | LDOS h | the
-    cluster (Line's LDOS Topo, the stripe 'Topo', one heatmap per partition, colour bar) over the
-    tip-height profile and the spectrum, its legend panel at its right; Map: Global Topo | Topo h |
-    LDOS h | LDOS Topo over the rows of energy maps, the Partitioned LDOS one cell of the map block,
-    its legend panel at its right); the bottom strip of number boxes (Cells, Path Pts, Markers, E Pts,
+    toggles; the panel area of the view, every view's first sub-section the topo sub-section (the topo
+    colour bar | Global Topo with Topo h above | LDOS Topo with LDOS h above) (Single Point: the topo
+    sub-section | Partitioned LDOS, its legend panel at its right, or the spectrum under the topo
+    sub-section in a tall window; Line / Path: the top row, the topo sub-section | the cluster (the
+    stripe 'Topo', one heatmap per partition, colour bar), over the tip-height profile and the spectrum,
+    its legend panel at its right; Map: the top row, the topo sub-section | Partitioned LDOS, its legend
+    panel at its right, over the rows of energy maps); the bottom strip of number boxes (Cells, Path Pts, Markers, E Pts,
     E Min and E Max, each with its 'bias' toggle beside it, LDOS γ) and Map's 'cmap norm' and
     Contour / Shading boxes.  Every slider of
     the old figure is a number box (the arrow keys step its digits); the orbital hover labels
@@ -1486,7 +1527,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         self.z_frac = 0.5                 # the contour slice: its level as a fraction of the LDOS topo's height range (map_z)
         self._contour_artists = []        # the slice's traces on the energy maps
         self._level_line = None           # the slice's level line on the topo colour bar
-        self.cax_topo = None              # the topo colour bar: the ramp, 'topo' above it; in Map it carries the contour slice's level line
+        self.cax_topo = None              # the topo colour bar (every view, far left of its topo sub-section): the ramp, 'topo' above it; in Map it carries the contour slice's level line
         self._orient_pending = False      # an orientation decision waiting for the arrangement's first size
         self._extra_boxes = []            # control boxes another window adds to the left column (add_control_box)
 
@@ -3093,9 +3134,10 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         Found by bisection on the box's scale (px per Angstrom, the box width over the limits' width), between
         a scale at which the dots cover more than that share and one at which they cover no more (bracketed
         from the scale at which their summed areas are that share, an upper bound of their union).  None
-        before the placement panel exists or while the limits have no area.  Kept with its key (the limits,
-        the Cells count, the dot size, the turn) and worked out again only when the key changes: the
-        arrangement asks it at least once a layout pass, and Qt's minimumSizeHint early.
+        before the placement panel exists or while the limits have no area.  Kept as drawn (unturned) with its
+        key (the limits, the Cells count, the dot size) and worked out again only when the key changes: the
+        arrangement asks it at least once a layout pass, and Qt's minimumSizeHint early; a turn of the panel
+        (cell_rotated) only swaps the box's sides, the share covered being the same.
         """
         if self._crop_ax is None or getattr(self, 's_cell', None) is None:
             return None
@@ -3106,10 +3148,11 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         n = int(self.s_cell.val)
         d = plt.pt2px(np.sqrt(self.ATOM_DOT_S)) + plt.pt2px(self.ATOM_DOT_LW)     # a dot's drawn diameter, px
         turned = bool(self.cell_rotated)
-        key = (x0, x1, y0, y1, n, round(float(d), 4), turned)
+        key = (x0, x1, y0, y1, n, round(float(d), 4))
         kept = getattr(self, '_placement_min_kept', None)
         if kept is not None and kept[0] == key:
-            return kept[1]
+            w, h = kept[1]
+            return (h, w) if turned else (w, h)
         xy = np.concatenate([self.coord[:, :2] + np.asarray(off) for off in self._cell_offsets(n)])
         r = 0.5 * d
         R = int(np.ceil(r)) + 1
@@ -3150,9 +3193,8 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
                 hi = mid
             else:
                 lo = mid
-        box = (sy * hi, sx * hi) if turned else (sx * hi, sy * hi)
-        self._placement_min_kept = (key, box)
-        return box
+        self._placement_min_kept = (key, (sx * hi, sy * hi))
+        return (sy * hi, sx * hi) if turned else (sx * hi, sy * hi)
 
     def _on_crop(self, event=None):
         """Machinery: 'Crop': what lies between the cursors is kept, on both axes; the cursors then sit at the new edges; the unit-cell panels' orientation is decided again for the new shape, and the arrangement follows (the window keeps its size)."""
@@ -4688,7 +4730,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         to bottom (_line_marker_order).  The permutation is applied together to marker_ratios, the kept
         colours (line_marker_colors) and the active marker's index (the same marker stays active); artist i
         shows marker i, so each index's artists take their marker's colour in place (the placement topo's
-        markers, and Line's LDOS topo's scatter and the Tip Height, heatmap and stripe lines), then every one is
+        markers, and the LDOS topo's scatter (Line, Path) and the Tip Height, heatmap and stripe lines), then every one is
         moved and the spectrum's curves (the level-0 curves), its title and the legend take their marker's
         data and colour in place (_move_line_markers), running or not (with RUN off from the last run's data,
         the display cache): one redraw, no rearrangement, no rebuild, nothing computed.  Nothing happens when
@@ -5321,7 +5363,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
                    or (self.active_obj[0] == 'mark_map' and self.mode in ('Single Point', 'Map')))):
             # The release of a moved line end, path node or Single Point / Map marker: the work today's
             # redraw did on every motion, done once (Line / Path: the tip heights, the LDOS along the
-            # line, the heatmaps, stripe, profile, Line's LDOS topo and marker spectra; Single Point / Map:
+            # line, the heatmaps, stripe, profile, Line's or Path's LDOS topo and marker spectra; Single Point / Map:
             # the markers' spectrum), by the same computations (_update_all).
             self._update_all()
         elif (self.active_obj is not None and self.mode in ('Line', 'Path')
