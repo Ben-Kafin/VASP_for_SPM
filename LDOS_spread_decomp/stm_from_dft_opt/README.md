@@ -175,8 +175,7 @@ The console says what is converged: each tip-height convergence opens with `--- 
 `LDOS topo`, at V_b and LDOS h; `Line stripe` or `Path stripe`, at V_b and LDOS h, the LDOS topo's
 tip height the stripe starts from), after its setpoint print, `[*] Global Topo Setpoint: …`,
 `[*] LDOS Topo Setpoint: …`, `[*] Line Topo Setpoint: …` or `[*] Path Topo Setpoint: …`; its Iter
-lines and its closing line follow. A loaded LDOS cache prints `[*] Loading Cached <view> LDOS: <name>`,
-or `[*] Loading Cached <view> LDOS, mag channel: <name>` for a `_mag` file.
+lines and its closing line follow.
 
 Dependencies: numpy, scipy, cupy (CUDA GPU), pymatgen, PySide6 and pyqtgraph (the package's own
 `qtgui` copy, `stm_from_dft/qtgui/`), matplotlib (the publication files written by the toolbar's

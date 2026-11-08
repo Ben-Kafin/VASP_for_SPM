@@ -3743,7 +3743,6 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
                 data = {k: f[k] for k in f.files if k != 'key'}
         except Exception:
             return None
-        print(f"[*] Loading Cached {view} LDOS{', mag channel' if mag else ''}: {name}")
         return data
 
     def _save_ldos_cache(self, view, key, arrays, mag=False):
