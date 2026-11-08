@@ -2034,7 +2034,8 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         """
         Machinery: a new panel with the control box `box` above it (controls.PanelWithBox: the box belongs to
         the panel and is sized with it, never between panels; rule 11 of the guide): (axes, pair).
-        A narrow cell (inner_w: the Path stripe) makes the pair a fixed-width item of its row.
+        A narrow cell (inner_w) would make the pair a fixed-width item of its row; no view's pair has one (the
+        LDOS h box is above the LDOS topo in every view, 3.8; the Line / Path stripe is a plain panel).
         """
         cell = self.fig.cell(inner_w=inner_w)
         self._panel_cells.append(cell)
@@ -2586,6 +2587,14 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
             # (and again whenever it is drawn: _fill_heat_row), square while the path is straight (no rectangle).
             self.ax_ldos_topo.set_xlabel("Perp. (Å)", fontsize=10)
             self.ax_ldos_topo.set_ylabel("Position (Å)", fontsize=10)
+            # Its title 'LDOS Topo: bias ... V, height ... Å' from the view's build on, as _draw_ldos_topo's: at the
+            # shared LDOS topo's key's bias and LDOS h (ldos_z_key) when one is computed, else at the window's
+            # (_bias_sample, ldos_height); set again at its key whenever the panel is drawn (_fill_heat_row).
+            if self.ldos_z_map is not None:
+                t_bias, t_height = self.ldos_z_key[0], self.ldos_z_key[1]
+            else:
+                t_bias, t_height = self._bias_sample()[1], self.ldos_height
+            self.ax_ldos_topo.set_title(f"LDOS Topo: bias {t_bias:.3f} V, height {t_height} Å", fontsize=10)
             if mode == 'Line':
                 self.ax_ldos_topo.set_box_aspect(1.5)
             else:
@@ -2714,8 +2723,8 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
     # tall-window rule (tall_rule); Line and Path their two rows; Map its top row over the energy maps.
     VIEW_LAYOUTS = {'Single Point': ['h', 'v'], 'Line': ['row_top'], 'Path': ['row_top'], 'Map': ['a_top']}
     PLACEMENT_COVER_MAX = 1.0 / 3.0    # the placement panel: the atom dots cover at most this share of its plot box (3.9)
-    ATOM_DOT_S = 10                    # the atom dots' scatter size on the topo panels, points squared
-    ATOM_DOT_LW = 1.0                  # their edge (scatter's default linewidths, in the face colour), points
+    ATOM_DOT_S = 10                    # the atom dots' scatter size on the topo panels (their scatters' s=), points squared; _placement_min counts the dots at it (3.9)
+    ATOM_DOT_LW = 1.0                  # their edge (scatter's default linewidths, in the face colour; the atom scatters pass none), points
 
     def _topo_axes(self):
         """Machinery: the topography panels of the view, the topo sub-section's in every view: the global topo (ax_global_topo, the placement topo) and the LDOS topo (ax_ldos_topo)."""
@@ -3534,7 +3543,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
                 m = (tr == t_name)
                 xs = np.concatenate([self.coord[m, 0] + off[0] for off in offs])
                 ys = np.concatenate([self.coord[m, 1] + off[1] for off in offs])
-                ax.scatter(xs, ys, s=10, color=plt.cm.tab10(t_idx / 10), alpha=0.3, zorder=2)
+                ax.scatter(xs, ys, s=self.ATOM_DOT_S, color=plt.cm.tab10(t_idx / 10), alpha=0.3, zorder=2)
         if self.show_unit_cell:
             v0, v1, v2, v3 = np.array([0, 0]), self.lv[0, :2], self.lv[0, :2] + self.lv[1, :2], self.lv[1, :2]
             cell_pts = np.array([v0, v1, v2, v3, v0])
@@ -3747,7 +3756,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
                     m = (tr == t_name)
                     xs = np.concatenate([self.coord[m, 0] + off[0] for off in offs])
                     ys = np.concatenate([self.coord[m, 1] + off[1] for off in offs])
-                    t_ax.scatter(xs, ys, s=10, color=plt.cm.tab10(t_idx / 10), alpha=0.3, zorder=2)
+                    t_ax.scatter(xs, ys, s=self.ATOM_DOT_S, color=plt.cm.tab10(t_idx / 10), alpha=0.3, zorder=2)
             if self.show_unit_cell:
                 v0, v1, v2, v3 = np.array([0, 0]), self.lv[0, :2], self.lv[0, :2] + self.lv[1, :2], self.lv[1, :2]
                 cell_pts = np.array([v0, v1, v2, v3, v0])
@@ -4472,7 +4481,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
                                 a_rx_all.append(a_rx[vis])
                                 a_ry_all.append(a_ry[vis])
                         if a_rx_all:
-                            arts.append(self.ax_ldos_topo.scatter(np.concatenate(a_rx_all), np.concatenate(a_ry_all), s=10, color=plt.cm.tab10(t_idx / 10), alpha=0.3, zorder=2))
+                            arts.append(self.ax_ldos_topo.scatter(np.concatenate(a_rx_all), np.concatenate(a_ry_all), s=self.ATOM_DOT_S, color=plt.cm.tab10(t_idx / 10), alpha=0.3, zorder=2))
 
                 arts += self.ax_ldos_topo.plot([0, 0], [0, p_len], color='red', ls='--', lw=2.0, zorder=6)
                 arts.append(self.ax_ldos_topo.scatter([0], [0], c='white', edgecolors='red', s=60, zorder=8))
@@ -4531,7 +4540,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
                             m = (tr == t_name)
                             q = self._to_path_frame(np.concatenate([self.coord[m, :2] + off for off in tiles]), rect)
                             vis = (q[:, 0] > xa) & (q[:, 0] < xb) & (q[:, 1] > ya) & (q[:, 1] < yb)
-                            arts.append(ax.scatter(q[vis, 0], q[vis, 1], s=10, color=plt.cm.tab10(t_idx / 10), alpha=0.3, zorder=2))
+                            arts.append(ax.scatter(q[vis, 0], q[vis, 1], s=self.ATOM_DOT_S, color=plt.cm.tab10(t_idx / 10), alpha=0.3, zorder=2))
                     v = self._to_path_frame(verts, rect)
                     arts += ax.plot(v[:, 0], v[:, 1], color='red', ls='--', lw=2.0, zorder=6)
                     nodes = self._to_path_frame(np.asarray(self.path_nodes, dtype=float), rect)
