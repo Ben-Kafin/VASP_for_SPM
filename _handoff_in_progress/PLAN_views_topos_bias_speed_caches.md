@@ -178,6 +178,7 @@ Draft of 2026-11-07, for Benjamin's approval. Nothing in it is implemented. Your
 - A new `ax_ldos_topo` for Path: the LDOS topo tiled, rotated into the rectangle's frame and cropped to it, with the path, its nodes and the markers, built like Line's corridor.
 - The rectangle is the minimum-area rectangle of the sample points, found over the convex hull's edge directions; 1/8 margins.
 - It turns 90° when wider than tall.
+- **A straight path** (your rule, 2026-11-08): when every sample point lies on one line, the rectangle has no area, so the panel uses Line's 2:3 box centred on the path, as Line's corridor.
 - The LDOS h box moves above it.
 - `layouts=['row_top']`, and the second row is held to one row (`FlipBox` with `tall=0`, as in Line).
 - Path's two rows follow Line's sizing rule (3.4): the xy-spatial panels grow, keeping their ratio, up to what the row's width allows, and the 1D plots take the remaining height, with no empty band. This reading of "the same two rows as Line" is confirmed by you (2026-11-08).
@@ -222,6 +223,8 @@ Draft of 2026-11-07, for Benjamin's approval. Nothing in it is implemented. Your
 
 **Change:**
 - The topo sub-section and the spectrum (with its legend) in one row (`h`), switching to `v` exactly when `h` would leave an empty band below, and back.
+- **The narrowest window** (your rule, 2026-11-08): the window may be narrower than the one row needs; below that width it takes `v`, which fits narrower. Its minimum width is `v`'s.
+- **A very small window** (your rule, 2026-11-08): readability wins. When a topo panel is smaller than the spectrum's readable minimum, the spectrum stays readable, a little larger than a topo panel, as in Map.
 - The LDOS h box is shown above `ax_ldos_topo`.
 - The spectra's heights are `ldos_z_map` at the nearest grid point (as Map's markers do today), at the current key (section 5).
 
@@ -470,7 +473,9 @@ Draft of 2026-11-07, for Benjamin's approval. Nothing in it is implemented. Your
 
 ## 11. Open questions
 
-None.
+1. **The Topo h rerun:** it also resets Map's records, so Map recomputes all its energy maps, although they use the LDOS topo, which a Topo h change does not touch. Remove that reset? **R: yes.**
+2. **A map dragged with Mag off while |m| is kept:** today the kept |m| of every map is dropped and recomputed when Mag comes back on. (a) keep the others and compute only the dragged map's when Mag is on again; (b) as now. **R: (a).**
+3. **Mag turned on with RUN off:** (a) nothing changes until RUN, then |m| is computed and shown; (b) pressing Mag computes |m| even with RUN off. **R: (a).**
 
 ## 12. Gaps from your other documents
 
