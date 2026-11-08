@@ -4280,13 +4280,101 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         self.fig.align_row(self.cax_topo, self.ax_global_topo, self.ax_ldos_topo, *self.line_decomp_axes)
         self._row_key = (n_heat, self.show_dcmp_norm)
 
+    # --- Path's LDOS topo: the path's rectangle (3.5) ---
+
+    PATH_RECT_MARGIN = 0.125           # the margin added on each side of the path's rectangle, a fraction of that side (1/8)
+
+    @staticmethod
+    def _convex_hull(points):
+        """Machinery: the convex hull of in-plane points ((n, 2)) as its corners in order (Andrew's monotone chain; points on an edge left out); fewer than 3 corners when the points lie on one line."""
+        pts = np.unique(np.asarray(points, dtype=np.float64)[:, :2], axis=0)      # sorted by x, then y
+        if len(pts) < 3:
+            return pts
+
+        def cross(o, a, b):
+            return (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
+        lower, upper = [], []
+        for p in pts:
+            while len(lower) >= 2 and cross(lower[-2], lower[-1], p) <= 0.0:
+                lower.pop()
+            lower.append(p)
+        for p in pts[::-1]:
+            while len(upper) >= 2 and cross(upper[-2], upper[-1], p) <= 0.0:
+                upper.pop()
+            upper.append(p)
+        return np.array(lower[:-1] + upper[:-1])
+
+    def _path_rectangle(self, p_xy):
+        """
+        Machinery: the frame of Path's LDOS topo (3.5): the smallest rectangle at any angle that holds every sample
+        point of the path (p_xy, as _build_path_xy resamples it), the minimum-area rectangle, found over the
+        directions of the convex hull's edges (_convex_hull; the rectangle of least area has a side along one of
+        them); a margin of PATH_RECT_MARGIN of its width added left and right and of its height top and bottom.
+        The panel always square or taller than wide: the rectangle drawn as found, or turned 90 degrees when it is
+        wider than tall, so its long side is vertical (a rotation of the plane, never a mirror), the path running
+        upward from its first sample to its last, as Line's corridor runs from its first end.  The frame's
+        coordinates (_to_path_frame): x across the rectangle from its centre line ('Perp.'), y along it from its
+        lower edge ('Position'), in Angstrom.  Returns a dict: 'c' the rectangle's centre in the plane, 'ex' and
+        'ey' the in-plane unit vectors of the panel's x and y, 'len' the rectangle's long side, 'xlim' and 'ylim'
+        the panel's limits with the margins, 'ratio' their height over width (the panel's box aspect); None when
+        the sample points lie on one line (a straight path: no rectangle has an area; its short side below 1e-9
+        of its long side, the rounding of collinear points).
+        """
+        P = np.asarray(p_xy, dtype=np.float64)[:, :2]
+        hull = self._convex_hull(P)
+        if len(hull) < 3:
+            return None
+        best = None
+        for k in range(len(hull)):
+            d = hull[(k + 1) % len(hull)] - hull[k]
+            L = float(np.hypot(d[0], d[1]))
+            if L <= 0.0:
+                continue
+            e1 = d / L
+            e2 = np.array([-e1[1], e1[0]])
+            a, b = hull @ e1, hull @ e2
+            area = (a.max() - a.min()) * (b.max() - b.min())
+            if best is None or area < best[0]:
+                best = (area, e1, e2, a.min(), a.max(), b.min(), b.max())
+        if best is None:
+            return None
+        _, e1, e2, a0, a1, b0, b1 = best
+        s1, s2 = a1 - a0, b1 - b0
+        if min(s1, s2) <= 1e-9 * max(s1, s2):
+            return None
+        c = e1 * 0.5 * (a0 + a1) + e2 * 0.5 * (b0 + b1)
+        if s1 <= s2:
+            ex, ey, w, h = e1, e2, s1, s2                  # as found: square or taller than wide
+        else:
+            ex, ey, w, h = e2, -e1, s2, s1                 # wider than tall: turned 90 degrees (ey = e2 turned by 90)
+        if np.dot(P[-1] - P[0], ey) < 0.0:
+            ex, ey = -ex, -ey                              # turned 180 degrees: the path runs upward
+        m = self.PATH_RECT_MARGIN
+        xlim = (-(0.5 + m) * w, (0.5 + m) * w)
+        ylim = (-m * h, (1.0 + m) * h)
+        return {'c': c, 'ex': ex, 'ey': ey, 'len': h, 'xlim': xlim, 'ylim': ylim,
+                'ratio': (ylim[1] - ylim[0]) / (xlim[1] - xlim[0])}
+
+    @staticmethod
+    def _to_path_frame(points, rect):
+        """Machinery: in-plane points ((n, 2), Angstrom) in the frame of Path's LDOS topo (rect, _path_rectangle): (n, 2), x across the rectangle from its centre line, y along it from its lower edge."""
+        q = np.asarray(points, dtype=np.float64)[:, :2] - rect['c']
+        return np.column_stack([q @ rect['ex'], q @ rect['ey'] + 0.5 * rect['len']])
+
+    @staticmethod
+    def _from_path_frame(x, y, rect):
+        """Machinery: the in-plane point(s) (Angstrom) at the frame coordinates x, y of Path's LDOS topo (rect, _path_rectangle): the inverse of _to_path_frame; (2,) for numbers, (n, 2) for arrays of n."""
+        x, y = np.asarray(x, dtype=np.float64), np.asarray(y, dtype=np.float64)
+        return rect['c'] + x[..., None] * rect['ex'] + (y - 0.5 * rect['len'])[..., None] * rect['ey']
+
     def _fill_heat_row(self, processed_partitions, global_vmax, global_vmin, p_dist, p_len, use_diverging, has_mag):
         """
         Machinery: the Line / Path panels given the state's data in place (no panel made or removed): Line's
         LDOS topo panel drawn again from the LDOS topo (ldos_z_map, never the global topo) when its line, the
         Cells count, the atoms or the LDOS topo (its heights, its key ldos_z_key) changed (its contour, atoms,
         line, ends, limits and the title 'LDOS Topo: bias ... V, height ... Å' at its key's bias and LDOS h; the
-        marker scatters stay), the stripe's
+        marker scatters stay); Path's, in the path's rectangle (_path_rectangle), when its path, the atoms or the
+        LDOS topo changed (its contour, atoms, path, nodes, limits, shape and the same title); the stripe's
         segments, colours and limits (LineCollection.set_segments / set_norm / set_array), the
         Tip Height profile's curve (Line2D.set_data), each heatmap's values and colour scale
         (QuadMesh.set_array / set_cmap / set_norm; its colour bar follows the mesh's norm; a new
@@ -4352,6 +4440,63 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
                 self.ax_ldos_topo.set_ylim(0, p_len)
                 self.ax_ldos_topo.set_title(f"LDOS Topo: bias {self.ldos_z_key[0]:.3f} V, height {self.ldos_z_key[1]} Å",
                                             fontsize=10)
+                self._line_topo_arts = arts
+                self._line_topo_key = topo_key
+                self._line_topo_z = np.array(self.ldos_z_map, copy=True)
+
+        if self.mode == 'Path' and self.ax_ldos_topo is not None and self.ldos_z_map is not None:
+            # Path's LDOS topo panel (3.5), built as Line's corridor: the LDOS topo tiled over the cells that cover the
+            # path's rectangle, rotated into its frame and cropped to it (_path_rectangle), with the path (its
+            # vertices, the Extend ends among them), its nodes and the markers (_make_line_markers); the panel's
+            # shape the rectangle's (its box aspect).  Drawn again when the path, the atoms or the LDOS topo (its
+            # heights, its key ldos_z_key) changed; with a straight path (no rectangle) the panel stays empty.
+            topo_key = (tuple(map(tuple, np.asarray(self.path_nodes, dtype=float))), bool(self.path_extend),
+                        bool(self.show_atoms), self.ldos_z_key)
+            if (topo_key != self._line_topo_key or self._line_topo_z is None
+                    or not np.array_equal(self._line_topo_z, self.ldos_z_map)):
+                for art in self._line_topo_arts:
+                    art.remove()
+                arts = []
+                ax = self.ax_ldos_topo
+                path_xy, _, _, verts = self._build_path_xy()
+                had = self._path_rect is not None
+                rect = self._path_rect = self._path_rectangle(path_xy)
+                if (rect is not None) != had:
+                    self._line_markers_n = None    # the markers' scatters on the panel made again (_make_line_markers)
+                ax.set_box_aspect(1.0 if rect is None else rect['ratio'])
+                if rect is not None:
+                    (xa, xb), (ya, yb) = rect['xlim'], rect['ylim']
+                    margin = 0.15 * (yb - ya)      # the contour's points taken this far past the edges, as in Line's corridor
+                    corners = self._from_path_frame([xa - margin, xb + margin, xb + margin, xa - margin],
+                                                    [ya - margin, ya - margin, yb + margin, yb + margin], rect)
+                    f = corners @ inv(self.lv[:2, :2])                 # their fractional coordinates
+                    tiles = [i * self.lv[0, :2] + j * self.lv[1, :2]
+                             for i in range(int(np.floor(f[:, 0].min())) - 1, int(np.ceil(f[:, 0].max())) + 1)
+                             for j in range(int(np.floor(f[:, 1].min())) - 1, int(np.ceil(f[:, 1].max())) + 1)]
+                    all_x, all_y, all_z = [], [], []
+                    for off in tiles:
+                        q = self._to_path_frame(self.grid_xy + off, rect)
+                        mask = ((q[:, 0] > xa - margin) & (q[:, 0] < xb + margin)
+                                & (q[:, 1] > ya - margin) & (q[:, 1] < yb + margin))
+                        all_x.append(q[mask, 0])
+                        all_y.append(q[mask, 1])
+                        all_z.append(self.ldos_z_map[mask])
+                    arts.append(ax.tricontourf(np.concatenate(all_x), np.concatenate(all_y), np.concatenate(all_z),
+                                               levels=60, cmap=self._cmap('topo'), zorder=1))
+                    if self.show_atoms:
+                        tr = np.repeat(self.atomtypes, self.atomnums)
+                        for t_idx, t_name in enumerate(self.atomtypes):
+                            m = (tr == t_name)
+                            q = self._to_path_frame(np.concatenate([self.coord[m, :2] + off for off in tiles]), rect)
+                            vis = (q[:, 0] > xa) & (q[:, 0] < xb) & (q[:, 1] > ya) & (q[:, 1] < yb)
+                            arts.append(ax.scatter(q[vis, 0], q[vis, 1], s=10, color=plt.cm.tab10(t_idx / 10), alpha=0.3, zorder=2))
+                    v = self._to_path_frame(verts, rect)
+                    arts += ax.plot(v[:, 0], v[:, 1], color='red', ls='--', lw=2.0, zorder=6)
+                    nodes = self._to_path_frame(np.asarray(self.path_nodes, dtype=float), rect)
+                    arts.append(ax.scatter(nodes[:, 0], nodes[:, 1], c='white', edgecolors='red', s=60, zorder=8))
+                    ax.set_xlim(xa, xb)
+                    ax.set_ylim(ya, yb)
+                ax.set_title(f"LDOS Topo: bias {self.ldos_z_key[0]:.3f} V, height {self.ldos_z_key[1]} Å", fontsize=10)
                 self._line_topo_arts = arts
                 self._line_topo_key = topo_key
                 self._line_topo_z = np.array(self.ldos_z_map, copy=True)
@@ -4442,8 +4587,9 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
     def _make_line_markers(self, p_dist, p_len):
         """
         Machinery: the Line / Path markers' counterparts made anew for the marker count (the old ones
-        removed): on Line's LDOS topo a scatter at the marker's place along the line (pickable,
-        label 'marker_<i>': a marker is dragged from Line's LDOS topo), and, once there are
+        removed): on the LDOS topo a scatter at the marker's place (Line: along the line in its corridor; Path:
+        at the marker's sample point in the path's rectangle, _to_path_frame, while there is one) (pickable,
+        label 'marker_<i>': a marker is dragged from the LDOS topo), and, once there are
         heatmaps, a dashed line at the marker's distance on the Tip Height profile, on every
         heatmap and on the stripe (picker 5, label 'marker_<i>': dragged from any of them).
         """
@@ -4459,6 +4605,10 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
             if self.mode == 'Line' and self.ax_ldos_topo is not None:
                 items['topo'] = self.ax_ldos_topo.scatter([0], [r * p_len], c=color, edgecolors='black', s=80, zorder=10,
                                                           picker=5, label=f'marker_{i}')
+            elif self.mode == 'Path' and self.ax_ldos_topo is not None and self._path_rect is not None:
+                q = self._to_path_frame(self._line_geom[0][idx:idx + 1], self._path_rect)
+                items['topo'] = self.ax_ldos_topo.scatter(q[:, 0], q[:, 1], c=color, edgecolors='black', s=80, zorder=10,
+                                                          picker=5, label=f'marker_{i}')
             if self._heat_axes:
                 items['prof'] = self.ax_prof.axvline(x=p_dist[idx], color=color, ls='--', lw=2, alpha=0.7, picker=5, label=f'marker_{i}')
                 for ax_l in self._heat_axes:
@@ -4470,7 +4620,8 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
     def _place_line_markers(self, counterparts=True):
         """
         Machinery: the Line / Path markers placed at marker_ratios on the line as last drawn (_line_geom):
-        the placement topo's markers, and with `counterparts` Line's LDOS topo's scatters, the
+        the placement topo's markers, and with `counterparts` the LDOS topo's scatters (Line: along the line in
+        its corridor; Path: at the sample point in the path's rectangle as last drawn, _path_rect), the
         dashed lines on the heatmaps and the stripe (set_ydata) and on the Tip Height profile
         (set_xdata), all together.  Nothing is computed.
         """
@@ -4484,9 +4635,14 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         if not counterparts:
             return
         for items, r in zip(self._line_markers, self.marker_ratios):
-            y = p_dist[int(r * (self.npts - 1))]
+            idx = int(r * (self.npts - 1))
+            y = p_dist[idx]
             if items['topo'] is not None:
-                items['topo'].set_offsets([[0, r * p_len]])
+                if self.mode == 'Path':
+                    if self._path_rect is not None:
+                        items['topo'].set_offsets(self._to_path_frame(p_xy[idx:idx + 1], self._path_rect))
+                else:
+                    items['topo'].set_offsets([[0, r * p_len]])
             for line in items['h']:
                 line.set_ydata([y, y])
             if items['prof'] is not None:
@@ -4562,10 +4718,11 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         """
         Machinery: the Map view's block of energy maps built anew, only when its panel count changes (num_p
         partitions of the level, nepts maps each, the colour bars of 'cmap norm'): nepts maps per
-        partition, wrapped into the rows that make them largest (controls.MapBlock; rule 11), a
+        partition, wrapped into the rows and columns that make each map largest in the block's region, chosen
+        again at every placement, a resize included (controls.MapBlock; rule 11), a
         colour bar cell per partition (show_dcmp_norm), one per map ('cmap norm') or one for the
-        whole block (automatic layout).  The maps' contents are drawn by _fill_map; _update_all
-        then calls _rearrange().
+        whole block (automatic layout); the energy maps only (the spectrum is in the top row: _build_ui).
+        The maps' contents are drawn by _fill_map; _update_all then calls _rearrange().
         """
         self._clear_map_rows()
         groups, cell_bars = [], {}
@@ -4595,8 +4752,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
             self._panel_cells.append(shared)
             self.cax_list.append(self.fig.add_axes(cell=shared))
             self._map_cells.append(shared)
-        self._map_block.set_groups(groups, shared_bar=shared, extra=self._spec_cell, cell_bars=cell_bars,
-                                   extra_side=self._legend_panel)
+        self._map_block.set_groups(groups, shared_bar=shared, cell_bars=cell_bars)   # no extra cell: the spectrum is in the top row
         self._block_key = (num_p, nepts, self.cmap_norm, self.show_dcmp_norm)
 
     def _fill_map(self, k, p_idx, i, p_label, slice_data, v_min, v_max, target_e, use_diverging, has_mag, m_coords_np):
@@ -4818,7 +4974,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         elif (isinstance(event.artist, (plt.Line2D, plt._RefLine, plt.PathCollection))
               and event.artist.get_label().startswith('marker_')):
             # A Line / Path marker's line on the Tip Height profile, a heatmap or the stripe, or its
-            # scatter on Line's LDOS topo: selected (the active marker) and dragged from there.
+            # scatter on Line's or Path's LDOS topo: selected (the active marker) and dragged from there.
             self.active_obj = ('mark_dynamic', int(event.artist.get_label().split('_')[1]))
             self.active_marker_idx = int(event.artist.get_label().split('_')[1])
             # Only what shows the active marker is updated: the spectrum, from the display cache.
@@ -5060,6 +5216,13 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
             elif event.inaxes in [ax for ax in [getattr(self, 'ax_ldos', None), getattr(self, 'ax_stripe', None), getattr(self, 'ax_ldos_topo', None) if self.mode == 'Line' else None] + list(self._heat_axes) if ax is not None]:
                 if p_len > 1e-9:
                     new = np.clip(event.ydata / p_len, 0, 1)
+            elif (self.mode == 'Path' and event.inaxes is getattr(self, 'ax_ldos_topo', None)
+                  and self._path_rect is not None and event.ydata is not None):
+                # On Path's LDOS topo: the point under the mouse back in the plane (_from_path_frame), the marker at
+                # the nearest resampled path point, as on the placement topo.
+                q = self._from_path_frame(event.xdata, event.ydata, self._path_rect)
+                d2 = (p_xy[:, 0] - q[0]) ** 2 + (p_xy[:, 1] - q[1]) ** 2
+                new = int(np.argmin(d2)) / (self.npts - 1)
             if new is None or new == self.marker_ratios[idx]:
                 return
             self.marker_ratios[idx] = new
