@@ -14,7 +14,8 @@ Draft of 2026-11-07, for Benjamin's approval. Nothing in it is implemented. Your
 - Implement exactly what is approved. If anything needs changing outside it, stop and ask. Every delivery lists the approved changes and any additional ones separately, and stops if the additional list is not empty.
 - Nothing in `wrong_decays/` is touched.
 - Agents read files and run only `python -m py_compile`: no tests, no windows. Every agent is Opus 5.5 or higher.
-- The two package `qtgui` copies (`stm_from_dft/qtgui` and `matcher/qtgui`) stay byte-identical. The root `qtgui/` follows them for every `qtgui` change here, as it did for `widgets.py`.
+- The two package `qtgui` copies (`stm_from_dft/qtgui` and `matcher/qtgui`) stay byte-identical.
+- **Scope (your rule, 2026-11-08):** nothing outside `LDOS_spread_decomp/` is part of this work, the root `qtgui/` included; nothing in `stm_from_dft_opt` uses anything outside `LDOS_spread_decomp/`. Stage 1's root `qtgui/` edits were taken back out.
 - **Order of work:** sections 2 to 5 (the views) first, then 7 and 8, then 9, 6, 10 and 12. 9's keys depend on 5 and 8, and 10's row joins the Map layout of 3.6.
 - Work on the branch `claude/jolly-babbage-ppmbdj`. `main` is fast-forwarded only on your OK.
 - README rows, docstrings and comments follow every change. The Physics / Machinery tags stay. Chen is the only citation.
@@ -517,7 +518,7 @@ None.
 
 - `stm_from_dft/simulator.py` (sections 2 to 10).
 - `stm_from_dft/cmap_shading.py` (section 10).
-- `stm_from_dft/qtgui/qtplot.py` and `controls.py`, with `matcher/qtgui` and the root `qtgui/` following (3.1, 3.2, 3.6, 3.9, and 4 if the toggles need a control).
+- `stm_from_dft/qtgui/qtplot.py`, `controls.py` and `widgets.py`, with `matcher/qtgui` identical (3.1, 3.2, 3.6, 3.9, and the control specs for 4 and 10). Nothing outside `LDOS_spread_decomp/`.
 - `stm_from_dft/locpot_manager.py` (9.1).
 - `stm_from_dft_opt/README.md` and `run_DFT_STM.py` (comments and docs).
 - `mo_ldos_decomp/mo_ldos_projection/sim_wrapper.py` (8: the renamed channels only).
