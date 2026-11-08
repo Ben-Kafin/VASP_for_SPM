@@ -1573,6 +1573,10 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         # computed with (map_spec_d_ldos, map_spec_broadening).
         self.map_e_idx, self.map_e_targets, self.map_typed = None, None, None
         self.map_ld_total, self.map_ld_mag, self.map_ld_total_gpu, self.map_ld_mag_gpu = None, None, None, None
+        # The maps whose mag column is missing (14.4): a map dragged while Mag was off keeps the other maps' mag
+        # columns and marks only its own missing (a bool per map, True = missing; None while no mag channel is kept
+        # or no column is missing); when Mag is on again only the missing columns are computed (_update_all, needs_mag).
+        self.map_ld_mag_missing = None
         self.map_current, self.map_current_E = None, None
         self.map_eg, self.map_window, self.map_d_ldos, self.map_broadening = None, None, None, None
         self.map_z, self.map_bias, self.map_ldos_h = None, None, None
@@ -2679,8 +2683,9 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         elif mode in ('Line', 'Path'):
             # The LDOS topo, sized for what it shows and taking neither the crop nor the turn: in Line the unwrapped
             # corridor of the LDOS topo, a 2:3 box centred on the line; in Path the LDOS topo in the path's
-            # rectangle (_path_rectangle), square or taller than wide, its shape set from the path as it is now
-            # (and again whenever it is drawn: _fill_heat_row), square while the path is straight (no rectangle).
+            # rectangle (_path_rectangle), square or taller than wide, or Line's 2:3 box centred on the path when the
+            # path is straight (14.1), its shape set from the path as it is now (and again whenever it is drawn:
+            # _fill_heat_row), square only while the path is one point (no frame).
             self.ax_ldos_topo.set_xlabel("Perp. (Å)", fontsize=10)
             self.ax_ldos_topo.set_ylabel("Position (Å)", fontsize=10)
             # Its title 'LDOS Topo: bias ... V, height ... Å' from the view's build on, as _draw_ldos_topo's: at the
@@ -3864,22 +3869,21 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
             ax.add_collection(self._ldos_marks)
 
     def _on_topo_height_rerun(self, event=None):
-        """Machinery: apply the global-topo tip-height box (the 'Topo h' Value box) and recompute the global topo.
-        Static-label, single-action button. Does nothing unless the main RUN
+        """Machinery: apply the global-topo tip-height box (the 'Topo h' Value box) and recompute the global topo,
+        and only it (14.2).  Static-label, single-action button. Does nothing unless the main RUN
         button is active. Height-encoded cache filenames are loaded when
         reuse_cache is True and recomputed and rewritten when reuse_cache is
-        False. The global topo has its own record (global_z_map) and the LDOS
-        topo (ldos_z_map) is not touched; Map's topo records are still reset,
-        as before: in Map (now, or on return) the LDOS topo is taken again
-        (_ensure_ldos_topo: from memory) and the maps computed again at the
-        kept energies."""
+        False. The global topo has its own record (global_z_map); the LDOS
+        topo (ldos_z_map) and Map's records (cached_bias_energy_map,
+        cached_d_topo_map, its maps and their LDOS topo heights) are not
+        touched, so neither the LDOS topo nor the energy maps are computed
+        again by it; the window is drawn again for the new global topo."""
         if not self.is_running:
             return
         self.topo_height = float(self.s_topo_h.val)
         self._recompute_global_topo()
         self._broadening_topo_dirty = False
-        # Map's topo records reset, as before: its LDOS topo taken again (from memory) and its maps at the kept energies.
-        self.cached_bias_energy_map = self.cached_d_topo_map = None
+        # Map's records are kept (14.2): a Topo h rerun recomputes the global topo only.
         self._update_all(full_refresh=True)
 
     def _on_ldos_height_rerun(self, event=None):
@@ -4166,7 +4170,8 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
             # only after an edit of E Min, E Max or E Pts (reform: the typed ends and count differ from map_typed,
             # those they were last formed from; a dragged energy is kept otherwise); its maps are computed again
             # when the LDOS they show changes: the tip heights (needs_topo: the bias, the decay model, LDOS h, a
-            # broadening, a Topo h rerun), the window's snapped ends, the decay model, or the snapped Map samples once formed
+            # broadening; not a Topo h rerun, which recomputes the global topo only, 14.2), the window's snapped ends,
+            # the decay model, or the snapped Map samples once formed
             # again (compared with those the kept maps were taken at, map_e_idx); never for a view change or a
             # display-only toggle.  Map's own marker spectra (map_spec_*, apart from Single Point's) are computed
             # again with the maps (over a new window among them) or for other markers (map_marker_coords).
@@ -4202,7 +4207,10 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
             needs_mag = (mag_on and not needs_ldos and self.cached_ld_total_gpu is not None
                          and self.cached_ld_mag_gpu is None)
         elif self.mode == 'Map':
-            needs_mag = mag_on and not needs_ldos and self.map_ld_total_gpu is not None and self.map_ld_mag_gpu is None
+            # No mag channel kept, or columns of it missing (a map dragged while Mag was off, 14.4).
+            needs_mag = (mag_on and not needs_ldos and self.map_ld_total_gpu is not None
+                         and (self.map_ld_mag_gpu is None
+                              or (self.map_ld_mag_missing is not None and bool(self.map_ld_mag_missing.any()))))
         else:
             needs_mag = False
         spec_kept = ((self.map_spec_total_gpu, self.map_spec_mag_gpu) if self.mode == 'Map'
@@ -4320,6 +4328,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
             self.map_ld_total = ld_total_np
             self.map_ld_mag = ld_mag_np
             self.map_ld_total_gpu, self.map_ld_mag_gpu = ld_total, ld_mag
+            self.map_ld_mag_missing = None               # a new mag channel, or none: no column missing (14.4)
             self.map_current = cur
             self.map_current_E = cp.asarray((self.map_e_idx - self.k0).astype(np.float32)) * self.e_step32 + self.e032
             self.map_z = np.array(z_ldos, copy=True)
@@ -4403,15 +4412,25 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
                 if mag_hit is not None:
                     self.map_ld_mag = mag_hit['ld_mag']
                     self.map_ld_mag_gpu = cp.asarray(self.map_ld_mag)
+                    self.map_ld_mag_missing = None
                 else:
                     # At the LDOS-topo heights, the energies and the decay model Map's kept maps were computed at
-                    # (map_z, map_e_idx, map_d_ldos).
+                    # (map_z, map_e_idx, map_d_ldos).  Only the missing columns (14.4): every map while no mag channel
+                    # is kept, else the maps marked missing (map_ld_mag_missing: dragged while Mag was off), into
+                    # their columns beside the kept ones; the whole channel then saved to its _mag file.
+                    cols = (np.arange(len(self.map_e_idx)) if self.map_ld_mag is None
+                            else np.flatnonzero(self.map_ld_mag_missing))
                     grid_z = cp.hstack([self.grid_xy_gpu, cp.asarray(self.map_z, dtype=cp.float32)[:, None]])
                     _, ld_mag, _ = self._calculate_ldos_at_points_gpu(
                         grid_z, None, None, decay_model=self.map_d_ldos, preserve_orbitals=True,
-                        samples=self.map_e_idx, progress='Map energy maps', want_mag='only')
-                    self.map_ld_mag = cp.asnumpy(ld_mag)
-                    self.map_ld_mag_gpu = ld_mag
+                        samples=self.map_e_idx[cols], progress='Map energy maps', want_mag='only')
+                    if self.map_ld_mag is None:
+                        self.map_ld_mag = cp.asnumpy(ld_mag)
+                        self.map_ld_mag_gpu = ld_mag
+                    else:
+                        self.map_ld_mag[:, cols] = cp.asnumpy(ld_mag)
+                        self.map_ld_mag_gpu[:, cp.asarray(cols)] = ld_mag
+                    self.map_ld_mag_missing = None
                     self._save_ldos_cache('Map', map_key, {'ld_mag': self.map_ld_mag}, mag=True)
             else:
                 # The window's key (ld_key, above: the kept LDOS is the window's).
@@ -4851,47 +4870,72 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         them); a margin of PATH_RECT_MARGIN of its width added left and right and of its height top and bottom.
         The panel always square or taller than wide: the rectangle drawn as found, or turned 90 degrees when it is
         wider than tall, so its long side is vertical (a rotation of the plane, never a mirror), the path running
-        upward from its first sample to its last, as Line's corridor runs from its first end.  The frame's
-        coordinates (_to_path_frame): x across the rectangle from its centre line ('Perp.'), y along it from its
-        lower edge ('Position'), in Angstrom.  Returns a dict: 'c' the rectangle's centre in the plane, 'ex' and
-        'ey' the in-plane unit vectors of the panel's x and y, 'len' the rectangle's long side, 'xlim' and 'ylim'
-        the panel's limits with the margins, 'ratio' their height over width (the panel's box aspect); None when
-        the sample points lie on one line (a straight path: no rectangle has an area; its short side below 1e-9
-        of its long side, the rounding of collinear points).
+        upward from its first sample to its last, as Line's corridor runs from its first end.  A straight path
+        (14.1: every sample point on one line, so no rectangle has an area: fewer than three hull corners, or a
+        short side below 1e-9 of the long side, the rounding of collinear points) takes Line's 2:3 box centred on
+        the path instead, as Line's corridor is on the line (_fill_heat_row's Line branch): y along the line over
+        the path's extent L, from the end nearer its first sample, x across it L/3 either side, in Line's frame
+        (x along v_perp = (-v_hat_y, v_hat_x)) and with no margins, so the box is 2:3, width to height (the box
+        aspect 1.5).  The frame's coordinates (_to_path_frame): x across the rectangle from its centre line
+        ('Perp.'), y along it from its lower edge ('Position'), in Angstrom.  Returns a dict: 'c' the rectangle's
+        centre in the plane, 'ex' and 'ey' the in-plane unit vectors of the panel's x and y, 'len' the
+        rectangle's long side (the straight path's extent L), 'xlim' and 'ylim' the panel's limits (with the
+        margins; the 2:3 box's for a straight path), 'ratio' their height over width (the panel's box aspect);
+        None only when the sample points are one point (no direction: the panel stays empty).
         """
         P = np.asarray(p_xy, dtype=np.float64)[:, :2]
         hull = self._convex_hull(P)
-        if len(hull) < 3:
+        if len(hull) < 2:
             return None
         best = None
-        for k in range(len(hull)):
-            d = hull[(k + 1) % len(hull)] - hull[k]
-            L = float(np.hypot(d[0], d[1]))
-            if L <= 0.0:
-                continue
-            e1 = d / L
-            e2 = np.array([-e1[1], e1[0]])
-            a, b = hull @ e1, hull @ e2
-            area = (a.max() - a.min()) * (b.max() - b.min())
-            if best is None or area < best[0]:
-                best = (area, e1, e2, a.min(), a.max(), b.min(), b.max())
-        if best is None:
-            return None
-        _, e1, e2, a0, a1, b0, b1 = best
-        s1, s2 = a1 - a0, b1 - b0
-        if min(s1, s2) <= 1e-9 * max(s1, s2):
-            return None
-        c = e1 * 0.5 * (a0 + a1) + e2 * 0.5 * (b0 + b1)
-        if s1 <= s2:
-            ex, ey, w, h = e1, e2, s1, s2                  # as found: square or taller than wide
+        if len(hull) >= 3:
+            for k in range(len(hull)):
+                d = hull[(k + 1) % len(hull)] - hull[k]
+                L = float(np.hypot(d[0], d[1]))
+                if L <= 0.0:
+                    continue
+                e1 = d / L
+                e2 = np.array([-e1[1], e1[0]])
+                a, b = hull @ e1, hull @ e2
+                area = (a.max() - a.min()) * (b.max() - b.min())
+                if best is None or area < best[0]:
+                    best = (area, e1, e2, a.min(), a.max(), b.min(), b.max())
+        if best is not None:
+            _, e1, e2, a0, a1, b0, b1 = best
+            s1, s2 = a1 - a0, b1 - b0
+            if min(s1, s2) > 1e-9 * max(s1, s2):
+                c = e1 * 0.5 * (a0 + a1) + e2 * 0.5 * (b0 + b1)
+                if s1 <= s2:
+                    ex, ey, w, h = e1, e2, s1, s2                  # as found: square or taller than wide
+                else:
+                    ex, ey, w, h = e2, -e1, s2, s1                 # wider than tall: turned 90 degrees (ey = e2 turned by 90)
+                if np.dot(P[-1] - P[0], ey) < 0.0:
+                    ex, ey = -ex, -ey                              # turned 180 degrees: the path runs upward
+                m = self.PATH_RECT_MARGIN
+                xlim = (-(0.5 + m) * w, (0.5 + m) * w)
+                ylim = (-m * h, (1.0 + m) * h)
+                return {'c': c, 'ex': ex, 'ey': ey, 'len': h, 'xlim': xlim, 'ylim': ylim,
+                        'ratio': (ylim[1] - ylim[0]) / (xlim[1] - xlim[0])}
+            d = e1 if s1 >= s2 else e2                             # the degenerate rectangle's long side: the line's direction
         else:
-            ex, ey, w, h = e2, -e1, s2, s1                 # wider than tall: turned 90 degrees (ey = e2 turned by 90)
-        if np.dot(P[-1] - P[0], ey) < 0.0:
-            ex, ey = -ex, -ey                              # turned 180 degrees: the path runs upward
-        m = self.PATH_RECT_MARGIN
-        xlim = (-(0.5 + m) * w, (0.5 + m) * w)
-        ylim = (-m * h, (1.0 + m) * h)
-        return {'c': c, 'ex': ex, 'ey': ey, 'len': h, 'xlim': xlim, 'ylim': ylim,
+            d = hull[1] - hull[0]                                  # two hull corners: the line's ends
+        # A straight path (14.1): Line's 2:3 box centred on the path, drawn as Line's corridor.
+        L = float(np.hypot(d[0], d[1]))
+        if L <= 0.0:
+            return None
+        ey = d / L                                                 # along the line (Line's v_hat)
+        a = P @ ey
+        a0, a1 = float(a.min()), float(a.max())
+        if a[0] > 0.5 * (a0 + a1):
+            ey, a, a0, a1 = -ey, -a, -a1, -a0                      # the path's first sample at the lower end
+        ex = np.array([-ey[1], ey[0]])                             # across the line (Line's v_perp)
+        L = a1 - a0                                                # the path's extent along the line
+        if L <= 0.0:
+            return None
+        c = ey * 0.5 * (a0 + a1) + ex * float(np.mean(P @ ex))
+        xlim = (-L / 3.0, L / 3.0)                                 # L/3 either side of the line (Line's half_w = p_len / 3)
+        ylim = (0.0, L)
+        return {'c': c, 'ex': ex, 'ey': ey, 'len': L, 'xlim': xlim, 'ylim': ylim,
                 'ratio': (ylim[1] - ylim[0]) / (xlim[1] - xlim[0])}
 
     @staticmethod
@@ -4912,8 +4956,9 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         LDOS topo panel drawn again from the LDOS topo (ldos_z_map, never the global topo) when its line, the
         Cells count, the atoms or the LDOS topo (its heights, its key ldos_z_key) changed (its contour, atoms,
         line, ends, limits and the title 'LDOS Topo: bias ... V, height ... Å' at its key's bias and LDOS h; the
-        marker scatters stay); Path's, in the path's rectangle (_path_rectangle), when its path, the atoms or the
-        LDOS topo changed (its contour, atoms, path, nodes, limits, shape and the same title); the stripe's
+        marker scatters stay); Path's, in the path's rectangle, or in Line's 2:3 box for a straight path
+        (_path_rectangle), when its path, the atoms or the LDOS topo changed (its contour, atoms, path, nodes,
+        limits, shape and the same title); the stripe's
         segments, colours and limits (LineCollection.set_segments / set_norm / set_array), the
         Tip Height profile's curve (Line2D.set_data), each heatmap's values and colour scale
         (QuadMesh.set_array / set_cmap / set_norm; its colour bar follows the mesh's norm; a new
@@ -4987,8 +5032,10 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
             # Path's LDOS topo panel (3.5), built as Line's corridor: the LDOS topo tiled over the cells that cover the
             # path's rectangle, rotated into its frame and cropped to it (_path_rectangle), with the path (its
             # vertices, the Extend ends among them), its nodes and the markers (_make_line_markers); the panel's
-            # shape the rectangle's (its box aspect).  Drawn again when the path, the atoms or the LDOS topo (its
-            # heights, its key ldos_z_key) changed; with a straight path (no rectangle) the panel stays empty.
+            # shape the rectangle's (its box aspect).  A straight path (14.1: every sample point on one line, so no
+            # rectangle has an area) takes Line's 2:3 box centred on the path instead, the same frame dict, drawn by
+            # the same code.  Drawn again when the path, the atoms or the LDOS topo (its heights, its key ldos_z_key)
+            # changed; only while the path is one point (no frame) does the panel stay empty.
             topo_key = (tuple(map(tuple, np.asarray(self.path_nodes, dtype=float))), bool(self.path_extend),
                         bool(self.show_atoms), self.ldos_z_key)
             if (topo_key != self._line_topo_key or self._line_topo_z is None
@@ -5921,11 +5968,15 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
             if t_mag is not None:
                 self.map_ld_mag[:, idx:idx + 1] = cp.asnumpy(t_mag[:, 0:1])
                 self.map_ld_mag_gpu[:, idx:idx + 1] = t_mag[:, 0:1]
-            else:
-                # Mag off (or no mag channel kept): the dragged map's mag channel is not computed, so a kept one, now
-                # without that map, is dropped; it is computed again, every map, when Mag is turned on (_update_all,
-                # needs_mag).
-                self.map_ld_mag = self.map_ld_mag_gpu = None
+                if self.map_ld_mag_missing is not None:
+                    self.map_ld_mag_missing[idx] = False
+            elif self.map_ld_mag is not None:
+                # Mag off with a mag channel kept (14.4): the other maps' mag columns are kept, and only the dragged
+                # map's is marked missing (its column holds the old sample's); when Mag is turned on again only the
+                # missing columns are computed (_update_all, needs_mag).
+                if self.map_ld_mag_missing is None:
+                    self.map_ld_mag_missing = np.zeros(len(self.map_e_idx), dtype=bool)
+                self.map_ld_mag_missing[idx] = True
             # Its current, from the same call, into column idx, and its sample's GPU energy e0 + (i - k0) step.
             self.map_current[:, idx] = t_cur[:, 0]
             self.map_current_E[idx] = self.e032 + np.float32(e_idx - self.k0) * self.e_step32
@@ -5946,6 +5997,8 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
                     self.map_ld_mag = self.map_ld_mag[:, order]
                 if self.map_ld_mag_gpu is not None:
                     self.map_ld_mag_gpu = self.map_ld_mag_gpu[:, o_gpu]
+                if self.map_ld_mag_missing is not None:
+                    self.map_ld_mag_missing = self.map_ld_mag_missing[order]
                 self.map_current = self.map_current[:, o_gpu]
                 self.map_current_E = self.map_current_E[o_gpu]
                 self._spec_emarkers = [self._spec_emarkers[j] for j in order]
@@ -5957,13 +6010,15 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
                 # key (Map's LDOS disk cache, map_ldos_*.npz in caches/; _ldos_cache_key of Map's kept records:
                 # map_bias, map_ldos_h, the new map_e_idx, map_window, map_d_ldos, map_broadening): their total,
                 # their energies, their current and the LDOS topo heights they were calculated at (map_z), and the
-                # mag channel's file beside it while their mag channel is kept.
+                # mag channel's file beside it while their mag channel is kept whole (14.4: not while a column is
+                # missing; it is saved when the missing columns are computed, _update_all).
                 map_key = self._ldos_cache_key('Map', self.map_bias, self.map_ldos_h, self.map_window, self.map_d_ldos,
                                                self.map_broadening, samples=self.map_e_idx)
                 self._save_ldos_cache('Map', map_key, {'ld_total': self.map_ld_total,
                                                        'energies': self.energies[self.map_e_idx],
                                                        'current': cp.asnumpy(self.map_current), 'z': self.map_z})
-                if self.map_ld_mag is not None:
+                if self.map_ld_mag is not None and not (self.map_ld_mag_missing is not None
+                                                        and bool(self.map_ld_mag_missing.any())):
                     self._save_ldos_cache('Map', map_key, {'ld_mag': self.map_ld_mag}, mag=True)
             for i in redraw:
                 self._redraw_map_slice(i)
