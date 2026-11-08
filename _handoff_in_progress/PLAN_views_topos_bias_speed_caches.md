@@ -12,7 +12,9 @@ The owner stopped the run on 2026-11-08 before stage 4's review, so another sess
 - The pieces outside simulator.py are done and reviewed (`f49169e`): cmap_shading.py (10, module side), locpot_manager.py (9.1), doscar_parser.py (12.6), plot_dos_cursors_levels.py (12.1).
 - Stage 5: item 14.3 is done and reviewed (`e08c95f`). Items 14.7 and 14.8 are done. Items 14.1, 14.2, 14.4 (to implement) and 14.5, 14.6 (to check) are not started.
 
-**Step 0: the owner's updates file.** The owner will give you a `.md` file (not in the repository) listing every update the previous session made to `LDOS_spread_decomp/` since 11/4: each change, its file and function, the plan item or ruling it implements, its commit and whether it was reviewed. It is your checklist for checking that session's work, with the reviews kept minimal.
+**Step 0: check the previous session's commits (minimal reviews).**
+- The owner gives you a handoff document, `HANDOFF_next_session.md`, not in the repository. Its part A lists every commit group from `b051547` to here, with the requirement documents each is checked against. Those documents are kept in the git history: `0b5a425^:_handoff_in_progress/`, `e995063:_handoff_in_progress/CHEN_LINEAR_PLAN.md`, and this plan.
+- Its part B is steps 1 to 3 below.
 
 **Step 1: stage 4's review and fixes (minimal).**
 - One reviewer, no edits. Check `git diff 0263117 657670f -- LDOS_spread_decomp/stm_from_dft_opt` against sections 9, 6.2, 10 (the simulator side), 3.7, 12.2 to 12.5, and the docs, using `STAGE4_CHANGES.md`. Ignore the `qtgui/controls.py` hunks from `e08c95f` (stage 5's 14.3, already reviewed).
