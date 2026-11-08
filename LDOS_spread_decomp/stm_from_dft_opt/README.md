@@ -115,7 +115,7 @@ as on screen, or the curves as CSV.
 
 Every count and value is a number box: type a value and press Enter, or select a digit and press
 Up or Down to step it (a Value stops at its limits; a step applies at once). Markers, line ends,
-path nodes and the energy markers of the Map view are dragged with the mouse; a left click on a
+path nodes and the energy markers of the Map view are dragged with the mouse (an energy marker only while running: nothing is computed with RUN off); a left click on a
 curve of the Partitioned LDOS panel, or on its entry in the legend panel at its right, descends a
 level (partition, atom types, orbitals) and a right click anywhere in the panel (on a curve, on
 empty space, on its tick labels, axis labels or title) or in its legend panel, or the legend

@@ -5635,8 +5635,10 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
             top = ldos_decomp.top_artist(hits)
             if top is not None and top.get_label().startswith('emarker_') and event.button == plt.MouseButton.LEFT:
                 # A Map energy marker on top under a left press: its drag at level 0 (not on a double click's
-                # press), nothing at the other levels.
-                if self.plot_level == 0 and not event.dblclick:
+                # press), nothing at the other levels, and only while running: its release computes its map
+                # (_on_rel), and nothing is computed with RUN off (the owner, 2026-11-08), as the Rerun buttons do
+                # nothing then.
+                if self.plot_level == 0 and not event.dblclick and self.is_running:
                     self.active_obj = ('emarker', int(top.get_label().split('_')[1]))
                 return
             item = self._spec_curves[self._spec_lines.index(top)] if top in self._spec_lines else None
@@ -5916,7 +5918,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         self.fig.canvas.draw_idle()
 
     def _on_rel(self, event):
-        """Machinery: a mouse release: a Map energy marker's map computed again at its snapped sample under Map's
+        """Machinery: a mouse release: a Map energy marker's map (its drag starts only while running, _on_press: nothing is computed with RUN off) computed again at its snapped sample under Map's
         kept model, and, when that changed the map energies' samples, the maps saved under their new key's file
         (Map's LDOS disk cache: _save_ldos_cache); a moved line end, path node or Single Point / Map marker, its
         work done once (_update_all); a Line / Path marker, the markers put back in their order
