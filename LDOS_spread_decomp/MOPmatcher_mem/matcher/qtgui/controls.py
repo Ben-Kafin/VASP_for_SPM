@@ -2323,17 +2323,28 @@ class Arrangement(QtWidgets.QWidget):
     size.  `shaped` is one or two shaped groups (a CropPanel or PanelWithBox, a RowWidget, a
     MapBlock: each tells its size inside a region, _shaped_size), `free` the widget of the curve
     panels.  Of every candidate's room the free widget is given only its readable minimum
-    (`free_min()`, (w, h) px, and its own minimum) before the groups are sized; it then takes the
-    rest of its slot up to `free_cap(rects)` ((max w, max h) for the groups' rects in that
-    candidate, never below the readable minimum; the simulator sets none: its curve panels take
-    the room the groups leave), at the top left of its slot, and the part of the slot it leaves
-    counts as blank.  With `free_scored` the free widget is a first-class panel instead: it is
+    (`free_min()`, (w, h) px, and its own minimum) before the groups are sized (in 'h' with a
+    free_size, its size there: below); it then takes the rest of its slot up to `free_cap(rects)`
+    ((max w, max h) for the groups' rects in that candidate, never below the readable minimum; the
+    simulator sets none: its curve panels take the room the groups leave, Single Point's by its
+    free_size), at the top left of its slot, and the part of the slot it leaves counts as blank.
+    `free_size(name, rects)`: the free widget's size per candidate, (w, h) for the candidate `name`
+    and the groups' rects in it ({group: (x, y, w, h)}), or None in a candidate where it gives none
+    (there the free widget is cut to free_cap as before, or takes its whole slot); where it gives a
+    size, that size takes free_cap's place (never below the readable minimum, never beyond the slot,
+    at the slot's top left, the part of the slot it leaves blank: _capped), and in the one-group
+    candidate 'h' (without free_scored) the group is sized so that it and the free widget at that
+    size fit the width side by side, instead of in the room the readable minimum alone leaves
+    (_h_fit); the tall_rule judges 'h' with the free widget at that size (_band_below).  The
+    simulator's Single Point (3.7): in 'h' the spectrum with its legend panel at one topo panel's
+    plot box, the row as large as the two allow; in 'v' None, the spectrum filling the bottom row,
+    the full width and all the height the topo sub-section leaves.  With `free_scored` the free widget is a first-class panel instead: it is
     scored as a group (its scale against the whole window) and the one group and it are sized to
     one scale (_balanced).  Never with a `floor`: at one scale the group stays below its size
     alone in the window, so the floor's group, limited to its floor size in the minimum size's
     search, never reaches it at any finite width (the free widget's scale, its slot against the
     whole window, is always below 1), and minimum_px finds a size far larger than any screen or
-    none; the simulator's Single Point view, which has a floor, sizes its spectrum by free_cap at
+    none; the simulator's Single Point view, which has a floor, sizes its spectrum by free_size at
     one topo panel's size and chooses `h` or `v` by tall_rule instead (3.7).  `group_cap` (A, B, k, box_a, box_b): group A's
     plot box never more than k times group B's in width or in height (box_a(rect), box_b(rect):
     their plot boxes (w, h) in a region; the simulator: the topographies at most twice a heatmap
@@ -2362,7 +2373,7 @@ class Arrangement(QtWidgets.QWidget):
     Single Point `h` and `v` under its tall-window rule.  `tall_rule` (first, second): the choice
     between two allowed candidates by that rule instead of by score: the first, and the second
     exactly when the first would leave an empty band below its row (more than half a pixel
-    between its lowest region, the free widget's after free_cap, and the bottom edge), and back
+    between its lowest region, the free widget's after free_size or free_cap, and the bottom edge), and back
     when it no longer would (_pick; no hysteresis).  `best_score()` is
     the chosen candidate's score at the widget's size, nothing placed (the simulator compares its
     unit-cell panels' two orientations with it).  The candidate arrangements for two groups A, B and the free widget F:
@@ -2388,10 +2399,11 @@ class Arrangement(QtWidgets.QWidget):
     """
 
     BIG_PX = 1.0e5                    # a room larger than any screen: the other side of the minimum size's searches (minimum_px)
+    H_FIT_STEPS = 16                  # _h_fit's bisection on the group's room width: to 1/65536 of it, well under a pixel
 
     def __init__(self, shaped, free=None, spacing=8, hysteresis=0.05, free_min=None, free_cap=None,
                  free_scored=False, group_cap=None, fill_slot=None, layouts=None, tall_rule=None,
-                 group_min=None, floor=None, bottom=None):
+                 group_min=None, floor=None, bottom=None, free_size=None):
         super().__init__()
         self.shaped = [w for w in shaped if w is not None]
         self.free = free
@@ -2405,6 +2417,7 @@ class Arrangement(QtWidgets.QWidget):
             w.installEventFilter(self)
         self._sp, self._hys = spacing / (1000 / 72) * plt.em_px(), float(hysteresis)
         self._free_min_fn, self._free_cap_fn, self._free_scored = free_min, free_cap, bool(free_scored)
+        self._free_size_fn = free_size    # (name, rects) -> (w, h) or None: the free widget's size per candidate (_capped, _h_fit)
         self._group_cap = group_cap       # (A, B, k, box_a, box_b): group A's plot box at most k times group B's
         self._group_min = None if group_min is None else float(group_min)   # with group_cap: A's plot box at least this times B's (_above)
         self._floor = floor               # (G, box_of, min_box): the floor on one panel's plot box (_floor_ok)
@@ -2503,12 +2516,15 @@ class Arrangement(QtWidgets.QWidget):
         rw, rh = self._free_min_fn() if self._free_min_fn is not None else (0.0, 0.0)
         return max(float(m.width()), float(rw)), max(float(m.height()), float(rh))
 
-    def _capped(self, rects, blank, fw, fh):
-        """The free widget's region cut to free_cap (never below the readable minimum fw x fh), at the top left of its slot; the part of the slot it leaves is added to the blank."""
+    def _capped(self, name, rects, blank, fw, fh):
+        """The free widget's region in candidate `name` cut to its size: free_size(name, rects) where that gives one, else free_cap(rects) (rects: the groups' regions; never below the readable minimum fw x fh, never beyond its slot), at the top left of its slot; the part of the slot it leaves is added to the blank."""
         F = self.free
-        if F is None or F not in rects or self._free_cap_fn is None:
+        if F is None or F not in rects or (self._free_cap_fn is None and self._free_size_fn is None):
             return rects, blank
-        cap = self._free_cap_fn({w: r for w, r in rects.items() if w is not F})
+        groups = {w: r for w, r in rects.items() if w is not F}
+        cap = self._free_size_fn(name, groups) if self._free_size_fn is not None else None
+        if cap is None and self._free_cap_fn is not None:
+            cap = self._free_cap_fn(groups)
         if cap is None:
             return rects, blank
         x, y, w, h = rects[F]
@@ -2517,6 +2533,52 @@ class Arrangement(QtWidgets.QWidget):
         rects = dict(rects)
         rects[F] = (x, y, cw, ch)
         return rects, blank + w * h - cw * ch
+
+    def _h_fit(self, A, W, H, fw):
+        """
+        free_size, one group, candidate 'h' (without free_scored): the group's size (w, h) at which it and
+        the free widget at its size for the group's region (free_size('h', {A: (0, 0, w, h)}), its width
+        never below the readable minimum fw) fit side by side in the width W, one spacing between them.  The
+        group is sized (_sz, within its limits) in the largest room width, at most W - fw - spacing (the
+        room the readable minimum leaves, as without free_size), at which the two fit: that room itself when
+        they fit in it, else found by a bisection of H_FIT_STEPS from 1 px (the group's width and height, and
+        so the free widget's size, grow with the room), so the row is as large as both allow.  None without
+        free_size, when it gives no size for 'h', or when the two fit in no room (the group is then sized in
+        the room the readable minimum leaves, as without free_size).
+        """
+        fn = self._free_size_fn
+        if fn is None:
+            return None
+        sp = self._sp
+        hi = W - fw - sp
+        if hi < 1.0:
+            return None
+
+        def fits(room):
+            # (the group's size in the room, whether the two fit; None: free_size gives no size for 'h')
+            a = self._sz(A, room, H)
+            if not a:
+                return None, False
+            s = fn('h', {A: (0.0, 0.0, a[0], a[1])})
+            if s is None:
+                return a, None
+            return a, a[0] + sp + max(float(s[0]), fw) <= W
+        a, ok = fits(hi)
+        if ok is None:
+            return None
+        if ok:
+            return a
+        lo, best = 1.0, None
+        for _ in range(self.H_FIT_STEPS):
+            mid = 0.5 * (lo + hi)
+            a, ok = fits(mid)
+            if ok is None:
+                return None
+            if ok:
+                best, lo = a, mid
+            else:
+                hi = mid
+        return best
 
     def _balanced(self, A, horizontal, W, H, fw, fh):
         """
@@ -2804,7 +2866,7 @@ class Arrangement(QtWidgets.QWidget):
         return (name, float(blank), rects, valid)
 
     def _candidates_at(self, W, H, only=None, fmin=None):
-        """[(name, blank, {widget: (x, y, w, h)}, valid)] at the size W x H, the groups within their limits (_lim), the allowed candidates only (layouts); `only`: that candidate alone (two groups); `fmin`: the free widget's minimum, measured by the caller."""
+        """[(name, blank, {widget: (x, y, w, h)}, valid)] at the size W x H, the groups within their limits (_lim), the allowed candidates only (layouts); `only`: that candidate alone (two groups); `fmin`: the free widget's minimum, measured by the caller.  The free widget's region in each is cut to its size there (_capped: free_size, free_cap); in the one-group 'h' with free_size the group is sized so that it and the free widget at that size fit side by side (_h_fit)."""
         want = lambda name: (only is None or only == name) and (self._layouts is None or name in self._layouts)
         sp = self._sp
         fw, fh = self._free_min(W, H) if fmin is None else fmin
@@ -2815,7 +2877,7 @@ class Arrangement(QtWidgets.QWidget):
         def put(name, rects, blank, valid=True):
             if not want(name):
                 return                                            # a candidate the window does not allow (layouts)
-            rects, blank = self._capped(rects, blank, fw, fh)
+            rects, blank = self._capped(name, rects, blank, fw, fh)
             out.append((name, float(blank), rects, bool(valid)))
 
         if len(self.shaped) == 1:
@@ -2829,7 +2891,9 @@ class Arrangement(QtWidgets.QWidget):
                 b = self._balanced(A, True, W, H, fw, fh)
                 a = b[0] if b else None
             else:
-                a = self._sz(A, W - fw - sp, H)
+                # With free_size: the group and the free widget at its size beside it fit the width (_h_fit, asked
+                # only while 'h' is wanted); else the group in the room the free widget's readable minimum leaves.
+                a = (self._h_fit(A, W, H, fw) if want('h') else None) or self._sz(A, W - fw - sp, H)
             if a:                                                 # h: A at the left
                 wA = a[0]
                 put('h', {A: (0, 0, a[0], a[1]), F: (wA + sp, 0, W - wA - sp, H)}, wA * (H - a[1]),
@@ -2939,7 +3003,7 @@ class Arrangement(QtWidgets.QWidget):
         return [(self._score(c, solo, W, H), c) for c in valid]
 
     def _band_below(self, cand, H):
-        """The empty band below a candidate's row at the height H: from the lowest bottom edge of its groups' and free widget's regions (the free widget's as free_cap cut it) down to the widget's bottom edge, or to the bottom widget's top less the spacing."""
+        """The empty band below a candidate's row at the height H: from the lowest bottom edge of its groups' and free widget's regions (the free widget's as _capped cut it: free_size, free_cap) down to the widget's bottom edge, or to the bottom widget's top less the spacing."""
         rects = cand[2]
         edge = H
         if self._bottom is not None and self._bottom in rects:
@@ -3018,14 +3082,17 @@ class Arrangement(QtWidgets.QWidget):
         """
         (w, h) px: the smallest size of this widget at which the limits all hold: the floor's panel at its
         minimum, group A at most k times group B (group_cap, the cap kept) and at least group_min times it,
-        the free widget at its readable minimum and the bottom widget under them (bottom), in every candidate
+        the free widget at its readable minimum (in 'h' with free_size, at its size there, the group sized so
+        that the two fit: _h_fit) and the bottom widget under them (bottom), in every candidate
         the window allows (layouts: the largest of their smallest sizes, so the limits hold in whichever is
         taken; _min_of).  None without a floor, or while the floor's panel has no plot box or no minimum yet.
         A floor is never combined with free_scored (the class docstring): _balanced would keep the floor's
         group below its floor size, and the search would find no size a screen has.
         Worked out again only when the groups' shapes, the window's text zoom or portrait setting, the floor's
         minimum, the free widget's minimum or the bottom widget's size hint changed (kept in _min_cache; the
-        controls' own zoom is left out: Figure._fit_controls changes it while it measures the layout).
+        controls' own zoom is left out: Figure._fit_controls changes it while it measures the layout); a
+        free_size is taken to follow only these (the simulator's reads what the floor's box_of reads, and the
+        spectrum's tick axes and the legend panel's width, which the free widget's minimum holds).
         """
         if self._floor is None or not self.shaped or self._floor[0] not in self.shaped:
             return None
