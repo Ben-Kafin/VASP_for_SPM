@@ -3472,13 +3472,14 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
 
     def _draw_ldos_topo(self, z, bias, height):
         """
-        Machinery: the LDOS topo panel drawn in the unit cell's frame (ax_ldos_topo: Map's; Single Point's once its
-        panel is built), on the cleared panel: the heights z (grid_res x grid_res over grid_xy) as filled contours
+        Machinery: the LDOS topo panel drawn in the unit cell's frame (ax_ldos_topo: Map's and Single Point's), on
+        the cleared panel: the heights z (grid_res x grid_res over grid_xy) as filled contours
         over every image of the Cells count (one raster at every offset: tricontourf offsets=), nothing while z is
         None (no LDOS topo computed yet: never the global topo), the atoms of one type over every image as one
         scatter (Atoms on), the unit cell (Cell on), the equal aspect, the title 'LDOS Topo: bias ... V, height
-        ... Å' at the bias and LDOS h the heights were computed at (bias, height), and in Map the markers (Map's
-        placement panel).  The caller applies the crop (_apply_crop).
+        ... Å' at the bias and LDOS h the heights were computed at (bias, height), and the markers: in Map the
+        placement panel's (marks), in Single Point their copy (_ldos_marks; they are placed on the global topo).
+        The caller applies the crop (_apply_crop).
         """
         ax = self.ax_ldos_topo
         ax.clear()
@@ -3500,6 +3501,8 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         ax.set_title(f"LDOS Topo: bias {bias:.3f} V, height {height} Å")
         if self.mode == 'Map':
             ax.add_collection(self.marks)
+        elif self.mode == 'Single Point' and self._ldos_marks is not None:
+            ax.add_collection(self._ldos_marks)
 
     def _on_topo_height_rerun(self, event=None):
         """Machinery: apply the global-topo tip-height box (the 'Topo h' Value box) and recompute the global topo.
@@ -3756,6 +3759,10 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         else:
             self.marks.set_offsets(self.marker_coords)
             self.marks.set_facecolors(self.m_colors[:len(self.marker_coords)])
+            if self.mode == 'Single Point' and self._ldos_marks is not None:
+                # Their copy on Single Point's LDOS topo, at the same places and in the same colours.
+                self._ldos_marks.set_offsets(self.marker_coords)
+                self._ldos_marks.set_facecolors(self.m_colors[:len(self.marker_coords)])
         self._markers_changed()                    # the markers' and the line's lines in the info panel
 
         # RUN off: nothing more is drawn, except for a decomp step or a view change into Map (last_run), whose panels are
@@ -4227,34 +4234,22 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         Machinery: the Line / Path heatmap row built anew, only when its panel count changes (n_heat, the
         partitions of the level, or the per-heatmap colour bars): the old panels removed
         (_clear_cluster), then the cluster's row, left to right (a PanelRow: its shaped panels
-        share one height; rule 11): Line's LDOS topo panel (ax_ldos_topo, its title set with its data by
-        _fill_heat_row) with the LDOS h box above it (Line only), the tip-height stripe titled 'Topo'
-        (with the LDOS h box above it in Path), one heatmap per partition
-        with a colour bar after each (show_dcmp_norm) or after the last.  The panels' fixed parts
-        (box aspects, anchors, axis labels, ticks) are set here and their data by _fill_heat_row;
+        share one height; rule 11): the tip-height stripe titled 'Topo', one heatmap per partition
+        with a colour bar after each (show_dcmp_norm) or after the last.  (The LDOS topo panel, with the LDOS
+        h box above it, is the topo sub-section's, before the cluster in the top row: _build_ui.)  The panels'
+        fixed parts (anchors, axis labels, ticks) are set here and their data by _fill_heat_row;
         the Tip Height profile is cleared with the row (_fill_heat_row draws its curve and the
-        marker lines again).  _update_all then fills the row and calls _rearrange().
+        marker lines again).  The top row, the topo sub-section and the cluster, is aligned again to its one
+        height.  _update_all then fills the row and calls _rearrange().
         """
         self._clear_cluster()
         self.ax_prof.clear()
         num_p = max(1, n_heat)
         row = self._cluster_row
-        if self.mode == 'Line':
-            # Line's LDOS topo panel (the unwrapped corridor of the LDOS topo, 2:3) — Line mode only; the LDOS h box above it.
-            self.ax_ldos_topo = self._panel_with_box(row, self._box_ldos_h, stretch=10)
-            self.line_decomp_axes.append(self.ax_ldos_topo)
-            self.ax_ldos_topo.set_box_aspect(1.5)
-            self.ax_ldos_topo.set_xlabel("Perp. (Å)", fontsize=10)
-            self.ax_ldos_topo.set_ylabel("Position (Å)", fontsize=10)
-        else:
-            self.ax_ldos_topo = None
 
         # The stripe (the Line / Path tip heights, not a topo), titled 'Topo': a narrow cell as wide as its 40-point
-        # stroke and its tick axis; in Path the LDOS h box above it.
-        if self.mode == 'Path':
-            self.ax_stripe = self._panel_with_box(row, self._box_ldos_h, inner_w=58)
-        else:
-            self.ax_stripe = self._panel(row, inner_w=58)
+        # stroke and its tick axis.
+        self.ax_stripe = self._panel(row, inner_w=58)
         self.line_decomp_axes.append(self.ax_stripe)
         self.ax_stripe.set_xticks([])
         self.ax_stripe.set_title("Topo", fontsize=10)
@@ -4278,10 +4273,11 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         self._heat_meshes, self._heat_grids, self._heat_cmaps = [None] * n, [None] * n, [None] * n
         self._heat_cbars, self._heat_titles = [None] * n, [None] * n
 
-        # The cluster's row shares one height (the row rule, Figure.align_row): the heatmaps (no box
-        # aspect: they fill their cells), the stripe and the colour bars take the row's band, in Line at
-        # most the height Line's LDOS topo's box aspect asks for.
-        self.fig.align_row(*self.line_decomp_axes)
+        # The top row shares one plot-box height (the row rule, 3.1, Figure.align_row), across its two groups: the
+        # topo sub-section (the topo colour bar, the global topo, the LDOS topo) and the cluster; the heatmaps (no
+        # box aspect: they fill their cells), the stripe and the colour bars take the row's band, at most the
+        # height the spatial panels' shapes ask for.
+        self.fig.align_row(self.cax_topo, self.ax_global_topo, self.ax_ldos_topo, *self.line_decomp_axes)
         self._row_key = (n_heat, self.show_dcmp_norm)
 
     def _fill_heat_row(self, processed_partitions, global_vmax, global_vmin, p_dist, p_len, use_diverging, has_mag):
@@ -5054,6 +5050,8 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
                 self._place_map_markers()
             else:
                 self.marks.set_offsets(self.marker_coords)
+                if self._ldos_marks is not None:
+                    self._ldos_marks.set_offsets(self.marker_coords)     # their copy on Single Point's LDOS topo
         elif t_obj == 'mark_dynamic' and self.mode in ('Line', 'Path'):
             new = None
             if hasattr(self, 'ax_prof') and event.inaxes == self.ax_prof:
