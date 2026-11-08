@@ -18,6 +18,9 @@ class LocpotManager:
     """
     Dedicated handler for VASP LOCPOT data extraction and caching.
     Auto-detects spin mode from the number of volumetric data sections.
+    The cache, LOCPOT.npy, is written to and looked for in the folder
+    "caches" inside the VASP folder (made when first needed). A LOCPOT.npy
+    left directly in the VASP folder is neither moved nor read.
     """
 
     def __init__(self, filepath, spin_mode=None):
@@ -25,14 +28,20 @@ class LocpotManager:
         Parameters
         ----------
         filepath : str
-            Directory containing LOCPOT.
+            Directory containing LOCPOT (the VASP folder). Its "caches"
+            subfolder holds the LOCPOT.npy cache.
         spin_mode : SpinMode or None
             If provided, used directly.  If None, auto-detected from LOCPOT
             section count.
         """
         self.filepath = filepath
         self.locpot_path = join(filepath, "LOCPOT")
-        self.cache_path = join(filepath, "LOCPOT.npy")
+        # The cache lives in <VASP folder>/caches/ under its usual name,
+        # LOCPOT.npy. The folder is made only when the cache is first
+        # written (_rebuild_cache). An older LOCPOT.npy directly in the
+        # VASP folder is not looked at, so it is neither moved nor read.
+        self.cache_dir = join(filepath, "caches")
+        self.cache_path = join(self.cache_dir, "LOCPOT.npy")
         self.spin_mode = spin_mode
         self.data = None
 
@@ -49,7 +58,7 @@ class LocpotManager:
         return self._rebuild_cache()
 
     def _is_cache_valid(self):
-        """Validates existence and dimensionality of the .npy cache."""
+        """Validates existence and dimensionality of the .npy cache in caches/."""
         if not exists(self.cache_path) or getsize(self.cache_path) == 0:
             return False
         try:
@@ -66,6 +75,7 @@ class LocpotManager:
         """
         Parses raw LOCPOT and applies spin-mode-appropriate extraction.
         Auto-detects spin mode from section count if not pre-set.
+        Saves the result as caches/LOCPOT.npy, making caches/ if needed.
         """
         if not exists(self.locpot_path):
             raise FileNotFoundError(f"Source LOCPOT not found: {self.locpot_path}")
@@ -105,6 +115,8 @@ class LocpotManager:
             # ISPIN=1: single section
             self.data = vol_sections[0]
 
+        # The caches folder is made here, when the cache is first written.
+        os.makedirs(self.cache_dir, exist_ok=True)
         np.save(self.cache_path, self.data)
         print(f"[*] Saved LOCPOT cache to {self.cache_path} with shape {self.data.shape}")
         return self.data

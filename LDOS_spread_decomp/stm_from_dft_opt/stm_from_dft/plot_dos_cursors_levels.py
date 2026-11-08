@@ -2,8 +2,10 @@
 DOS plotter with energy cursors and level markers: the total DOS, then (a click on a curve
 descends, a click beside the curves ascends) the Au / molecule partition, the atom types, the
 atoms of one type, and one atom's orbital curves with hover labels (widgets.HoverLabels) and, in
-SOC mode, the |m| overlay toggled with the 'm' key.  Drawn with the suite's shared Qt layer
-(qtgui, this package's own copy: PySide6 + pyqtgraph); the parsing is unchanged.
+SOC mode, the |m| overlay toggled with the 'm' key.  The plot level, the active element and the
+active atom, the settings the clicks make, are the window's own lines in its information panel
+(Figure.set_info_line).  Drawn with the suite's shared Qt layer (qtgui, this package's own copy:
+PySide6 + pyqtgraph); the parsing is unchanged.
 """
 import re
 import os as _os
@@ -198,8 +200,9 @@ class DosPlotter:
     def plot_dos_cursors(self, nums=None, types=None):
         """
         The window: one panel of DESIGN size (automatic layout: plt.subplots fills its grid), its
-        level handlers (on_pick, on_click, on_key) and the orbital hover labels; plt.show() holds
-        the process until the window closes.
+        level handlers (on_pick, on_click, on_key), its own lines in the information panel
+        (update_info_lines: the plot level, the active element, the active atom) and the orbital
+        hover labels; plt.show() holds the process until the window closes.
         """
         fig, ax = plt.subplots(figsize=DESIGN)
         self.plot_level = 0
@@ -218,7 +221,33 @@ class DosPlotter:
             if active_maxes:
                 ax.set_ylim(0, max(active_maxes) * 1.1)
 
+        def update_info_lines():
+            """
+            The window's own lines in the information panel (fig.set_info_line), from the window's
+            state as it is (plot_level, active_element, active_atom), the settings the clicks make:
+            set from the start and again on every change, since update_plot_visuals, which calls
+            this, runs at the start and after each one.  Key 'plot level': the level and its name.
+            Key 'active element': the element the window holds (self.active_element, set by a pick
+            at level 2 or at level 3), shown as held at every level; 'none' only while none is held
+            (None, before the first such pick).  Key 'active atom': the atom the window holds
+            (self.active_atom, set by a pick at level 3), by its label (vesta_label_map) and its
+            place (1-based) in the POSCAR / CONTCAR order, shown as held at every level; 'none' only
+            while none is held.  No line is ever empty, so the three keep their order.
+            """
+            level_names = ('total DOS', 'Au / molecule partition', 'atom types',
+                           'atoms of one type', "one atom's orbitals")
+            fig.set_info_line('plot level',
+                              f"plot level: {self.plot_level} ({level_names[self.plot_level]})")
+            fig.set_info_line('active element',
+                              "active element: " + (str(self.active_element)
+                                                    if self.active_element is not None else "none"))
+            fig.set_info_line('active atom',
+                              "active atom: " + (f"{self.vesta_label_map[self.active_atom]} "
+                                                 f"(atom {self.active_atom})"
+                                                 if self.active_atom is not None else "none"))
+
         def update_plot_visuals():
+            update_info_lines()        # the window's lines first, from the state as it is (an unchanged line is left as it is)
             ax.cla()
             S = 0.25
 

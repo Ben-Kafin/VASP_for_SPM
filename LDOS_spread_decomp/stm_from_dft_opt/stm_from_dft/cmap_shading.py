@@ -7,19 +7,32 @@ What it holds:
   maps by their pyqtgraph names.  The isoluminant maps the energy maps use while they are shaded
   (SHADING_CMAPS).  Entries are colour-map names or colour lists; the caller makes its own colour maps from
   them (cmap_spec, map_role, make_cmap).
-- The Contour / Shading box: its state and rules (BoxState) and its builder (build_box, giving a ShadeBox),
-  which takes the figure and the qtgui controls module from the caller.
+- The Contour / Shading box: its state and rules (BoxState: the two toggles, the Height / Relief mode, and
+  the Relief light's azimuth `az` and elevation `el`, both starting at 45 degrees) and its builder
+  (build_box, giving a ShadeBox), which takes the figure and the qtgui controls module from the caller.
+- The two light panels, drawn on axes the caller makes and places (draw_light_top, draw_light_side, each
+  giving a LightPanel), with their drag rules.  The top view shows the plane from above, its centre point, a
+  guide circle of radius R and the light as a dot at R cos(el) from the centre at the azimuth; dragging the
+  dot sets the azimuth only.  The side view shows the plane edge-on as a horizontal line through the centre
+  point, seen at right angles to the light's azimuth, and the light as a dot on the arc of radius R at the
+  elevation above the line, with a line from it to the centre point; dragging it up or down sets the
+  elevation, 0 to 90 degrees.  No preview is drawn behind either.  The caller sends them its mouse events
+  (LightPanel.press, motion, release).  In Height both are drawn greyed and take no drags, since Height uses
+  no light (light_active).
 - The shading maths, written once for NumPy and CuPy arrays (array_module): the points of a cell's grid
   without its duplicate edge (unique_points); the Height shade (height_shade) and the Relief shade of
-  Kovesi's relief.m (relief_shade, light_vector); the colour map through the caller's norm (colormap_rgba,
-  cmap_table); the CIELAB L* stretch that applies a shade to the colours (lstar_stretch, shaded_rgba).
+  Kovesi's relief.m (relief_shade, light_vector), lit by the box's az and el; the colour map through the
+  caller's norm (colormap_rgba, cmap_table); the CIELAB L* stretch that applies a shade to the colours
+  (lstar_stretch, shaded_rgba).  A caller's darkness d (0 to 1) is the stretch's floor 1 - d: d = 1 makes
+  the darkest point black, d = 0 shades nothing.
 - The corners of an RGBA mesh with one quad per point, centred on it and tiled by cell offsets
   (mesh_corners).  The drawing itself is the caller's.
 
 Self-contained: it imports only the standard library, NumPy and CuPy.  It imports nothing from the simulator
-and nothing from qtgui (the box builder is handed the controls module).  The maths runs with the module of
-the arrays it is given (cupy.get_array_module): NumPy arrays on the CPU, CuPy arrays on the GPU.
-It is written to be copied into sm4_Browser as it is; each package keeps its own copy.
+and nothing from qtgui (the box builder is handed the controls module, the light panels the caller's axes).
+The maths runs with the module of the arrays it is given (cupy.get_array_module): NumPy arrays on the CPU,
+CuPy arrays on the GPU.  It is written to be copied into sm4_Browser as it is; each package keeps its own
+copy.
 
 The CET names ('CET-L3', 'CET-L6', 'CET-R1', 'CET-D1A', 'CET-L19', 'CET-I1', 'CET-D11', 'CET-I3') are the
 file names of pyqtgraph's bundled maps (https://github.com/pyqtgraph/pyqtgraph/tree/master/pyqtgraph/colors/maps).
@@ -139,16 +152,44 @@ SHADE_MODES = (HEIGHT, RELIEF)
 BOX_TITLE = 'contour / shading'
 
 
+def _light_az(az):
+    """
+    Machinery: an azimuth in degrees as BoxState keeps it: a finite float taken modulo 360, so
+    0 <= az < 360 (0 up, increasing clockwise); ValueError when it is not finite.
+    """
+    a = float(az)
+    if not math.isfinite(a):
+        raise ValueError(f"az must be a finite number of degrees, not {az!r}")
+    a = a % 360.0
+    return 0.0 if a >= 360.0 else a          # a tiny negative angle % 360 rounds to 360.0 in floats
+
+
+def _light_el(el):
+    """Machinery: an elevation in degrees as BoxState keeps it: a float within 0..90; ValueError otherwise (NaN too)."""
+    e = float(el)
+    if not 0.0 <= e <= 90.0:
+        raise ValueError(f"el must be within 0..90 degrees, not {el!r}")
+    return e
+
+
 class BoxState:
     """
     Machinery: the Contour / Shading box's state and its rules.  `contour` and `shading` are the two toggles:
     at most one is on, and both may be off.  Turning Shading on turns Contour off, turning Contour on turns
     Shading off, and turning either off leaves the other as it is.  `shade_by` is 'Height' or 'Relief' and is
     kept while Shading is off.  It starts with Contour on, Shading off and Height.
+    The Relief shade's light, which the two light panels show and set (draw_light_top, draw_light_side):
+    `az`, its azimuth in degrees, 0 up and increasing clockwise (Kovesi's convention: relief.m's "Zero
+    azimuth points upwards and increases clockwise", light_vector), kept within 0 <= az < 360; `el`, its
+    elevation in degrees, 0 to 90.  Both start at 45, relief.m's defaults.  They are kept whatever the
+    toggles and the mode; only Relief uses them (shade_field's az and el).
     """
 
-    def __init__(self, contour=True, shading=False, shade_by=HEIGHT):
-        """Machinery: a state; ValueError when both toggles are on or `shade_by` is not one of SHADE_MODES."""
+    def __init__(self, contour=True, shading=False, shade_by=HEIGHT, az=45.0, el=45.0):
+        """
+        Machinery: a state; ValueError when both toggles are on, `shade_by` is not one of SHADE_MODES, `az`
+        is not finite or `el` is not within 0..90 (az is kept modulo 360).
+        """
         if contour and shading:
             raise ValueError("Contour and Shading cannot both be on")
         if shade_by not in SHADE_MODES:
@@ -156,6 +197,8 @@ class BoxState:
         self.contour = bool(contour)
         self.shading = bool(shading)
         self.shade_by = shade_by
+        self.az = _light_az(az)
+        self.el = _light_el(el)
 
     def set_contour(self, flag):
         """Machinery: Contour on (Shading then off) or off (Shading unchanged); returns the state."""
@@ -178,26 +221,37 @@ class BoxState:
         self.shade_by = mode
         return self
 
+    def set_az(self, az):
+        """Machinery: the light's azimuth in degrees (0 up, increasing clockwise), kept modulo 360 (ValueError when not finite); returns the state."""
+        self.az = _light_az(az)
+        return self
+
+    def set_el(self, el):
+        """Machinery: the light's elevation in degrees, 0 to 90 (ValueError otherwise); returns the state."""
+        self.el = _light_el(el)
+        return self
+
     @property
     def shade_mode(self):
         """Machinery: the mode the energy maps are shaded in now: 'Height' or 'Relief' while Shading is on, else None."""
         return self.shade_by if self.shading else None
 
     def key(self):
-        """Machinery: the state as a tuple (contour, shading, shade_by), for a redraw signature."""
-        return (self.contour, self.shading, self.shade_by)
+        """Machinery: the state as a tuple (contour, shading, shade_by, az, el), for a redraw signature."""
+        return (self.contour, self.shading, self.shade_by, self.az, self.el)
 
     def copy(self):
-        """Machinery: an independent copy of the state."""
-        return BoxState(self.contour, self.shading, self.shade_by)
+        """Machinery: an independent copy of the state, its light included."""
+        return BoxState(self.contour, self.shading, self.shade_by, self.az, self.el)
 
     def __eq__(self, other):
-        """Machinery: equal states have equal keys."""
+        """Machinery: equal states have equal keys (the toggles, the mode and the light)."""
         return isinstance(other, BoxState) and self.key() == other.key()
 
     def __repr__(self):
         """Machinery: the state as text."""
-        return f"BoxState(contour={self.contour}, shading={self.shading}, shade_by={self.shade_by!r})"
+        return (f"BoxState(contour={self.contour}, shading={self.shading}, shade_by={self.shade_by!r}, "
+                f"az={self.az!r}, el={self.el!r})")
 
 
 class ShadeBox:
@@ -205,7 +259,8 @@ class ShadeBox:
     Machinery: the box build_box makes.  `qt` is its framed Qt widget (controls.box), for the caller's layout
     or the strip.  `state` is its BoxState, which build_box's callbacks keep current.  `contour` and
     `shading` are the two toggles (qtgui Check) and `shade_by` is the Height / Relief radio (qtgui Radio).
-    The info panel lists their settings as for every other control.
+    The info panel lists their settings as for every other control.  The box has no control of the light:
+    the state's az and el are shown and set by the light panels (LightPanel), which share the state.
     """
 
     def __init__(self, qt, state, contour, shading, shade_by):
@@ -255,7 +310,8 @@ def build_box(fig, controls, on_change=None, state=None, title=BOX_TITLE, orient
     Machinery: the Contour / Shading box.  `fig` is the window's qtgui figure and `controls` the qtgui
     controls module (the caller's copy).  The box holds the Contour and Shading toggles (Check) and the
     Height / Relief radio (Radio), framed by controls.box(..., orient=orient, title=title), and starts at
-    `state` (default BoxState(): Contour on, Shading off, Height).  A click applies the state's rules and
+    `state` (default BoxState(): Contour on, Shading off, Height, the light at azimuth 45 and elevation 45;
+    the light panels take the same state).  A click applies the state's rules and
     sets the other toggle to match, through Check.set, which never fires.  It then calls on_change(state)
     with the state after the rule.  Returns the ShadeBox (its `qt` is the frame).
     """
@@ -291,6 +347,259 @@ def build_box(fig, controls, on_change=None, state=None, title=BOX_TITLE, orient
     chk_shading.on_change(_on_shading)
     radio.on_change(_on_shade_by)
     return sb
+
+
+# ---------------------------------------------------------------------- #
+#  The light panels: the Relief light from above and from the side        #
+# ---------------------------------------------------------------------- #
+
+TOP_VIEW = 'top'             # the plane from above: the dot's angle around the centre is the azimuth
+SIDE_VIEW = 'side'           # the plane edge-on: the dot's angle above the plane's line is the elevation
+LIGHT_VIEWS = (TOP_VIEW, SIDE_VIEW)
+
+# The panels' geometry, in their own data units and the same in both (equal aspect): the radius R of the top
+# view's guide circle and of the side view's arc; half the side of the plane drawn (the top view's square,
+# the side view's line); half the x and y range shown, so that the centre point sits at the middle of each
+# panel; the distance from the dot's centre within which a press grabs the dot.
+LIGHT_R = 1.0
+LIGHT_PLANE = 1.15
+LIGHT_LIM = 1.3
+LIGHT_GRAB = 0.25
+
+# The panels' colours, as hex (read alike by qtplot and matplotlib): the plane, the centre point and the dot's
+# edge; the guide circle and arc; the light's dot and the side view's line to the centre; every line and dot
+# while the panels are greyed (Height).
+LIGHT_INK = '#000000'
+LIGHT_GUIDE = '#808080'
+LIGHT_DOT = '#e69f00'
+LIGHT_GREYED = '#c8c8c8'
+
+
+def light_active(state):
+    """
+    Machinery: whether the light panels are drawn in colour and take drags: while the state's mode
+    (shade_by) is Relief, the one mode that uses the light, whatever the Shading toggle.  In Height they are
+    drawn greyed and take no drags.
+    """
+    return state.shade_by == RELIEF
+
+
+def _top_xy(state):
+    """
+    Machinery: the top view's dot, the light seen from above: at R cos(el) from the centre at the azimuth,
+    (R cos(el) sin(az), R cos(el) cos(az)) with x to the right and y up, R times relief.m's first two light
+    components (light_vector's screen right and up).
+    """
+    a, e = math.radians(state.az), math.radians(state.el)
+    r = LIGHT_R * math.cos(e)
+    return r * math.sin(a), r * math.cos(a)
+
+
+def _side_xy(state):
+    """
+    Machinery: the side view's dot: on the arc of radius R around the centre point at the elevation above the
+    plane's line, (R cos(el), R sin(el)).  The view is at right angles to the light's azimuth, with the
+    light's side of the centre drawn to the right, so the light lies in the drawn plane.
+    """
+    e = math.radians(state.el)
+    return LIGHT_R * math.cos(e), LIGHT_R * math.sin(e)
+
+
+def _az_at(x, y):
+    """
+    Machinery: the top view's drag rule: the azimuth of the point (x, y) around the centre, in degrees, 0 up
+    and increasing clockwise (atan2(x, y)), modulo 360 (_light_az).  None at the centre itself, which has no
+    angle.
+    """
+    if x == 0.0 and y == 0.0:
+        return None
+    return _light_az(math.degrees(math.atan2(x, y)))
+
+
+def _el_at(y):
+    """
+    Machinery: the side view's drag rule: the elevation of the arc's point at the height y above the plane's
+    line, asin(y / R) in degrees, with y / R clipped to 0..1, so the dot stays on the arc and the elevation
+    within 0..90 (clipped there again against rounding).
+    """
+    s = min(max(y / LIGHT_R, 0.0), 1.0)
+    return min(max(math.degrees(math.asin(s)), 0.0), 90.0)
+
+
+class LightPanel:
+    """
+    Machinery: one light panel, drawn by draw_light_top or draw_light_side on axes the caller made and
+    placed: `ax`, `view` (TOP_VIEW or SIDE_VIEW) and `state`, the BoxState whose light it shows and sets (the
+    window's own, shared with its ShadeBox).  Just the control, with no preview behind it: its lines and dots
+    are made once and moved in place (update).  The caller sends it the window's mouse events (press, motion,
+    release) and updates both panels after a change of the state (update).  It is not a qtgui control: the
+    caller lists the azimuth and the elevation in its info panel.
+    """
+
+    def __init__(self, ax, view, state):
+        """
+        Machinery: the panel drawn on `ax`: x and y over -LIGHT_LIM..LIGHT_LIM at an equal aspect, any room the
+        caller's box leaves widening the limits about the centre (adjustable 'datalim'), no ticks, the centre
+        point at (0, 0).  The top view: the plane from above (a square of half side LIGHT_PLANE), its centre
+        point, the dashed guide circle of radius R and the light's dot.  The side view: the plane edge-on (a
+        horizontal line through the centre point, of half length LIGHT_PLANE), the centre point, the dashed
+        arc of radius R from 0 to 90 degrees above the line, the light's dot on it and a line from the dot to
+        the centre point.  Then drawn at the state (update).  ValueError for another view.
+        """
+        if view not in LIGHT_VIEWS:
+            raise ValueError(f"view must be one of {LIGHT_VIEWS}, not {view!r}")
+        self.ax = ax
+        self.view = view
+        self.state = state
+        self._drag = False
+        self._greyed = None              # the greying drawn last (None: not drawn yet)
+        p = LIGHT_PLANE
+        if view == TOP_VIEW:
+            t = np.linspace(0.0, 2.0 * math.pi, 181)
+            self._plane, = ax.plot([-p, p, p, -p, -p], [-p, -p, p, p, -p], color=LIGHT_INK, lw=1.0, zorder=2)
+        else:
+            t = np.linspace(0.0, 0.5 * math.pi, 46)
+            self._plane, = ax.plot([-p, p], [0.0, 0.0], color=LIGHT_INK, lw=1.5, zorder=2)
+        self._guide, = ax.plot(LIGHT_R * np.cos(t), LIGHT_R * np.sin(t), color=LIGHT_GUIDE, lw=1.0, ls='--',
+                               zorder=1)
+        self._ray = None
+        if view == SIDE_VIEW:
+            self._ray, = ax.plot([0.0, 0.0], [0.0, 0.0], color=LIGHT_DOT, lw=1.5, zorder=3)
+        self._centre, = ax.plot([0.0], [0.0], ls='none', marker='o', ms=4.0, color=LIGHT_INK, zorder=4)
+        self._dot, = ax.plot([0.0], [0.0], ls='none', marker='o', ms=10.0, color=LIGHT_INK, mfc=LIGHT_DOT,
+                             zorder=5)
+        # The aspect before the limits, so that qtplot widens them for the box as they are set (_apply_targets).
+        ax.set_aspect('equal', adjustable='datalim')
+        ax.set_xlim(-LIGHT_LIM, LIGHT_LIM)
+        ax.set_ylim(-LIGHT_LIM, LIGHT_LIM)
+        ax.set_xticks([])
+        ax.set_yticks([])
+        self.update()
+
+    def _dot_xy(self):
+        """Machinery: where the dot is drawn at the state's light (_top_xy or _side_xy, by the view)."""
+        return _top_xy(self.state) if self.view == TOP_VIEW else _side_xy(self.state)
+
+    @property
+    def dragging(self):
+        """Machinery: whether the dot is held: a press grabbed it and no release has come since."""
+        return self._drag
+
+    def update(self):
+        """
+        Machinery: the panel set to its state: the dot at the light (the top view's at R cos(el) from the
+        centre at the azimuth; the side view's on the arc at the elevation, with its line to the centre
+        point), and every line and dot greyed while the light is not active (Height, light_active), in colour
+        otherwise.  A drag in progress ends when the panel greys.  Returns the panel.
+        """
+        x, y = self._dot_xy()
+        self._dot.set_data([x], [y])
+        if self._ray is not None:
+            self._ray.set_data([0.0, x], [0.0, y])
+        greyed = not light_active(self.state)
+        if greyed:
+            self._drag = False
+        if greyed != self._greyed:
+            self._greyed = greyed
+            ink = LIGHT_GREYED if greyed else LIGHT_INK
+            self._plane.set_color(ink)
+            self._centre.set_color(ink)
+            self._guide.set_color(LIGHT_GREYED if greyed else LIGHT_GUIDE)
+            if self._ray is not None:
+                self._ray.set_color(LIGHT_GREYED if greyed else LIGHT_DOT)
+            self._dot.set_color(ink)
+            self._dot.set_markerfacecolor(LIGHT_GREYED if greyed else LIGHT_DOT)
+        return self
+
+    def press(self, event):
+        """
+        Machinery: a mouse press in the window (a matplotlib MouseEvent: inaxes, xdata, ydata, button,
+        dblclick).  A left press in this panel on its dot (within LIGHT_GRAB of the dot's centre, in the
+        panel's data units), not a double click's press, grabs the dot while the light is active (Relief); in
+        Height the panel takes no drags.  The press itself changes nothing.  True when the dot was grabbed
+        (the press is the panel's), else False.
+        """
+        if event.inaxes is not self.ax or event.xdata is None or event.ydata is None:
+            return False
+        if event.button != 1 or getattr(event, 'dblclick', False) or not light_active(self.state):
+            return False
+        x, y = self._dot_xy()
+        if math.hypot(float(event.xdata) - x, float(event.ydata) - y) > LIGHT_GRAB:
+            return False
+        self._drag = True
+        return True
+
+    def motion(self, event):
+        """
+        Machinery: a mouse motion in the window while the dot is held.  The mouse's point in this panel's data
+        units (from its display pixels event.x, event.y through ax.transData inverted, so the drag follows the
+        mouse outside the panel too) sets the light by the panel's rule.  The top view sets the azimuth only:
+        the point's angle around the centre (0 up, increasing clockwise, _az_at), the elevation kept, so the
+        dot stays at R cos(el) from the centre.  The side view sets the elevation only: the arc's point at the
+        mouse's height above the line (asin(y / R), 0 to 90 degrees, _el_at), the azimuth kept, so the dot
+        stays on the arc.  The panel's own dot follows (update).  True when the light changed: the caller then
+        updates the other panel (the top view's dot moves with the elevation) and shades the maps again, live.
+        False with no drag, in Height (the drag then ends), or with no change.
+        """
+        if not self._drag:
+            return False
+        if not light_active(self.state):
+            self._drag = False
+            return False
+        if event.x is None or event.y is None:
+            return False
+        p = np.asarray(self.ax.transData.inverted().transform((float(event.x), float(event.y))),
+                       dtype=np.float64).reshape(-1)
+        x, y = float(p[0]), float(p[1])
+        if not (math.isfinite(x) and math.isfinite(y)):
+            return False
+        if self.view == TOP_VIEW:
+            az = _az_at(x, y)
+            if az is None or az == self.state.az:
+                return False
+            self.state.set_az(az)
+        else:
+            el = _el_at(y)
+            if el == self.state.el:
+                return False
+            self.state.set_el(el)
+        self.update()
+        return True
+
+    def release(self, event):
+        """
+        Machinery: a mouse release in the window: a held dot is let go, at the light the last motion set.
+        True when a drag ended, else False.
+        """
+        if not self._drag:
+            return False
+        self._drag = False
+        return True
+
+
+def draw_light_top(ax, state):
+    """
+    Machinery: the top view panel on the caller's axes `ax` (a map panel's size in the simulator; its
+    placement is the caller's): just the control, the plane from above, its centre point, a guide circle of
+    radius R and the light as a dot drawn at R cos(el) from the centre at the azimuth (0 up, increasing
+    clockwise), so it shows the light as seen from above.  No preview behind it.  Dragging the dot sets the
+    azimuth only, the dot's angle around the centre; the side view alone sets the elevation.  In Height it is
+    drawn greyed and takes no drags.  `state` is the window's BoxState.  Returns its LightPanel.
+    """
+    return LightPanel(ax, TOP_VIEW, state)
+
+
+def draw_light_side(ax, state):
+    """
+    Machinery: the side view panel on the caller's axes `ax` (the top view's size in the simulator; its
+    placement is the caller's): just the control, the plane edge-on as a horizontal line through the centre
+    point, seen at right angles to the light's azimuth so the light lies in the drawn plane (on the right of
+    the centre).  The light is a dot on the arc of radius R around the centre point at the elevation angle
+    above the line, with a line from it to the centre point, its focus.  No preview behind it.  Dragging the
+    dot up or down sets the elevation, from 0 to 90 degrees, the dot staying on the arc.  In Height it is
+    drawn greyed and takes no drags.  `state` is the window's BoxState.  Returns its LightPanel.
+    """
+    return LightPanel(ax, SIDE_VIEW, state)
 
 
 # ---------------------------------------------------------------------- #
@@ -509,8 +818,9 @@ def shade_field(heights, mode, step_a, step_b, *, panel_turn, periodic, az=45.0,
     Machinery: the shade of `heights` (rows, cols) in `mode`.  'Height' gives height_shade(heights) and
     ignores the other arguments.  'Relief' gives relief_shade(heights, step_a, step_b, panel_turn=...,
     periodic=..., az, el, gradscale, minval).  panel_turn and periodic have no default (relief_shade).
-    ValueError for another mode.  The shade depends only on the heights, so one shade serves every map of
-    the same heights.
+    The box's light goes in as az=state.az and el=state.el (BoxState, set by the light panels).
+    ValueError for another mode.  The shade depends only on the heights (and in Relief on the light), so one
+    shade serves every map of the same heights.
     """
     if mode == HEIGHT:
         return height_shade(heights)
@@ -674,7 +984,8 @@ def lstar_stretch(rgba, shade, floor=0.0):
     `rgba` is (..., 3 or 4), sRGB 0..1, and alpha is kept.  `shade` has the leading shape, from height_shade
     or relief_shade.  A point whose shade is not finite becomes (0, 0, 0, 0) for RGBA input, not drawn;
     for RGB input, which has no alpha, it becomes (0, 0, 0), black.  Returns float64 of
-    the arrays' array module (CuPy if either is CuPy).  With floor = 0 the lowest shade value is black.
+    the arrays' array module (CuPy if either is CuPy).  With floor = 0 the lowest shade value is black; with
+    floor = 1, f = 1 everywhere and nothing is shaded.
     """
     if not 0.0 <= float(floor) <= 1.0:
         raise ValueError(f"floor must be within 0..1, not {floor}")
@@ -707,8 +1018,10 @@ def shaded_rgba(values, shade, cmap, norm, floor=0.0):
     """
     Machinery: the shaded colours of one map: colormap_rgba(values, cmap, norm), the colour map first with
     the caller's norm, then lstar_stretch(..., shade, floor).  `values` and `shade` are (rows, cols) of the
-    same points (unique_points of the slice and of the heights).  Returns (rows, cols, 4) float64 of the
-    arrays' array module; the caller moves CuPy colours to the host (cupy.asnumpy) to draw them.
+    same points (unique_points of the slice and of the heights).  A caller's darkness d (0 to 1, its own
+    box) is passed as floor = 1 - d: d = 1 makes the darkest point black (floor 0), d = 0 shades nothing
+    (floor 1).  Returns (rows, cols, 4) float64 of the arrays' array module; the caller moves CuPy colours to
+    the host (cupy.asnumpy) to draw them.
     """
     return lstar_stretch(colormap_rgba(values, cmap, norm), shade, floor)
 

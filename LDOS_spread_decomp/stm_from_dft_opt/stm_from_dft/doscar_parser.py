@@ -107,9 +107,14 @@ class SpinAwareDosParser:
         energies = emin + step * np.arange(nedos)        # float64, absolute
 
         # Guard: each printed first-block energy (absolute, as printed) may
-        # differ from its grid value by at most half a unit of the last
-        # decimal it carries plus 1e-6 eV.  Block-0 row i is file line 7 + i.
-        decimals = np.array([len(t.partition(".")[2]) for t in energies_text])
+        # differ from its grid value by at most one tolerance for the whole
+        # column: half a unit of the last decimal the printed energy column
+        # carries, read from the file's own text, plus 1e-6 eV.  The column's
+        # last decimal is its finest one: if entries of the column carry
+        # different numbers of decimals, the most decimals any entry carries
+        # sets it, so no entry's tolerance is looser than its own rounding.
+        # Block-0 row i is file line 7 + i.
+        decimals = max(len(t.partition(".")[2]) for t in energies_text)
         tol = 0.5 * 10.0 ** (-decimals) + 1e-6
         diff = np.abs(np.array(energies_list) - energies)
         if np.any(diff > tol):
