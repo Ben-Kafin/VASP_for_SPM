@@ -1900,15 +1900,18 @@ class FlipBox(QtWidgets.QWidget):
 
 class CropPanel(QtWidgets.QWidget):
     """
-    The placement panel with its crop: a control box over it (AbovePanel: the tip-height box, the
-    Crop / Uncrop buttons), a band under that box where the x-cursor boxes ride along the panel's
-    top edge (RideBand 'h', `band_x`), the panel's cell, and a band at its right where the
-    y-cursor boxes ride along its right edge (RideBand 'v', `band_y`).  One shaped item of an
+    A panel with its crop: a control box over it (AbovePanel: the tip-height box, the
+    Crop / Uncrop buttons), a band under that box along the panel's top edge (RideBand 'h',
+    `band_x`), the panel's cell, and a band at its right along its right edge (RideBand 'v',
+    `band_y`).  One shaped item of an
     Arrangement: height_for_width and width_for_height count the box and the bands, so the group
-    is sized as one and the boxes never sit between panels.  The window adds the riding boxes
-    (`band_x.add(key, box)`, `band_y.add(key, box)`) and moves them (`set_pos`) when the panel is
-    placed (Axes.on_placed); when the panel is turned (Axes.set_rotated) the window moves each box
-    to the band its cursor's line now runs along (`take` and `add`).
+    is sized as one and the boxes never sit between panels.  A window may put riding items in the
+    bands (`band_x.add(key, item)`, `band_y.add(key, item)`), move them (`set_pos`) when the panel
+    is placed (Axes.on_placed) and, when the panel is turned (Axes.set_rotated), move each to the
+    other band (`take` and `add`).  The simulator's two topos (the global topo; the LDOS topo of
+    Single Point and Map) each stand in one: the item over the panel holds the tip-height box, the
+    Crop / Uncrop box and the line of the four cursor values, `band_x` is hidden and `band_y` holds
+    only a fixed item, the room of the cursor stubs drawn past the panel's right edge.
     """
 
     def __init__(self, ax, cell, *items, spacing=3):
@@ -2349,19 +2352,27 @@ class Arrangement(QtWidgets.QWidget):
     one topo panel's size and chooses `h` or `v` by tall_rule instead (3.7).  `group_cap` (A, B, k, box_a, box_b): group A's
     plot box never more than k times group B's in width or in height (box_a(rect), box_b(rect):
     their plot boxes (w, h) in a region; the simulator: the topographies at most twice a heatmap
-    or a map); a candidate that breaks it is sized again with A limited (_keep_limits).
+    in Line and Path, at most 1.5 times an energy map in Map); a candidate that breaks it is sized
+    again with A limited (_keep_limits).
+    `group_aim` (with group_cap): the ratio aimed at within the cap, group A's plot box at most
+    group_aim times group B's (the simulator's Map: 1.5, a map about two thirds of a topo panel):
+    a candidate above it is sized again with A limited to the largest share that keeps the aim,
+    the room A gives up going to B (the Map block wraps its maps into more rows there); when at
+    that share B has outgrown A past group_min (a re-wrap can double a map at once), the aim is
+    dropped for that size and the cap alone decides (_keep_limits).
     `group_min` (with group_cap): the lower limit, group A's plot box never less than group_min
     times group B's in width or in height (the simulator's Map: 1.0, a map no larger than a topo
     panel); a candidate that breaks it is sized again with B limited, the room B gives up left
     blank (_lower).  `floor` (G, box_of, min_box): the placement-panel minimum, a floor on one
     given panel's plot box: box_of(rect) is that panel's plot box (w, h) when its shaped group G
     has the region rect (x, y, w, h), min_box() the smallest plot box (w, h) it may have (the
-    simulator's _placement_min); where the floor and the 2x cap cannot both hold, the floor holds
-    and the cap gives way (A limited no further than the floor allows, _keep_limits).  `bottom`
-    (widget, size_of): a widget pinned to the bottom edge at the left (the simulator's Map: the
-    shading row, its fourth sub-section and last row), size_of(rects) its size (w, h) for a
+    simulator's _placement_min); where the floor and the cap cannot both hold, the floor holds
+    and the cap gives way (A limited no further than the floor allows, _keep_limits); without a
+    floor the cap is absolute (the simulator's Map).  `bottom`
+    (widget, size_of): a widget pinned to the bottom edge at the left (the simulator passes none:
+    Map's light panels are in its top row), size_of(rects) its size (w, h) for a
     candidate's regions above it ({widget: (x, y, w, h)}; None: the widget's size hint), so that
-    its panels follow the candidate's (a map panel's size); each candidate is sized in the room
+    its panels can follow the candidate's; each candidate is sized in the room
     above it (_with_bottom), and the height the window leaves over goes between the candidate's
     regions and the widget, never below it.  With a floor the widget's smallest size is the
     smallest at which these limits all hold (minimum_px, minimumSizeHint), so the window's
@@ -2404,7 +2415,7 @@ class Arrangement(QtWidgets.QWidget):
 
     def __init__(self, shaped, free=None, spacing=8, hysteresis=0.05, free_min=None, free_cap=None,
                  free_scored=False, group_cap=None, fill_slot=None, layouts=None, tall_rule=None,
-                 group_min=None, floor=None, bottom=None, free_size=None):
+                 group_min=None, floor=None, bottom=None, free_size=None, group_aim=None):
         super().__init__()
         self.shaped = [w for w in shaped if w is not None]
         self.free = free
@@ -2421,6 +2432,7 @@ class Arrangement(QtWidgets.QWidget):
         self._free_size_fn = free_size    # (name, rects) -> (w, h) or None: the free widget's size per candidate (_capped, _h_fit)
         self._group_cap = group_cap       # (A, B, k, box_a, box_b): group A's plot box at most k times group B's
         self._group_min = None if group_min is None else float(group_min)   # with group_cap: A's plot box at least this times B's (_above)
+        self._group_aim = None if group_aim is None else float(group_aim)   # with group_cap: the ratio aimed at within the cap (_keep_limits)
         self._floor = floor               # (G, box_of, min_box): the floor on one panel's plot box (_floor_ok)
         self._lim = {}                    # {group: (max w, max h)} while a candidate is sized under its limits
         self._base_lim = {}               # the limits every candidate starts from: {} but in the minimum size's search (minimum_px)
@@ -2650,9 +2662,10 @@ class Arrangement(QtWidgets.QWidget):
             W, H = min(float(W), lim[0]), min(float(H), lim[1])
         return _shaped_size(w, W, H)
 
-    def _within(self, cand):
-        """Whether a candidate keeps group_cap: group A's plot box at most k times group B's in every dimension (box_a, box_b of their rects give (w, h), a side None when it is not known; a box not known yet counts as kept)."""
-        A, B, k, box_a, box_b = self._group_cap
+    def _within(self, cand, k=None):
+        """Whether a candidate keeps group_cap: group A's plot box at most k times group B's in every dimension (box_a, box_b of their rects give (w, h), a side None when it is not known; a box not known yet counts as kept).  `k`: another ratio in the cap's place (group_aim)."""
+        A, B, k_cap, box_a, box_b = self._group_cap
+        k = k_cap if k is None else k
         rects = cand[2]
         if A not in rects or B not in rects:
             return True
@@ -2740,20 +2753,40 @@ class Arrangement(QtWidgets.QWidget):
 
     def _keep_limits(self, cand, W, H, fmin, base_lim):
         """
-        A candidate within the limits.  With group_cap, a candidate whose group A is more than k times
-        group B (their plot boxes) is sized again with A limited to the largest share of its size that
-        keeps the cap (a bisection of 7 steps on that candidate alone; the room A gives up goes to B and
+        A candidate within the limits.  With group_aim, a candidate whose group A is more than group_aim
+        times group B (their plot boxes) is first sized again with A limited to the largest share of its size
+        that keeps the aim (the same bisection of 7 steps as the cap's below; the room A gives up goes to B,
+        which wraps into it); that is taken unless at that share B has outgrown A past group_min (a re-wrap
+        can double a map at once), in which case the cap alone decides.  With group_cap, a candidate whose
+        group A is more than k times group B is sized again with A limited to the largest share of its size
+        that keeps the cap (a bisection of 7 steps on that candidate alone; the room A gives up goes to B and
         the free widget as the candidate's geometry gives it).  With a floor, where the floor's panel then
-        falls below its minimum, the floor holds and the 2x cap gives way: A limited to the smallest share,
+        falls below its minimum, the floor holds and the cap gives way: A limited to the smallest share,
         at or above the cap's, at which the floor holds (a bisection of 7 steps), or A as large as its room
-        allows when even that does not hold it (the window below its minimum size, minimum_px).  Then
-        group_min: B limited until A is at least group_min times it (_lower).
+        allows when even that does not hold it (the window below its minimum size, minimum_px); without a
+        floor the cap is absolute.  Then group_min: B limited until A is at least group_min times it (_lower).
         """
         A = self._group_cap[0]
         name = cand[0]
         out, lim_a = cand, None
-        if not self._within(cand):
+        if self._group_aim is not None and not self._within(cand, self._group_aim):
             ra = cand[2][A]
+            lo, hi, best, best_lim = 0.05, 1.0, None, None
+            for _ in range(7):
+                f = 0.5 * (lo + hi)
+                lim = dict(base_lim)
+                lim[A] = (ra[2] * f, ra[3] * f)
+                self._lim = lim
+                c = self._one(W, H, name, fmin)
+                if c is not None and self._within(c, self._group_aim):
+                    best, best_lim, lo = c, lim[A], f
+                else:
+                    hi = f
+            self._lim = dict(base_lim)
+            if best is not None and (self._group_min is None or self._above(best)):
+                out, lim_a = best, best_lim
+        if not self._within(out):
+            ra = out[2][A]
             lo, hi, best, best_lim = 0.05, 1.0, None, None
             for _ in range(7):
                 f = 0.5 * (lo + hi)
@@ -2766,7 +2799,7 @@ class Arrangement(QtWidgets.QWidget):
                 else:
                     hi = f
             if best is not None and self._floor is not None and not self._floor_ok(best):
-                # The placement-panel minimum holds and the 2x cap gives way (3.6).
+                # The placement-panel minimum holds and the cap gives way (3.6).
                 held, held_lim = None, None
                 if self._floor_ok(cand):
                     lo2, hi2 = lo, 1.0

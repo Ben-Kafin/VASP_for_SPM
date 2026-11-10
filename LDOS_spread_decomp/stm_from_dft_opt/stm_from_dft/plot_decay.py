@@ -30,27 +30,38 @@ simulators only ever need the weight, the figure draws the height.
 Currents.  A model's own current where it has one (the kernels for the simulator's models, the signed
 column for Tier 3); otherwise the integrated current, feenstra.current_from_ldos on the model's displayed
 LDOS: I(V) = the integral from 0 V to V of that LDOS, oriented (Tier 2, Tier 2 0-clamp, McDowell).  The same
-integrated current of the bare LDOS is the no-tunneling-decay current.
+integrated current of the bare LDOS is the no-tunneling-decay current.  Feenstra's ratio (dI/dV)/(I/V) is
+feenstra.iv_ratio and feenstra.divide, the simulator's 'Feenstra' toggle, on each model's own dI/dV and I
+(black, the panel under dI/dV, with I/V itself under I), and on the bare LDOS and its integrated current
+(the top block's third panel).
 
 The figure (rows of equal height; one section per model, side by side):
-  row 0  the input LDOS, no weight, across the full window, in black, no x tick labels (it shares its x axis
-         with the row below);
-  row 1  the integrated current of that LDOS, no tunneling decay, across the full window, in black (no bias
-         is applied to it); under its data floor the colour key, a bar coloured by the bias map along the x
-         axis, labelled 'vbias'.
-         Rows 0 and 1 are each autoscaled and drawn to one common y scale (data units per inch), so their
-         heights are in the ratio of their y ranges within the two row units they share, the key band added
-         below the current's data floor at that scale;
-  (each section also carries three equation strips in bold textbook mathtext, larger than any axis label: its
-   barrier equation above the barrier row, the equation taking the barrier to the weight, the squared
-   matrix element relative to its prefactor, between the barrier row and the weights row, and the equations
-   taking the weights to I(V) and dI/dV(V) between the weights row and the I, dI/dV row)
+  the top block, across the full window, all in black (no bias is applied to any of it), one x axis:
+         the input LDOS, no weight; its integrated current, no tunneling decay; that current's I/V; its
+         Feenstra ratio rho / (I/V); and the colour key, its own strip, a bar coloured by
+         the bias map along the x axis, its x label 'Vbias (V)', carrying the block's x tick labels.
+         The LDOS panel is one row unit, its y axis from 0 to its maximum plus the margin; the current is
+         drawn to the LDOS's y scale (data units per inch), so its height is its own y range at that scale;
+         the I/V panel is autoscaled on its own; the Feenstra panel's y axis runs from 0 to its maximum times
+         the LDOS panel's top-to-maximum ratio (the same room above its curve, relative to the maximum, as the
+         LDOS has); one row unit each; the key strip 0.075 unit, its bar at its top edge;
   row 2  the barrier (the vacuum level measured from E_F: phi at the 0 V end, the model's bias-end height at
          the bias end, phi + V for the simulator's exact model, phi + |V| for the superseded ones, the
          linearized one flat at phi + V/2), phi marked: the topo column (x from 0 V to v_topo) and the LDOS
          column (x from -v_max to v_max), the columns' widths in the ratio |v_topo| : 2 v_max;
-  row 3  the weights, same x axes;
-  row 4  I(V) and dI/dV(V), two panels of equal width.
+  row 3  the math row, one row unit, the section's three equations in bold textbook mathtext stacked in this
+         order, each the step that yields a plot row: the barrier equation (the barrier row), the equation
+         taking the barrier to the weight, the squared matrix element relative to its prefactor (the weights
+         row), and the equations taking the weights to I(V) and dI/dV(V) (the I, dI/dV row).  The gap between
+         the groups is EQ_GROUP_GAP of the blank g above and below the block, g the blank the panel pair with
+         nothing between them has (from the I, dI/dV row's x labels to the I/V, Feenstra row's titles); the
+         font size is chosen per section so the block, centred between the barrier row's x labels and the
+         weights row's titles, leaves g above and below it in every section, capped where a section's widest
+         line would not fit its column (decay_barrier_figure's math-row loop);
+  row 4  the weights, same x axes as the barrier row;
+  row 5  I(V) and dI/dV(V), on the same two columns;
+  row 6  I(V)/V under I, and the model's Feenstra ratio (dI/dV)/(I/V), black, under dI/dV, on the same two
+         columns (dI/dV is of the weights' order, the ratio of the LDOS's, so it cannot share the dI/dV axis).
 How each panel is drawn follows the model's own behaviour, declared on the model (barrier_kind, topo_mode,
 sweep_mode), so the same rules give every decay a coherent picture:
   - colour means the bias the model actually passed to its factor at that point, one diverging map over
@@ -74,7 +85,8 @@ sweep_mode), so the same rules give every decay a coherent picture:
   - the I and dI/dV curves are coloured along their length by the bias the model passed at the bias on their
     x axis (|V| for the superseded models).
 Every panel type shares its y range across the sections (the whole weights row as one axis that includes 0).
-Each decay section (its six panels, labels included) is framed as one panel; the two top rows are not.
+Each decay section (its eight panels and its math row, labels included) is framed as one panel; the top block
+is not.
 The weights row and the dI/dV panels carry
 three-level ticks and grid (spacings 1, 0.5 and 0.1, in volts on x and in the displayed power-of-ten units on
 y), long/thick and labelled, medium, short/thin.
@@ -224,8 +236,14 @@ class simulator_decays:
     The simulator's two Decay-on models behind the figure's model interface.  Nothing is recomputed here: the
     weights are decay_weights (the factor functions) and I, dI/dV are sweep_current_didv (the kernels).
     model: 'exact' or 'linearized'; phi: the barrier at the tip point (eV); d: the atom-to-tip distance (A).
-    Interface (the same for wrong_decays): name, barrier_kind ('sloped' or 'flat'), topo_mode ('frozen'),
-    sweep_mode ('family'), has_current, set_grid(energies), bias_end(V), weights(idx, V), current_didv().
+    Interface (the same for wrong_decays; what decay_barrier_figure reads): name (the section's title), phi and
+    d; barrier_kind ('sloped' or 'flat'), topo_mode ('frozen' or 'per_state') and sweep_mode ('family',
+    'per_state' or 'frozen'), which choose how each panel is drawn; has_current; the equations printed in the
+    math row (barrier_eq, weight_eq, current_eq) and the four panel titles (topo_barrier_title,
+    sweep_barrier_title, topo_weight_title, sweep_weight_title); set_grid(energies, v_max), bias_end(V),
+    applied_bias(V, topo=False) (the bias a panel's colour stands for), weights(idx, V) (a frozen bias or a
+    family over the bias), weights_per_state(idx) (the per_state models) and current_didv(ldos); display_bias
+    on a model whose sweep_mode is 'frozen'.  Here: topo_mode 'frozen', sweep_mode 'family'.
     """
     MODELS = ('exact', 'linearized')
 
@@ -235,19 +253,26 @@ class simulator_decays:
         self.model, self.phi, self.d = model, float(phi), float(d)
         self.name = model
         self.barrier_kind = 'flat' if model == 'linearized' else 'sloped'
-        self.topo_mode = 'frozen'            # the topography at one frozen bias (line 73 of simulator.py)
-        self.sweep_mode = 'family'           # every state's weight changes with the swept bias (line 74)
+        self.topo_mode = 'frozen'            # the topography at one frozen bias (simulator.py's block THE DECAY MODEL: I(V) at V_b)
+        self.sweep_mode = 'family'           # every state's weight changes with the swept bias (the same block: dI/dV_o(V))
         self.has_current = True
-        # The equations, as the figure prints them (bold textbook mathtext): the barrier, and the barrier to
-        # the weight (gpu_exact_factor's and gpu_linearized_factor's docstrings).
+        # The equations, as the figure prints them (bold textbook mathtext): the barrier U(z) above the state
+        # across the gap (z = 0 the sample, z = d the tip), and the equation U is put through for the weight,
+        # the WKB exponent and its closed form in U's two ends (gpu_exact_factor's and gpu_linearized_factor's
+        # docstrings); and the panel titles, the function each panel plots.
         if model == 'exact':
-            self.barrier_eq = r'$\mathbf{\phi - E + V\,z/d,\quad 0 \leq z \leq d}$'
-            self.weight_eq = (r'$\mathbf{w = e^{-S},\quad S = \frac{4kd}{3V}\left[(\phi - E + V)^{3/2}'
-                              r' - (\phi - E)^{3/2}\right],\quad k = \sqrt{2 m_e e}/\hbar}$')
+            self.barrier_eq = r'$\mathbf{U(z) = \phi - E + V\,z/d,\quad 0 \leq z \leq d}$'
+            self.weight_eq = (r'$\mathbf{w = e^{-S},\quad S = 2k\int_0^d \sqrt{U_{+}}\,dz'
+                              r' = \frac{4kd}{3}\,\frac{U(d)_{+}^{3/2} - U(0)_{+}^{3/2}}{U(d) - U(0)}}$' + '\n'
+                              + r'$\mathbf{x_{+} = \max(x, 0),\quad k = \sqrt{2 m_e e}/\hbar}$')
+            self.topo_barrier_title, self.sweep_barrier_title = r'$\phi + V_b$', r'$\phi + V$'
         else:
-            self.barrier_eq = r'$\mathbf{\bar{\phi} - \epsilon = \phi - E + V/2}$'
-            self.weight_eq = (r'$\mathbf{w = e^{-2\kappa_0 d + \kappa_0 (E - V/2)\, d/\phi},'
-                              r'\quad \kappa_0 = k\sqrt{\phi}}$')
+            self.barrier_eq = r'$\mathbf{\bar{U} = \frac{1}{d}\int_0^d U(z)\,dz = \phi - E + V/2}$'
+            self.weight_eq = (r'$\mathbf{w = e^{-2\bar{\kappa} d},\quad \bar{\kappa} = k\sqrt{\bar{U}}'
+                              r' \approx \kappa_0 - \kappa_0 (E - V/2)/(2\phi),\quad \kappa_0 = k\sqrt{\phi}}$'
+                              + '\n' + r'$\mathbf{\Rightarrow\ w = e^{-2\kappa_0 d + \kappa_0 (E - V/2)\, d/\phi}}$')
+            self.topo_barrier_title, self.sweep_barrier_title = r'$\phi + V_b/2$', r'$\phi + V/2$'
+        self.topo_weight_title, self.sweep_weight_title = r'$w(E, V_b)$', r'$w(E, V)$'
         # The weights to I and dI/dV (the sweep kernels, simulator.py's _calculate_ldos_at_points_gpu): the
         # same two integrals for both models (the linearized kernel's factorization of w is its route to them).
         self.current_eq = (r'$\mathbf{I(V) = \int_0^V \rho(E)\, w(E, V)\, dE}$' + '\n'
@@ -290,6 +315,28 @@ def integrated_current(ldos, k0, step32, e032):
     ldos = np.asarray(ldos, dtype=np.float64).ravel()
     i_all = feenstra.current_from_ldos(cp.asarray(ldos[None, :], dtype=cp.float32), k0, step32, e032)
     return cp.asnumpy(i_all)[0].astype(np.float64)
+
+
+def feenstra_iv(v, current):
+    """I/V at the samples v, feenstra.iv_ratio (the plain I(V)/V, the 0 V sample's from its neighbours), as the
+    simulator forms the divisor of its 'Feenstra' display.  numpy in, float64 numpy out."""
+    iv = feenstra.iv_ratio(cp.asarray(np.asarray(v, dtype=np.float64), dtype=cp.float32),
+                           cp.asarray(np.asarray(current, dtype=np.float64)[None, :], dtype=cp.float32))
+    return cp.asnumpy(iv)[0].astype(np.float64)
+
+
+def feenstra_ratio(v, current, arr):
+    """
+    Feenstra's normalized conductance of a displayed curve, arr / (I/V): I/V by feenstra.iv_ratio (the plain
+    I(V)/V at every sample, the 0 V sample's from its neighbours) and the division by feenstra.divide (0 where
+    I/V is 0), the two calls the simulator's 'Feenstra' toggle makes (_feenstra_iv, on the current computed
+    with the displayed LDOS).  v: the samples' energies (V); current: I at them; arr: the curve to normalize
+    (dI/dV, or the bare LDOS).  numpy in, float64 numpy out (CuPy float32 in between, as the package works).
+    """
+    iv = feenstra.iv_ratio(cp.asarray(np.asarray(v, dtype=np.float64), dtype=cp.float32),
+                           cp.asarray(np.asarray(current, dtype=np.float64)[None, :], dtype=cp.float32))
+    out = feenstra.divide(cp.asarray(np.asarray(arr, dtype=np.float64)[None, :], dtype=cp.float32), iv)
+    return cp.asnumpy(out)[0].astype(np.float64)
 
 
 # ==== THE SUPERSEDED MODELS ====
@@ -414,45 +461,59 @@ class wrong_decays:
         self.model, self.phi, self.d = model, float(phi), float(d)
         self.name = self.TITLES[model]
         self.barrier_kind = 'sloped'                    # every one a linearly tilted barrier
-        # The equations, as the figure prints them (bold textbook mathtext): the barrier, and the barrier to
-        # the weight, the same 3/2-power K for every one of these models, each with its own V and E.
-        K_EQ = (r'$\mathbf{w = e^{-Kd},\quad K = \frac{8\pi\sqrt{2 m_e}}{3hV}\left[(\phi - E + V)^{3/2}'
-                r' - (\phi - E)^{3/2}\right]}$')
+        # The equations, as the figure prints them (bold textbook mathtext): the barrier U(z) above the state
+        # across the gap, with each model's own arguments in it, and the equation U is put through for the
+        # weight, the same 3/2-power K for every one of these models (the WKB exponent over d and its closed
+        # form in U's two ends; U(d) - U(0) is the bias as the model passed it).  The oldest's and the two
+        # "chen" copies' K clip the ends at 0 (x+); McDowell's does not.  The numerics (floors and limits at
+        # V = 0) are not part of the mathematics and are not printed.
+        K_EQ = (r'$\mathbf{w = e^{-Kd},\quad Kd = 2\int_0^d \sqrt{2 m_e U_{+}}/\hbar\, dz'
+                r' = \frac{8\pi d\sqrt{2 m_e}}{3h}\,\frac{U(d)_{+}^{3/2} - U(0)_{+}^{3/2}}{U(d) - U(0)}}$'
+                + '\n' + r'$\mathbf{x_{+} = \max(x, 0)}$')
+        K_EQ_NOCLIP = (r'$\mathbf{w = e^{-Kd},\quad Kd = 2\int_0^d \sqrt{2 m_e U}/\hbar\, dz'
+                       r' = \frac{8\pi d\sqrt{2 m_e}}{3h}\,\frac{U(d)^{3/2} - U(0)^{3/2}}{U(d) - U(0)}}$')
         # The weights to I and dI/dV, as current_didv forms them: dI/dV is the displayed decayed LDOS and I its
-        # integrated current (oldest, t2, t2c, mcdowell); Tier 3's Simpson column I, then central differences.
+        # integrated current (oldest, t2, t2c, mcdowell); Tier 3's column I at the frozen bias of each column,
+        # then its derivative (the numerics, Simpson and central differences, are not printed).
         LD_EQ = (r'$\mathbf{\frac{dI}{dV}(V) = \rho(V)\, w(V)}$' + '\n'
-                 + r'$\mathbf{I(V) = \int_0^V \rho(E)\, w(E)\, dE = -\int_V^0 \rho(E)\, w(E)\, dE}$')
+                 + r'$\mathbf{I(V) = \int_0^V \rho(E)\, w(E)\, dE = -\int_V^0 \rho(E)\, w(E)\, dE}$'
+                )
         if model == 'oldest':
             self.topo_mode, self.sweep_mode, self.has_current = 'frozen', 'frozen', True
-            self.barrier_eq = (r'$\mathbf{\phi - E + V\,z/d,\quad V_{topo} = |V_b|,'
+            self.barrier_eq = (r'$\mathbf{U(z) = \phi - E + |V|\,z/d,\quad V_{topo} = V_b,'
                                r'\quad V_{\rho} = W = E_{max} - E_{min}}$')
-            self.weight_eq = K_EQ + '\n' + r'$\mathbf{V_{topo} = |V_b|,\quad V_{\rho} = W}$'
+            self.weight_eq = K_EQ
             self.current_eq = (r'$\mathbf{\frac{dI}{dV}(V) = \rho(V)\, w(V; W)}$' + '\n'
                                + r'$\mathbf{I(V) = \int_0^V \rho(E)\, w(E; W)\, dE'
                                r' = -\int_V^0 \rho(E)\, w(E; W)\, dE}$')
+            self.topo_barrier_title, self.sweep_barrier_title = r'$\phi + |V_b|$', r'$\phi + W$'
+            self.topo_weight_title, self.sweep_weight_title = r'$w(E; V_b)$', r'$w(E; W)$'
         elif model in ('t2', 't2c'):
             self.topo_mode, self.sweep_mode, self.has_current = 'per_state', 'per_state', True
             if model == 't2':
-                self.barrier_eq = r'$\mathbf{\phi - E + |E|\,z/d}$'
-                self.weight_eq = K_EQ + '\n' + r'$\mathbf{V = |E|,\quad E_{arg} = E}$'
+                self.barrier_eq = r'$\mathbf{U(z) = \phi - E + |E|\,z/d}$'
             else:
-                self.barrier_eq = r'$\mathbf{\phi - \max(E, 0) + |E|\,z/d}$'
-                self.weight_eq = K_EQ + '\n' + r'$\mathbf{V = |E|,\quad E_{arg} = \max(E, 0)}$'
+                self.barrier_eq = r'$\mathbf{U(z) = \phi - \max(E, 0) + |E|\,z/d}$'
+            self.weight_eq = K_EQ
             self.current_eq = LD_EQ
+            self.topo_barrier_title, self.sweep_barrier_title = r'$\phi + |E|$', r'$\phi + |E|$'
+            self.topo_weight_title, self.sweep_weight_title = r'$w(E)$', r'$w(E)$'
         elif model == 't3':
             self.topo_mode, self.sweep_mode, self.has_current = 'frozen', 'family', True
-            self.barrier_eq = r"$\mathbf{\phi - E' + |V|\,z/d,\quad E' = \epsilon + \max(-V, 0)}$"
-            self.weight_eq = (K_EQ + '\n' + r"$\mathbf{V \to |V|,\quad E \to E' = \epsilon + \max(-V, 0)}$" + '\n'
-                              + r'$\mathbf{K(|V|,\ \epsilon + |V|) = K(V, \epsilon)\quad (V < 0)}$')
+            self.barrier_eq = r"$\mathbf{U(z) = \phi - E' + |V|\,z/d,\quad E' = \epsilon + \max(-V, 0)}$"
+            self.weight_eq = K_EQ + '\n' + r'$\mathbf{K(|V|,\ \epsilon + |V|) = K(V, \epsilon)\quad (V < 0)}$'
             self.current_eq = (r'$\mathbf{I(V) = \int_0^V \rho(\epsilon)\, w(\epsilon; V)\, d\epsilon}$' + '\n'
-                               + r'$\mathbf{\frac{dI}{dV}(V_j) = \frac{I(V_{j+1}) - I(V_{j-1})}{2\,\Delta E}}$')
+                               + r'$\mathbf{\frac{dI}{dV} = \frac{d}{dV}\, I(V)}$')
+            self.topo_barrier_title, self.sweep_barrier_title = r'$\phi + |V_b|$', r'$\phi + |V|$'
+            self.topo_weight_title, self.sweep_weight_title = r'$w(\epsilon; V_b)$', r'$w(\epsilon; V)$'
         else:
             self.topo_mode, self.sweep_mode, self.has_current = 'frozen', 'per_state', True
-            self.barrier_eq = (r'$\mathbf{\phi - |E| + |V|\,z/d,\quad V_{topo} = |V_b|,'
+            self.barrier_eq = (r'$\mathbf{U(z) = \phi - |E| + |V|\,z/d,\quad V_{topo} = V_b,'
                                r'\quad V_{\rho} = |E|}$')
-            self.weight_eq = (K_EQ + '\n'
-                              + r'$\mathbf{E \to |E|,\quad V_{topo} = |V_b|,\quad V_{\rho} = |E|}$')
+            self.weight_eq = K_EQ_NOCLIP
             self.current_eq = LD_EQ
+            self.topo_barrier_title, self.sweep_barrier_title = r'$\phi + |V_b|$', r'$\phi + |E|$'
+            self.topo_weight_title, self.sweep_weight_title = r'$w(E; V_b)$', r'$w(E)$'
 
     def set_grid(self, energies, v_max):
         """The LDOS grid (these models used the DOSCAR's energies as they are, the oldest one in float32) and
@@ -583,13 +644,30 @@ class wrong_decays:
 
 # ==== PLACEHOLDERS ====
 def synthetic_ldos(energies, centers, amp, sigma, rho0):
-    """Placeholder LDOS: a flat continuum rho0 plus one Gaussian of amplitude amp and width sigma (eV) at each
-    center (eV from E_F).  With centers at +-E the states on the two sides of E_F have equal amplitude and
-    width; a center at the grid's end is cut in half by it."""
+    """Placeholder LDOS: a flat continuum rho0 plus one Gaussian of width sigma (eV) at each center (eV from
+    E_F), of amplitude amp (one number for every state, or one per center).  With centers at +-E and equal
+    amplitudes the states on the two sides of E_F mirror each other; a center at the grid's end is cut in half
+    by it."""
     e = np.asarray(energies, dtype=np.float64)
+    centers = np.asarray(centers, dtype=np.float64)
+    amps = np.broadcast_to(np.asarray(amp, dtype=np.float64), centers.shape)
     rho = np.full_like(e, float(rho0))
-    for c in centers:
-        rho += amp * np.exp(-0.5 * ((e - c) / sigma) ** 2)
+    for c, a in zip(centers, amps):
+        rho += a * np.exp(-0.5 * ((e - c) / sigma) ** 2)
+    return rho
+
+
+def metallic_center(energies, rho, level, half_width, softness):
+    """Placeholder LDOS with a metallic E_F: within |E| <= half_width the curve is lifted to at least `level` by a soft
+    maximum, rho -> level + k log(1 + exp((rho - level) / k)) with k = softness, which is flat at `level` where rho
+    lies well below it and follows rho where rho lies well above it (the flanks of the nearest states), with no
+    kink between; outside that window rho is returned as it is.  Where rho(+-half_width) is far above `level`
+    (the nearest states' peaks) the two pieces meet to within k exp(-(rho - level)/k)."""
+    e = np.asarray(energies, dtype=np.float64)
+    rho = np.asarray(rho, dtype=np.float64).copy()
+    inside = np.abs(e) <= half_width
+    k = float(softness)
+    rho[inside] = level + k * np.logaddexp(0.0, (rho[inside] - level) / k)
     return rho
 
 
@@ -638,6 +716,11 @@ def decade_unit(span):
     return 10.0 ** np.floor(np.log10(span)) if span > 0 else 1.0
 
 
+ROW_GAP_LINES = 2.5      # the blank between a section's rows (a row's x labels to the next row's titles), in heights of the taller of those two texts
+EQ_BASE_PT = 15.0        # the equations' size before the math-row loop sizes each section's (points)
+EQ_GROUP_GAP = 0.6       # the gap between a section's three equation groups, as a fraction of the blank g above and below them
+
+
 def decay_barrier_figure(energies, ldos, models, v_topo, v_max=2.0, save_path=None):
     """
     The figure described at the top of this file, one section per model.
@@ -662,7 +745,7 @@ def decay_barrier_figure(energies, ldos, models, v_topo, v_max=2.0, save_path=No
         lo, hi = min(lo, hi), max(lo, hi)
         return np.nonzero((energies >= lo - half) & (energies <= hi + half))[0]
 
-    cmap = plt.get_cmap('coolwarm')
+    cmap = plt.get_cmap('berlin')
     norm = Normalize(vmin=-v_max, vmax=v_max)
 
     def color(energy):
@@ -716,49 +799,66 @@ def decay_barrier_figure(energies, ldos, models, v_topo, v_max=2.0, save_path=No
             idx = sweep_idx[np.abs(energies[sweep_idx]) > half]       # per-state weights: every sample but 0 V
             res['w_sweep'] = (energies[idx], m.weights_per_state(idx))
         res['v'], res['current'], res['didv'] = m.current_didv(ldos)
+        # The Feenstra ratio of the model's own dI/dV by its own I (as the simulator's toggle divides a display
+        # by the current computed with it); None where the model has no current.
+        has_i = m.has_current and res['current'] is not None
+        res['iv'] = feenstra_iv(res['v'], res['current']) if has_i else None
+        res['feen'] = feenstra_ratio(res['v'], res['current'], res['didv']) if has_i else None
         results[mi] = res
 
-    # Rows 0 and 1 (the bare LDOS and its integrated current): both drawn to one y scale, so their heights split
-    # the two row units they share in the ratio of their y ranges, after a fixed band (key_units row units) is
-    # set aside below the current's data floor for the colour key.  The current takes matplotlib's 5% margin
-    # of its own span; the LDOS takes that same margin in data units, which at the common scale is the same
-    # margin in inches above and below its data (5% of its own, much smaller, span would read as touching).
+    # The top block: the bare LDOS, its integrated current, that current's I/V and Feenstra ratio, and the key.
+    # The LDOS panel is one row unit, its y axis from 0 (no margin below it) to its maximum plus the margin, and
+    # that sets the block's y scale (data units per row unit); the current is drawn to the same scale, so its
+    # height is its own y range at it.  The margin is matplotlib's 5% of the current's span, in data units the
+    # same on both panels (5% of the LDOS's own, much smaller, span would read as touching).  The I/V panel is
+    # autoscaled on its own; the Feenstra panel's y axis runs from 0 to its maximum times the LDOS panel's
+    # top-to-maximum ratio, so the room above its curve is, relative to the maximum, the LDOS panel's; one row
+    # unit each; the key strip is a fixed band of key_units row units.
     i0 = integrated_current(ldos, k0, step32, e032)
-    lo1, hi1 = float(ldos.min()), float(ldos.max())
+    iv0 = feenstra_iv(gpu_energies(n, k0, step32, e032), i0)
+    f0 = feenstra_ratio(gpu_energies(n, k0, step32, e032), i0, ldos)
     lo2, hi2 = float(i0.min()), float(i0.max())
     margin = 0.05 * (hi2 - lo2)
-    lo1, hi1 = lo1 - margin, hi1 + margin
+    lo1, hi1 = 0.0, float(ldos.max()) + margin
     lo2, hi2 = lo2 - margin, hi2 + margin
-    key_units = 0.25                                            # the key band, in row units
-    per_unit = ((hi1 - lo1) + (hi2 - lo2)) / (2.0 - key_units)  # data units per row unit, both panels
-    h_ldos = (hi1 - lo1) / per_unit
-    h_cur0 = (hi2 - lo2) / per_unit + key_units
-    cur0_bottom = lo2 - key_units * per_unit                    # the current panel's axis, key band included
+    h_ldos = 1.0                                                # the LDOS panel, in row units
+    per_unit = (hi1 - lo1) / h_ldos                             # data units per row unit, the LDOS's scale
+    h_cur0 = (hi2 - lo2) / per_unit                             # the current panel at that scale
+    h_iv = 1.0                                                  # the I/V panel, in row units
+    h_feen = 1.0                                                # the Feenstra panel, in row units
+    key_units = 0.075                                           # the key strip, in row units: the room under its bar, none above it
+    top_units = h_ldos + h_cur0 + h_iv + h_feen + key_units
 
-    # The grid of panels: the top block (rows 0 and 1 across the window, the LDOS over its current, close
-    # together with only the current's title between them, their heights in the ratio above); then the
-    # section rows, one row unit each, the topo and LDOS columns in the ratio |v_topo| : 2 v_max, the last
-    # row's two panels equal.
+    # The grid of panels: the top block (across the window, the four panels above, their heights in the
+    # ratio above, each title alone in the gap over its panel); then the section rows, one row unit each: the
+    # barrier row, the math row, the weights row, the I, dI/dV row and the I/V, Feenstra row, the topo and LDOS
+    # columns in the ratio |v_topo| : 2 v_max, the last two rows' two panels equal.
     n_sec = len(models)
-    EQ = 0.34                                                  # an equation strip, in row units
-    fig = plt.figure(figsize=(8.0 * n_sec, 16 + 3.0 * EQ * 3.0))
-    outer = GridSpec(7, n_sec, figure=fig, height_ratios=[h_ldos + h_cur0, EQ, 1, EQ, 1, EQ, 1],
+    fig = plt.figure(figsize=(8.0 * n_sec, 3.2 * (top_units + 5)))
+    outer = GridSpec(6, n_sec, figure=fig, height_ratios=[top_units, 1, 1, 1, 1, 1],
                      width_ratios=[1] * n_sec, left=0.12 / n_sec, right=1.0 - 0.03 / n_sec, bottom=0.04,
                      top=0.945, hspace=0.5, wspace=0.14)
-    top = GridSpecFromSubplotSpec(2, 1, subplot_spec=outer[0, :], height_ratios=[h_ldos, h_cur0], hspace=0.16)
+    top_ratios = [h_ldos, h_cur0, h_iv, h_feen, key_units]
+    top = GridSpecFromSubplotSpec(5, 1, subplot_spec=outer[0, :], height_ratios=top_ratios, hspace=0.16)
     ax_ldos = fig.add_subplot(top[0, 0])
     ax_cur0 = fig.add_subplot(top[1, 0], sharex=ax_ldos)
+    ax_iv0 = fig.add_subplot(top[2, 0], sharex=ax_ldos)
+    ax_feen = fig.add_subplot(top[3, 0], sharex=ax_ldos)
+    ax_key = fig.add_subplot(top[4, 0], sharex=ax_ldos)
+    top_axes = (ax_ldos, ax_cur0, ax_iv0, ax_feen, ax_key)
     axes = []
     for col in range(n_sec):
         ratio = [abs(v_topo), 2.0 * v_max]
-        g1 = GridSpecFromSubplotSpec(1, 2, subplot_spec=outer[2, col], width_ratios=ratio, wspace=0.22)
-        g2 = GridSpecFromSubplotSpec(1, 2, subplot_spec=outer[4, col], width_ratios=ratio, wspace=0.22)
-        g3 = GridSpecFromSubplotSpec(1, 2, subplot_spec=outer[6, col], width_ratios=[1, 1], wspace=0.22)
-        axes.append(dict(eq_b=fig.add_subplot(outer[1, col]), eq_w=fig.add_subplot(outer[3, col]),
-                         eq_i=fig.add_subplot(outer[5, col]),
+        g1 = GridSpecFromSubplotSpec(1, 2, subplot_spec=outer[1, col], width_ratios=ratio, wspace=0.22)
+        g2 = GridSpecFromSubplotSpec(1, 2, subplot_spec=outer[3, col], width_ratios=ratio, wspace=0.22)
+        g3 = GridSpecFromSubplotSpec(1, 2, subplot_spec=outer[4, col], width_ratios=ratio, wspace=0.22)
+        g4 = GridSpecFromSubplotSpec(1, 2, subplot_spec=outer[5, col], width_ratios=ratio, wspace=0.22)
+        axes.append(dict(eq=fig.add_subplot(outer[2, col]),
                          topo_b=fig.add_subplot(g1[0, 0]), ldos_b=fig.add_subplot(g1[0, 1]),
                          topo_w=fig.add_subplot(g2[0, 0]), ldos_w=fig.add_subplot(g2[0, 1]),
-                         cur=fig.add_subplot(g3[0, 0]), didv=fig.add_subplot(g3[0, 1])))
+                         cur=fig.add_subplot(g3[0, 0]), didv=fig.add_subplot(g3[0, 1]),
+                         iv=fig.add_subplot(g4[0, 0]), feen=fig.add_subplot(g4[0, 1])))
+    eq_texts = []                                              # per section, its three equation groups (the math row)
 
     x_label = r'$E - E_F$ (eV)'
     topo_lim = (min(0.0, v_topo), max(0.0, v_topo))
@@ -789,47 +889,63 @@ def decay_barrier_figure(energies, ldos, models, v_topo, v_max=2.0, save_path=No
                     ax.fill_between([0.0, biases[k]], [h_k, h_k], [h_next, h_next],
                                     color=color(m.applied_bias(biases[k])), lw=0, edgecolor='none')
 
-    # Row 0: the input LDOS, no weight, in black; no x tick labels (row 1 below shares the x axis).
+    # The top block, all in black (no bias is applied to any of it; the bias colour means a decay's bias).
+    # The input LDOS, no weight; its integrated current (integrated over V, plain autoscale); that current's I/V,
+    # autoscaled on its own; its Feenstra ratio rho / (I/V), autoscaled on its own; and
+    # the colour key, its own strip: the bar coloured by the bias map along x, its top at the strip's top edge (no room above it), the x label 'Vbias (V)' under it, the x
+    # tick labels and axis label of the whole block on it (the four panels above share its x axis).
     ax_ldos.plot(energies, ldos, color='k', lw=1.2)
     ax_ldos.set_xlim(energies[0], energies[-1])
     ax_ldos.set_ylim(lo1, hi1)
-    ax_ldos.set_title(r'$\rho$, no tunneling decay')
+    ax_ldos.set_title(r'$\rho(E)$, no tunneling decay')
     ax_ldos.set_ylabel(r'$\rho$ (arb.)')
-    ax_ldos.tick_params(axis='x', labelbottom=False)
-    # Row 1: the integrated current of the bare LDOS, in black (no bias is applied to it, it is only integrated
-    # over V; the bias colour means a decay's bias); the colour key under its data floor: the top of the label
-    # 'vbias' at the floor, the label below it, the bar below the label; y tick labels below the floor
-    # suppressed so the band reads as the key's strip.
     ax_cur0.plot(energies, i0, color='k', lw=1.2)
-    ax_cur0.set_xlim(energies[0], energies[-1])
-    ax_cur0.set_ylim(cur0_bottom, hi2)
-    ax_cur0.set_yticks([t for t in ax_cur0.get_yticks() if lo2 - 1e-12 <= t <= hi2 + 1e-12])
-    ax_cur0.set_ylim(cur0_bottom, hi2)
+    ax_cur0.set_ylim(lo2, hi2)
     ax_cur0.set_title(r'$I(V) = \int_0^V \rho(E)\,dE = -\int_V^0 \rho(E)\,dE$, no tunneling decay')
-    ax_cur0.set_xlabel('V (V)')
     ax_cur0.set_ylabel('$I$ (arb.)')
-    ax_cur0.text(0.005, lo2, 'vbias', transform=mtransforms.blended_transform_factory(ax_cur0.transAxes,
-                                                                                       ax_cur0.transData),
-                 ha='left', va='top', fontsize=10, color='k')
-    key_y = lo2 - 0.72 * key_units * per_unit                 # the bar's height, data units, inside the band
-    key_pts = np.column_stack((energies, np.full(n, key_y)))
+    ax_iv0.plot(energies, iv0, color='k', lw=1.2)
+    ax_iv0.set_title(r'$I(V)/V$, no tunneling decay')
+    ax_iv0.set_ylabel('$I/V$ (arb.)')
+    ax_feen.plot(energies, f0, color='k', lw=1.2)
+    # The Feenstra panel's y axis from 0, with the same room above its maximum, relative to that maximum, as
+    # the LDOS panel has above its own (hi1 / max rho); the autoscaled top when the ratio has no maximum.
+    f_max = float(np.nanmax(f0)) if np.isfinite(f0).any() else 0.0
+    if f_max > 0.0:
+        ax_feen.set_ylim(0.0, f_max * hi1 / float(ldos.max()))
+    else:
+        ax_feen.set_ylim(bottom=0.0)
+    ax_feen.set_title(r'$\rho(V)\,/\,(I(V)/V)$, no tunneling decay')
+    ax_feen.set_ylabel(r'$\rho\,/\,(I/V)$')
+    for a_ in (ax_ldos, ax_cur0, ax_iv0, ax_feen):
+        a_.tick_params(axis='x', labelbottom=False)
+    KEY_LW = 6.0                                                 # the key bar's thickness (points)
+    key_pts = np.column_stack((energies, np.full(n, 1.0)))       # at the strip's top edge, lowered half its thickness below
     key_segments = np.stack((key_pts[:-1], key_pts[1:]), axis=1)
-    ax_cur0.add_collection(LineCollection(key_segments, colors=[color(v) for v in 0.5 * (energies[:-1] + energies[1:])],
-                                          linewidths=6, antialiaseds=False, capstyle='butt'))
+    ax_key.add_collection(LineCollection(key_segments, colors=[color(v) for v in 0.5 * (energies[:-1] + energies[1:])],
+                                         linewidths=KEY_LW, antialiaseds=False, capstyle='butt',
+                                         transform=mtransforms.blended_transform_factory(ax_key.transData,
+                                                                                         ax_key.transAxes)
+                                         + mtransforms.ScaledTranslation(0.0, -0.5 * KEY_LW / 72.0,
+                                                                         fig.dpi_scale_trans)))
+    ax_key.set_ylim(0.0, 1.0)
+    ax_key.set_yticks([])
+    ax_key.set_xlabel('Vbias (V)')
 
     for mi, m in enumerate(models):
         ax = axes[mi]
         res = results[mi]
 
-        # The equation strips: bold textbook mathtext (STIX), larger than any axis label; the barrier equation
-        # above the barrier row, the barrier-to-weight equation between the barrier row and the weights row,
-        # the weights-to-I, dI/dV equations between the weights row and the I, dI/dV row.
-        for key, eq in (('eq_b', m.barrier_eq), ('eq_w', m.weight_eq), ('eq_i', m.current_eq)):
-            ax[key].axis('off')
-            ax[key].text(0.5, 0.5, eq, transform=ax[key].transAxes, ha='center', va='center', fontsize=15,
-                         fontweight='bold', math_fontfamily='stix', linespacing=1.4)
+        # The math row: the three equations in bold textbook mathtext (STIX), three groups stacked in this
+        # order, each the step that yields a plot row: the barrier equation, the barrier-to-weight equation,
+        # the weights-to-I, dI/dV equations.  Made here at the base size; sized and placed by the math-row
+        # loop below (EQ_GROUP_GAP), after the panels' labels and titles are in place.
+        ax['eq'].axis('off')
+        eq_texts.append([ax['eq'].text(0.5, 0.5, eq, transform=ax['eq'].transAxes, ha='center', va='top',
+                                       fontsize=EQ_BASE_PT, fontweight='bold', math_fontfamily='stix',
+                                       linespacing=1.4)
+                         for eq in (m.barrier_eq, m.weight_eq, m.current_eq)])
 
-        # Row 1: the barriers, phi marked.
+        # The barrier row (row 2 of the figure): the barriers, phi marked.
         c_topo = color(m.applied_bias(v_topo, topo=True))    # the bias the topo decay passed to its factor
         if m.topo_mode == 'frozen':
             # One barrier at the frozen bias, in that bias's colour.
@@ -854,11 +970,11 @@ def decay_barrier_figure(energies, ldos, models, v_topo, v_max=2.0, save_path=No
             ax[key].set_xlabel(x_label)
         ax['topo_b'].set_xlim(*topo_lim)
         ax['ldos_b'].set_xlim(*ldos_b_lim)
-        ax['topo_b'].set_title(f'topo barrier, $V_b$ = {v_topo:+.2f} V')
-        ax['ldos_b'].set_title(r'$\rho$ sweep barriers')
+        ax['topo_b'].set_title(f'{m.topo_barrier_title},  $V_b$ = {v_topo:+.2f} V')
+        ax['ldos_b'].set_title(m.sweep_barrier_title)
         ax['topo_b'].set_ylabel('barrier height (eV)')
 
-        # Row 2: the weights.
+        # The weights row (row 4).
         e_t = energies[topo_idx]
         if m.topo_mode == 'frozen':
             ax['topo_w'].plot(e_t, res['w_topo'], color=c_topo, lw=1.8)
@@ -882,29 +998,36 @@ def decay_barrier_figure(energies, ldos, models, v_topo, v_max=2.0, save_path=No
             colored_curve(ax['ldos_w'], e_s, w_s, m.applied_bias(0.5 * (e_s[:-1] + e_s[1:])), lw=1.4)
         ax['topo_w'].set_xlim(*topo_lim)
         ax['ldos_w'].set_xlim(*sweep_lim)
-        ax['topo_w'].set_title('weights at $V_b$')
-        ax['ldos_w'].set_title('weights, bias swept')
+        ax['topo_w'].set_title(m.topo_weight_title)
+        ax['ldos_w'].set_title(m.sweep_weight_title)
         ax['topo_w'].set_ylabel('weight $w(E, V)$')
         for key in ('topo_w', 'ldos_w'):
             ax[key].set_xlabel(x_label)
 
-        # Row 3: I(V) and dI/dV(V).
+        # Rows 5 and 6, on the section's two columns: I(V) over I/V, dI/dV(V) over the Feenstra ratio
+        # (dI/dV)/(I/V).  I, dI/dV and I/V are coloured by the bias the decay applied; the ratio is black.
         v = res['v']
         v_mid = m.applied_bias(0.5 * (v[:-1] + v[1:]))         # the colours: the bias the decay applied there
-        if m.has_current and res['current'] is not None:
+        if res['iv'] is not None:
             colored_curve(ax['cur'], v, res['current'], v_mid)
+            colored_curve(ax['iv'], v, res['iv'], v_mid)
+            ax['feen'].plot(v, res['feen'], color='k', lw=1.2)
         else:
-            ax['cur'].text(0.5, 0.5, 'no current in this decay\n' + r'($\rho$ undefined at 0 V)',
-                           transform=ax['cur'].transAxes, ha='center', va='center', color='0.5', fontsize=10)
+            for key in ('cur', 'iv', 'feen'):
+                ax[key].text(0.5, 0.5, 'no current in this decay', transform=ax[key].transAxes,
+                             ha='center', va='center', color='0.5', fontsize=10)
         colored_curve(ax['didv'], v, res['didv'], v_mid)
-        ax['cur'].set_xlim(*sweep_lim)
-        ax['didv'].set_xlim(*sweep_lim)
+        for key in ('cur', 'didv', 'iv', 'feen'):
+            ax[key].set_xlim(*sweep_lim)
+            ax[key].set_xlabel('V (V)')
         ax['cur'].set_title('$I(V)$')
         ax['didv'].set_title('$dI/dV(V)$')
+        ax['iv'].set_title('$I(V)/V$')
+        ax['feen'].set_title(r'$(dI/dV)\,/\,(I/V)$')
         ax['cur'].set_ylabel('$I$ (arb.)')
         ax['didv'].set_ylabel('$dI/dV$ (arb.)')
-        for key in ('cur', 'didv'):
-            ax[key].set_xlabel('V (V)')
+        ax['iv'].set_ylabel('$I/V$ (arb.)')
+        ax['feen'].set_ylabel('$(dI/dV)/(I/V)$')
 
     # Shared y ranges: each panel type across every section; the whole weights row as one axis including 0.
     def share(keys, include_zero=False):
@@ -927,6 +1050,13 @@ def decay_barrier_figure(energies, ldos, models, v_topo, v_max=2.0, save_path=No
         for mi in range(n_sec):
             axes[mi]['cur'].set_ylim(lo, hi)
     d_lo, d_hi = share(('didv',))
+    for key in ('iv', 'feen'):
+        with_i = [axes[mi][key] for mi in range(n_sec) if results[mi]['iv'] is not None]
+        if with_i:
+            lo = min(a_.get_ylim()[0] for a_ in with_i)
+            hi = max(a_.get_ylim()[1] for a_ in with_i)
+            for mi in range(n_sec):
+                axes[mi][key].set_ylim(lo, hi)
 
     # Three-level ticks and grid: the weights row and the dI/dV panels.
     for mi in range(n_sec):
@@ -937,63 +1067,142 @@ def decay_barrier_figure(energies, ldos, models, v_topo, v_max=2.0, save_path=No
         three_level_ticks(axes[mi]['didv'], 'y', decade_unit(axes[mi]['didv'].get_ylim()[1] - d_lo))
 
 
-    # A frame around each decay section: the union of its six panels' tight boxes (titles, ticks and labels
-    # included), padded, drawn in figure coordinates.  The frames are boundaries: the spacing between sections
+    # A frame around each decay section: the union of its eight panels' and its math row's tight boxes (titles,
+    # ticks and labels included), padded, drawn in figure coordinates.  The frames are boundaries: the spacing between sections
     # is widened, and the left margin moved, until every section's full extent clears its neighbours and the
     # figure's edge by the padding, so nothing of one section lies in another's frame.
     pad = 0.004
-    # The gap between the two top panels holds only the current's title; it is widened just enough for that
-    # title (the integral, taller than a line of text) to clear the rho panel's frame and ticks by the padding.
+    renderer = fig.canvas.get_renderer()
+    inv = fig.transFigure.inverted()
+
+    def labels_bottom(keys, mi):
+        """The lowest bottom of the x labels of the panels `keys` of section mi (figure fraction)."""
+        return min(axes[mi][k].xaxis.label.get_window_extent(renderer).transformed(inv).y0 for k in keys)
+
+    def titles_top(keys, mi):
+        """The highest top of the titles of the panels `keys` of section mi (figure fraction)."""
+        return max(axes[mi][k].title.get_window_extent(renderer).transformed(inv).y1 for k in keys)
+
+    # The row separation (ROW_GAP_LINES): the blank between a section's rows, from a row's x labels down to the
+    # next row's titles, is ROW_GAP_LINES times the taller of those two texts, measured on the panel pair with
+    # nothing between them (the I, dI/dV row over the I/V, Feenstra row; the least blank and the tallest text
+    # over the sections).  matplotlib scales the grid's hspace by the mean cell height, which the top block's
+    # height inflates, so the separation between adjacent rows is solved for instead: with N rows over the grid
+    # height T (figure fraction), a separation s is hspace = s N / (T - s (N - 1)).  The labels' depth and the
+    # titles' height are fixed in points, so the second pass only absorbs rounding.
+    N_ROWS, T_GRID = 6, 0.945 - 0.04
+    for _ in range(3):
+        fig.canvas.draw()
+        renderer = fig.canvas.get_renderer()
+        inv = fig.transFigure.inverted()
+        text_h = max(max(axes[mi][k].xaxis.label.get_window_extent(renderer).transformed(inv).height
+                         for k in ('cur', 'didv')) for mi in range(n_sec))
+        text_h = max(text_h, max(max(axes[mi][k].title.get_window_extent(renderer).transformed(inv).height
+                                     for k in ('iv', 'feen')) for mi in range(n_sec)))
+        blank = min(labels_bottom(('cur', 'didv'), mi) - titles_top(('iv', 'feen'), mi) for mi in range(n_sec))
+        sep_now = axes[0]['cur'].get_position().y0 - axes[0]['iv'].get_position().y1
+        sep = sep_now - blank + ROW_GAP_LINES * text_h
+        outer.update(hspace=sep * N_ROWS / (T_GRID - sep * (N_ROWS - 1)))
+    # The gaps between the top block's panels hold only the lower panel's title; they are widened together, just
+    # enough for every such title (the integrals are taller than a line of text) to clear the panel above it
+    # (its frame and ticks) by the padding.
     top_hspace = 0.16
     for _ in range(12):
         fig.canvas.draw()
         renderer = fig.canvas.get_renderer()
         inv = fig.transFigure.inverted()
-        title_top = ax_cur0.title.get_window_extent(renderer).transformed(inv).y1
-        rho_bottom = ax_ldos.get_tightbbox(renderer).transformed(inv).y0
-        if title_top + pad <= rho_bottom:
+        clear = True
+        for upper, lower in zip(top_axes[:-1], top_axes[1:]):
+            if not lower.get_title():
+                continue
+            title_top = lower.title.get_window_extent(renderer).transformed(inv).y1
+            upper_bottom = upper.get_tightbbox(renderer).transformed(inv).y0
+            if title_top + pad > upper_bottom:
+                clear = False
+        if clear:
             break
         top_hspace += 0.02
-        top = GridSpecFromSubplotSpec(2, 1, subplot_spec=outer[0, :], height_ratios=[h_ldos, h_cur0],
-                                      hspace=top_hspace)
-        ax_ldos.set_subplotspec(top[0, 0])
-        ax_cur0.set_subplotspec(top[1, 0])
-    wspace, left = 0.14, 0.12 / n_sec
+        top = GridSpecFromSubplotSpec(5, 1, subplot_spec=outer[0, :], height_ratios=top_ratios, hspace=top_hspace)
+        for row, a_ in enumerate(top_axes):
+            a_.set_subplotspec(top[row, 0])
+    wspace, left, right = 0.14, 0.12 / n_sec, 1.0 - 0.03 / n_sec
     renderer = None
     for _ in range(12):
         fig.canvas.draw()
         renderer = fig.canvas.get_renderer()
         inv = fig.transFigure.inverted()
-        boxes = [mtransforms.Bbox.union([axes[mi][k].get_tightbbox(renderer) for k in axes[mi]]).transformed(inv)
+        boxes = [mtransforms.Bbox.union([axes[mi][k].get_tightbbox(renderer) for k in axes[mi]
+                                         if axes[mi][k] is not None]).transformed(inv)
                  for mi in range(n_sec)]
         gaps = [boxes[mi + 1].x0 - boxes[mi].x1 for mi in range(n_sec - 1)]
         need_gap = min(gaps) < 3.0 * pad if gaps else False
         need_left = boxes[0].x0 < 2.0 * pad
-        if not need_gap and not need_left:
+        # The right edge: the last section and the top block must clear it too.
+        x1 = max(boxes[-1].x1, max(a_.get_tightbbox(renderer).transformed(inv).x1 for a_ in top_axes))
+        need_right = x1 > 1.0 - 2.0 * pad
+        if not need_gap and not need_left and not need_right:
             break
         if need_gap:
             wspace += 0.04
         if need_left:
             left += 2.0 * pad - boxes[0].x0 + pad
-        outer.update(left=left, wspace=wspace)
-    # The section's title, the model's name, sits above its frame as a panel title sits above its panel: centred,
-    # the axes title pad above the frame's top edge.  The title's top is at the section's extent, the frame is
-    # shortened to begin the title pad below the title, and the barrier equation is moved down its strip to
-    # hang the same pad below the frame's top edge.
-    title_pad = plt.rcParams['axes.titlepad'] / 72.0 / fig.get_size_inches()[1]     # points -> figure fraction
+        if need_right:
+            right -= x1 - (1.0 - 2.0 * pad) + pad
+        outer.update(left=left, right=right, wspace=wspace)
+
+    # The math row (EQ_GROUP_GAP): each section's three equation groups stacked between its barrier row and its
+    # weights row.  g is the blank the panel pair with nothing between them has, the least over the sections:
+    # from the bottom of the I, dI/dV row's x labels to the top of the I/V, Feenstra row's titles.  A section's
+    # span runs from the bottom of its barrier row's x labels to the top of its weights row's titles; its block
+    # (the three groups' heights plus two gaps of EQ_GROUP_GAP g) is to be that span less 2 g tall, so the
+    # section's font size scales the groups' own heights (which scale with the size, up to rounding: three
+    # passes settle it) to that, capped so the section's widest line fits its column (the math axes' width);
+    # the block is then centred in the span, so the blank above and below it is g in every section, more only
+    # where the width cap held a section's size down.
+    fig.canvas.draw()
+    renderer = fig.canvas.get_renderer()
     inv = fig.transFigure.inverted()
+    g = min(labels_bottom(('cur', 'didv'), mi) - titles_top(('iv', 'feen'), mi) for mi in range(n_sec))
+    gap = EQ_GROUP_GAP * g
+    for mi in range(n_sec):
+        texts = eq_texts[mi]
+        strip = axes[mi]['eq'].get_position()
+        span_top = labels_bottom(('topo_b', 'ldos_b'), mi)
+        span_bot = titles_top(('topo_w', 'ldos_w'), mi)
+        target = span_top - span_bot - 2.0 * g - 2.0 * gap          # the three groups' own heights together
+        for _ in range(3):
+            exts = [t.get_window_extent(renderer).transformed(inv) for t in texts]
+            h_text = sum(e.height for e in exts)
+            w_text = max(e.width for e in exts)
+            size = max(texts[0].get_fontsize() * min(target / h_text, strip.width / w_text), 1.0)
+            for t in texts:
+                t.set_fontsize(size)
+        exts = [t.get_window_extent(renderer).transformed(inv) for t in texts]
+        block = sum(e.height for e in exts) + 2.0 * gap
+        y = span_top - g - 0.5 * (span_top - span_bot - 2.0 * g - block)   # the block's top, the block centred in the span
+        for t, e in zip(texts, exts):
+            t.set_position((0.5, (y - strip.y0) / strip.height))
+            y -= e.height + gap
+
+    # The sections' extents again, the math rows sized; the section's title, the model's name, sits above its
+    # frame as a panel title sits above its panel: centred, the axes title pad above the frame's top edge.  The
+    # title's top is at the section's extent and the frame is shortened to begin the title pad below the title.
+    fig.canvas.draw()
+    renderer = fig.canvas.get_renderer()
+    inv = fig.transFigure.inverted()
+    boxes = [mtransforms.Bbox.union([axes[mi][k].get_tightbbox(renderer) for k in axes[mi]
+                                     if axes[mi][k] is not None]).transformed(inv)
+             for mi in range(n_sec)]
+    title_pad = plt.rcParams['axes.titlepad'] / 72.0 / fig.get_size_inches()[1]     # points -> figure fraction
     for mi, (bb, m) in enumerate(zip(boxes, models)):
         title = fig.text(0.5 * (bb.x0 + bb.x1), bb.y1 + pad, m.name, ha='center', va='top', fontsize=14,
                          fontweight='bold', color='0.2')
         frame_top = title.get_window_extent(renderer).transformed(inv).y0 - title_pad
         fig.add_artist(Rectangle((bb.x0 - pad, bb.y0 - pad), bb.width + 2 * pad, frame_top - (bb.y0 - pad),
                                  transform=fig.transFigure, fill=False, lw=1.0, edgecolor='0.3'))
-        strip = axes[mi]['eq_b'].get_position()
-        eq = axes[mi]['eq_b'].texts[0]
-        eq.set_va('top')
-        eq.set_position((0.5, (frame_top - title_pad - strip.y0) / strip.height))
 
-    fig.suptitle(f'Decay barriers: $\\phi$ = {phi:g} eV, d = {models[0].d:g} Å', y=0.985)
+    fig.suptitle(f'Decay variables: $\\phi$ = {phi:g} eV,  d = {models[0].d:g} Å,  '
+                 'z = position in the gap, 0 at the sample to d at the tip', y=0.985)
     if save_path is not None:
         fig.savefig(save_path, dpi=150)
     plt.show()
@@ -1003,23 +1212,30 @@ def decay_barrier_figure(energies, ldos, models, v_topo, v_max=2.0, save_path=No
 if __name__ == '__main__':
     # Synthetic placeholders: the barrier phi and the LDOS the decay acts on.  Replace with the simulator's
     # phi_local at a tip point and an LDOS from a cache or from the simulator (on that LDOS's energy grid).
-    DECAYS = 'correct'   # 'correct': the simulator's exact and linearized models; 'wrong': Tier 2, Tier 2 0-clamp, Tier 3, McDowell
+    DECAYS = 'correct'   # 'correct': the simulator's exact and linearized models; 'wrong': oldest, Tier 2, Tier 2 0-clamp, Tier 3, McDowell
     PHI = 5.2            # the barrier at the tip point (eV)
     D = 6.0              # the atom-to-tip distance (Angstrom)
     V_TOPO = 2.0         # the frozen topo bias (V)
     V_MAX = 2.0          # the sweep's reach on each side of 0 V (V)
     STEP = 0.01          # the grid step (V); the grid runs -V_MAX .. V_MAX with a sample exactly at 0 V, the sweep's biases
-    RHO0 = 1.0           # the flat continuum
+    RHO0 = 1.0           # the flat continuum under the states
     AMP = 1.0            # every state's amplitude
-    N_STATES = 10        # states per side of the one at 0 V, evenly spaced out to +-V_MAX (the end pair cut by the grid)
-    SIGMA_OVER_SPACING = 0.25   # every state's width as a fraction of the spacing; 0.25 puts the valleys at 0.27 of the peak
+    N_STATES = 5         # states per side of 0 V at +-j V_MAX / N_STATES, j = 1 .. N_STATES: the spacing of 2 N_STATES + 1 evenly
+                         # spaced states with one at 0 V, that one left out
+    SIGMA_OVER_SPACING = 0.30   # every state's width as a fraction of the spacing (the same width for every state)
+    CENTER_SOFTNESS = 0.05      # in place of the state at 0 V, a metallic E_F: the central cell (|E| <= spacing) lifted to the
+                                # comb's mean level by a soft maximum of this softness (in units of the LDOS), flat at that
+                                # level through 0 V and joining the nearest states' flanks without a kink (metallic_center)
     SAVE_PATH = None     # e.g. r'C:\path\decay_barriers.png'; None: shown only
 
     n_half = int(round(V_MAX / STEP))
     energies = STEP * np.arange(-n_half, n_half + 1, dtype=np.float64)
     spacing = V_MAX / N_STATES
-    centers = spacing * np.arange(-N_STATES, N_STATES + 1, dtype=np.float64)
-    ldos = synthetic_ldos(energies, centers, AMP, SIGMA_OVER_SPACING * spacing, RHO0)
+    half_comb = spacing * np.arange(1, N_STATES + 1, dtype=np.float64)
+    centers = np.concatenate((-half_comb[::-1], half_comb))
+    comb = synthetic_ldos(energies, centers, AMP, SIGMA_OVER_SPACING * spacing, RHO0)
+    level = float(comb[np.abs(energies) > spacing].mean())               # the ripple's mean outside the central cell
+    ldos = metallic_center(energies, comb, level, spacing, CENTER_SOFTNESS * AMP)
     if DECAYS == 'correct':
         models = [simulator_decays(name, PHI, D) for name in simulator_decays.MODELS]
     elif DECAYS == 'wrong':

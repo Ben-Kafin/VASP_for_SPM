@@ -257,7 +257,7 @@ class BoxState:
 class ShadeBox:
     """
     Machinery: the box build_box makes.  `qt` is its framed Qt widget (controls.box), for the caller's layout
-    or the strip.  `state` is its BoxState, which build_box's callbacks keep current.  `contour` and
+    (the simulator: over Map's light panels).  `state` is its BoxState, which build_box's callbacks keep current.  `contour` and
     `shading` are the two toggles (qtgui Check) and `shade_by` is the Height / Relief radio (qtgui Radio).
     The info panel lists their settings as for every other control.  The box has no control of the light:
     the state's az and el are shown and set by the light panels (LightPanel), which share the state.
@@ -357,13 +357,18 @@ TOP_VIEW = 'top'             # the plane from above: the dot's angle around the 
 SIDE_VIEW = 'side'           # the plane edge-on: the dot's angle above the plane's line is the elevation
 LIGHT_VIEWS = (TOP_VIEW, SIDE_VIEW)
 
-# The panels' geometry, in their own data units and the same in both (equal aspect): the radius R of the top
-# view's guide circle and of the side view's arc; half the side of the plane drawn (the top view's square,
-# the side view's line); half the x and y range shown, so that the centre point sits at the middle of each
-# panel; the distance from the dot's centre within which a press grabs the dot.
+# The panels' geometry, in their own data units and the same in both (equal aspect, one scale at one width): the
+# radius R of the top view's guide circle and of the side view's arc; half the x range both panels show, which in
+# the top view is half its y range too, so that the top view's frame is the plane from above (a sample of the
+# surface; no square is drawn inside it) with the circle LIGHT_PLANE - R clear of it; the side view's y range,
+# from LIGHT_SIDE_BELOW under the plane's line to LIGHT_PLANE above it (the same LIGHT_PLANE - R clear under the
+# line, over the arc's top and beside the line's ends, which stop at the arc's radius, -R to R); the side view's
+# height over its width (LIGHT_SIDE_RATIO; the top view is square); the distance from the dot's centre within which
+# a press grabs the dot.
 LIGHT_R = 1.0
 LIGHT_PLANE = 1.15
-LIGHT_LIM = 1.3
+LIGHT_SIDE_BELOW = LIGHT_PLANE - LIGHT_R
+LIGHT_SIDE_RATIO = (LIGHT_PLANE + LIGHT_SIDE_BELOW) / (2.0 * LIGHT_PLANE)
 LIGHT_GRAB = 0.25
 
 # The panels' colours, as hex (read alike by qtplot and matplotlib): the plane, the centre point and the dot's
@@ -438,13 +443,15 @@ class LightPanel:
 
     def __init__(self, ax, view, state):
         """
-        Machinery: the panel drawn on `ax`: x and y over -LIGHT_LIM..LIGHT_LIM at an equal aspect, any room the
-        caller's box leaves widening the limits about the centre (adjustable 'datalim'), no ticks, the centre
-        point at (0, 0).  The top view: the plane from above (a square of half side LIGHT_PLANE), its centre
-        point, the dashed guide circle of radius R and the light's dot.  The side view: the plane edge-on (a
-        horizontal line through the centre point, of half length LIGHT_PLANE), the centre point, the dashed
-        arc of radius R from 0 to 90 degrees above the line, the light's dot on it and a line from the dot to
-        the centre point.  Then drawn at the state (update).  ValueError for another view.
+        Machinery: the panel drawn on `ax` at an equal aspect, any room the caller's box leaves widening the
+        limits (adjustable 'datalim'), no ticks, the centre point at (0, 0).  The top view: x and y over
+        -LIGHT_PLANE..LIGHT_PLANE, so its frame is the plane from above (no square drawn inside it), its centre
+        point, the dashed guide circle of radius R and the light's dot.  The side view: x over
+        -LIGHT_PLANE..LIGHT_PLANE and y from -LIGHT_SIDE_BELOW to LIGHT_PLANE (LIGHT_SIDE_RATIO of its width in
+        height), the plane edge-on (a horizontal line through the centre point, from -R to R, clear of the
+        frame), the centre point, the dashed arc of radius R from 0 to 90 degrees above the line, the light's dot
+        on it and a line from the dot to the centre point.  Then drawn at the state (update).  ValueError for
+        another view.
         """
         if view not in LIGHT_VIEWS:
             raise ValueError(f"view must be one of {LIGHT_VIEWS}, not {view!r}")
@@ -453,13 +460,12 @@ class LightPanel:
         self.state = state
         self._drag = False
         self._greyed = None              # the greying drawn last (None: not drawn yet)
-        p = LIGHT_PLANE
         if view == TOP_VIEW:
             t = np.linspace(0.0, 2.0 * math.pi, 181)
-            self._plane, = ax.plot([-p, p, p, -p, -p], [-p, -p, p, p, -p], color=LIGHT_INK, lw=1.0, zorder=2)
+            self._plane = None           # the panel's frame is the plane from above: no square is drawn inside it
         else:
             t = np.linspace(0.0, 0.5 * math.pi, 46)
-            self._plane, = ax.plot([-p, p], [0.0, 0.0], color=LIGHT_INK, lw=1.5, zorder=2)
+            self._plane, = ax.plot([-LIGHT_R, LIGHT_R], [0.0, 0.0], color=LIGHT_INK, lw=1.5, zorder=2)
         self._guide, = ax.plot(LIGHT_R * np.cos(t), LIGHT_R * np.sin(t), color=LIGHT_GUIDE, lw=1.0, ls='--',
                                zorder=1)
         self._ray = None
@@ -470,8 +476,11 @@ class LightPanel:
                              zorder=5)
         # The aspect before the limits, so that qtplot widens them for the box as they are set (_apply_targets).
         ax.set_aspect('equal', adjustable='datalim')
-        ax.set_xlim(-LIGHT_LIM, LIGHT_LIM)
-        ax.set_ylim(-LIGHT_LIM, LIGHT_LIM)
+        ax.set_xlim(-LIGHT_PLANE, LIGHT_PLANE)
+        if view == TOP_VIEW:
+            ax.set_ylim(-LIGHT_PLANE, LIGHT_PLANE)
+        else:
+            ax.set_ylim(-LIGHT_SIDE_BELOW, LIGHT_PLANE)
         ax.set_xticks([])
         ax.set_yticks([])
         self.update()
@@ -502,7 +511,8 @@ class LightPanel:
         if greyed != self._greyed:
             self._greyed = greyed
             ink = LIGHT_GREYED if greyed else LIGHT_INK
-            self._plane.set_color(ink)
+            if self._plane is not None:
+                self._plane.set_color(ink)
             self._centre.set_color(ink)
             self._guide.set_color(LIGHT_GREYED if greyed else LIGHT_GUIDE)
             if self._ray is not None:
@@ -579,8 +589,9 @@ class LightPanel:
 
 def draw_light_top(ax, state):
     """
-    Machinery: the top view panel on the caller's axes `ax` (a map panel's size in the simulator; its
-    placement is the caller's): just the control, the plane from above, its centre point, a guide circle of
+    Machinery: the top view panel on the caller's axes `ax` (square; in the simulator over the side view at one
+    width, in Map's top row; its placement is the caller's): just the control, the plane from above (the panel's
+    frame), its centre point, a guide circle of
     radius R and the light as a dot drawn at R cos(el) from the centre at the azimuth (0 up, increasing
     clockwise), so it shows the light as seen from above.  No preview behind it.  Dragging the dot sets the
     azimuth only, the dot's angle around the centre; the side view alone sets the elevation.  In Height it is
@@ -591,9 +602,10 @@ def draw_light_top(ax, state):
 
 def draw_light_side(ax, state):
     """
-    Machinery: the side view panel on the caller's axes `ax` (the top view's size in the simulator; its
-    placement is the caller's): just the control, the plane edge-on as a horizontal line through the centre
-    point, seen at right angles to the light's azimuth so the light lies in the drawn plane (on the right of
+    Machinery: the side view panel on the caller's axes `ax` (the top view's width and LIGHT_SIDE_RATIO of it in
+    height in the simulator, under the top view; its placement is the caller's): just the control, the plane
+    edge-on as a horizontal line through the centre
+    point, from -R to R, seen at right angles to the light's azimuth so the light lies in the drawn plane (on the right of
     the centre).  The light is a dot on the arc of radius R around the centre point at the elevation angle
     above the line, with a line from it to the centre point, its focus.  No preview behind it.  Dragging the
     dot up or down sets the elevation, from 0 to 90 degrees, the dot staying on the arc.  In Height it is
@@ -1037,7 +1049,7 @@ def mesh_corners(step_a, step_b, shape, offsets=((0.0, 0.0),), origin=(0.0, 0.0)
     (j -+ 1/2) * step_a + (i -+ 1/2) * step_b around it, so each quad is centred on its point.  For the
     simulator's cell: step_a = a/(N-1), step_b = b/(N-1), shape (N-1, N-1) (unique_points).  The quads then
     tile the cell exactly, from the fraction -1/(2(N-1)) to 1 - 1/(2(N-1)) along each vector, and the
-    lattice offsets (the 2 x 2 cells of an energy map) tile the plane with no gap.
+    lattice offsets (the images an energy map shows) tile the plane with no gap.
     Returns X, Y as NumPy float64 of shape (len(offsets), rows + 1, cols + 1).  Colour [i, j] of a
     (rows, cols, 4) array fills the quad X[k, i:i+2, j:j+2], Y[k, i:i+2, j:j+2] of offset k.
     """

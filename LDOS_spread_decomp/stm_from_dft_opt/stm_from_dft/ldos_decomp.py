@@ -37,8 +37,9 @@ from .qtgui import qtplot as plt
 from .qtgui import widgets
 
 
-# The legend panel's title at each level (level 0 has none).
-TITLES = ('', 'Parts', 'Atoms', 'Orbitals')
+# The legend panel's title at each level (the simulator's Map view shows no title: its legend panel has no title
+# part).
+TITLES = ('Markers', 'Parts', 'Atoms', 'Orbitals')
 # The last level: a left click there does nothing.
 LAST_LEVEL = 3
 # Level 1's parts: the gold atoms and every other atom.
@@ -56,7 +57,8 @@ S = 0.25
 Curve = namedtuple('Curve', 'y color linestyle linewidth alpha zorder label picker pickradius '
                             'clickable option entry hover')
 
-# One entry of the legend panel, in display order: its label ('' at level 0: the marker's colour only), its
+# One entry of the legend panel, in display order: its label (at level 0 the marker's place, as the simulator
+# gives it: Decomp.curves' marker_labels; '' without them), its
 # curve's colour, line style and line width (the sample), whether it is a clickable button (levels 0 to 2;
 # level 3's entries are plain key rows) and the option a left click on it goes down with.
 Entry = namedtuple('Entry', 'label color linestyle linewidth clickable option')
@@ -109,8 +111,8 @@ def all_labels(atomtypes, orbitals):
     Machinery: every label any level can show for the loaded data, in order, each once (the legend panel's
     fixed width is the widest of them): level 1's parts, level 2's atom types and level 3's
     '<element> <orbital>' for every atom type and every displayed column's orbital (_column_orbitals: its
-    base orbital, no '_up' / '_down' names), whether or not its column is shown.  Level 0's entries have
-    no label.
+    base orbital, no '_up' / '_down' names), whether or not its column is shown.  Level 0's labels (the markers'
+    places) are the simulator's: it counts their width itself.
     """
     labels = list(PARTS) + list(atomtypes) + [_orbital_label(t, orb) for t in atomtypes
                                               for orb in _column_orbitals(orbitals)]
@@ -228,7 +230,7 @@ class Decomp:
     # --- the spectrum's curves and the legend panel ---
 
     def curves(self, active, marker_spectra, marker_colors, atomtypes, atomnums, orbitals, dos_up, type_colors,
-               energies, integral=None):
+               energies, integral=None, marker_labels=None):
         """
         Machinery: the spectrum's curves at the level, [Curve] in drawing order.  `active`: the active marker's
         displayed spectrum (energies, atoms, orbitals); `marker_spectra`: every marker's, in index order (level
@@ -238,8 +240,10 @@ class Decomp:
         integral, levels 1 to 3 divided by the active spectrum's total integral, + 1e-15), else None (also
         under 'Norm' when the spectra given are already divided: in a Line / Path drag the simulator divides
         them by its kept Norm factors).
-          level 0: per marker, its total in its colour, lw 2.5, 'marker_<i>', pickable (5), an entry with no
-                   label, clickable with the marker's index;
+          level 0: per marker, its total in its colour, lw 2.5, 'marker_<i>', pickable (5), an entry labelled
+                   with the marker's place (`marker_labels`, one text per marker in index order, the simulator's:
+                   '(x, y)' in Single Point and Map, 'at d Å' in Line and Path; no label without them),
+                   clickable with the marker's index;
           level 1: the total faded (black, lw 1.5, alpha 0.1, zorder 1), then Au (orange) and Molecule (black),
                    lw 2, zorder 2, pickable (5), entries, clickable;
           level 2: per atom type, in its colour, lw 2, pickable (3), an entry, clickable with the type;
@@ -255,7 +259,8 @@ class Decomp:
                 if integral is not None:
                     t_y /= (integral(t_y) + 1e-15)
                 color = marker_colors[i]
-                entry = Entry('', color, '-', 2.5, True, i)
+                label = marker_labels[i] if marker_labels is not None and i < len(marker_labels) else ''
+                entry = Entry(label, color, '-', 2.5, True, i)
                 out.append(Curve(t_y, color, '-', 2.5, None, None, f'marker_{i}', True, 5, True, i, entry, False))
             return out
         a = active.copy()
@@ -298,7 +303,7 @@ class Decomp:
     def legend(self, curves):
         """
         Machinery: the legend panel for the curves drawn (curves()): (title, entries, back).  `title`: TITLES at
-        the level ('' at level 0); `entries`: the curves' Entry records in drawing order (level 0: marker index
+        the level ('Markers' at level 0); `entries`: the curves' Entry records in drawing order (level 0: marker index
         order), without the faded totals (Map's energy markers are not curves); `back`: whether the Back button
         acts (levels 1 to 3).
         """

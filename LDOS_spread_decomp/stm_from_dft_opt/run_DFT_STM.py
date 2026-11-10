@@ -18,8 +18,8 @@ v_dir='dir/run'#'dir/run'#'dir/run'
 
 sim = Interactive_STM_Simulator(
     filepath=v_dir,
-    erange=[-3, 0.5],          # initial energy box range
-    ldos_height=1.25,              # the LDOS tip height (LDOS h, Å above the highest atom): the LDOS topo's, on whose heights the spectra, the stripes and the energy maps sit
+    erange=[-2.65, 0.85],          # initial energy box range
+    ldos_height=2.0,              # the LDOS tip height (LDOS h, Å above the highest atom): the LDOS topo's, on whose heights the spectra, the stripes and the energy maps sit
     cmap_set='default 1',
     unit_cell_num=2,
     # cmap_set: the colour maps the window opens with, 'default 1' (the topo black / firebrick / yellow, MAP_CMAP,
@@ -30,7 +30,7 @@ sim.run_interactive(
     grid_res=50,                   # NxN topography grid
     topo_bias=0.2,                # the topo bias (V): the global topo's, at constant current
     topo_height=2.5,                # the topo tip height (Topo h, Å above the highest atom): the global topo's, at start
-    ldos_bias_sign='neg',          # the 'bias' toggles' starting state only: 'neg' the toggle beside E Min on, 'pos' the one beside E Max (that end is the LDOS bias V_b); an end of 0.0 starts the bias on the other end. The toggles switch it in the window
+    ldos_bias_sign='pos',          # the 'bias' toggles' starting state only: 'neg' the toggle beside E Min on, 'pos' the one beside E Max (that end is the LDOS bias V_b); an end of 0.0 starts the bias on the other end. The toggles switch it in the window
     use_decay=True,                # Decay on (its model: decay_linearized) for topography convergence and LDOS together
     decay_linearized=False,        # the Decay-on model: False 'exact' (the exact tilted barrier), True 'linearized' (the exact weight to first order in (E - V/2)/phi)
     show_decay_toggle=True,        # show the 'Decay' checkbox and its 'exact' / 'linearized' rows (False hides the three; the decay model stays as set)

@@ -9,6 +9,12 @@ decay factor is the WKB average over a linearly tilted barrier, the expression
 of simulator.py's Decay-on weight (gpu_exact_factor) applied within
 the earlier models those files hold; they are not imported here.
 
+plot_decay.py is a standalone script (run directly; not imported here): the
+decay figure, the barriers, weights, current and dI/dV of a set of decay
+models side by side for one LDOS at one tip point, the simulator's two
+Decay-on models computed by simulator.py's own factor functions and sweep
+kernels.
+
 Author: Benjamin Kafin
 """
 
