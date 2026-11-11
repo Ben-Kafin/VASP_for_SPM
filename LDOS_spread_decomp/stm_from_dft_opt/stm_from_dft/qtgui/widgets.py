@@ -85,7 +85,7 @@ SPECS = {
     'Topo h': _spec('value', 0.6, 0.24, vmin=0.0, vmax=None, decimals=3),      # tip heights (Å); the window passes vmax
     'LDOS h': _spec('value', 0.6, 0.24, vmin=0.0, vmax=None, decimals=3),
     'σ broad': _spec('value', 0.5, 0.22, fs=7, vmin=0.0, vmax=1.0, decimals=2),   # the simulator: extra broadening per atom type (eV), in the type's row of the broadening box ('σ <type>' in the information panel)
-    'darkness': _spec('value', 0.5, 0.24, vmin=0.0, vmax=1.0, decimals=2),     # the simulator's 'max' box over Map's light panels: the shading's darkness, 0 none to 1 the darkest point black
+    'darkness': _spec('value', 0.5, 0.24, vmin=0.0, vmax=1.0, decimals=2),     # the simulator's two strength boxes, unlabelled, at the end of the Height and Relief lines of the Contour / Shading box (cmap_shading.MAX_BOX): that shading's strength, 0 none to 1 the darkest point black
     'σ (eV)': _spec('value', 0.6, 0.24, decimals=3),                           # SigmaBox: the window passes the limits
     'γ': _spec('text', 0.45, 0.24, fs=7),                                      # GammaBox (plane slice)
     'LDOS γ': _spec('text', 0.45, 0.24, fs=7),                                 # GammaBox (the simulator's heatmaps)

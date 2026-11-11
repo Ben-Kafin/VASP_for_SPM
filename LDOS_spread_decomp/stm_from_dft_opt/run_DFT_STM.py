@@ -23,7 +23,8 @@ sim = Interactive_STM_Simulator(
     cmap_set='default 1',
     unit_cell_num=1,
     # cmap_set: the colour maps the window opens with, 'default 1' (the topo black / firebrick / yellow, MAP_CMAP,
-    # 'nipy_spectral', 'bwr', 'hot') or 'default 2' ('CET-L3', 'CET-L6', 'CET-R1', 'CET-D1A', 'CET-L19')
+    # 'nipy_spectral', 'bwr', 'hot'), 'default 2' ('CET-L3', 'CET-L6', 'CET-R1', 'CET-D1A', 'CET-L19') or 'default 3'
+    # (default 1's maps again, differing from 'default 1' only in the Height shading of the LDOS maps)
 )
 
 sim.run_interactive(
