@@ -56,11 +56,11 @@ SPECS = {
     'Metal curve': _spec('check', 1.2, 0.3),                        # decomp_window: the metal curve drawn
     'Segmentation': _spec('check', 1.2, 0.3),                       # spread_collapse: under Horizontal
     'Norm': _spec('check', 0.7, 0.3),                               # state_decomposition_plot: per-curve normalization
-    'cmap norm': _spec('check', 1.1, 0.3),                          # the simulator's Map view: each energy map its own colour scale (the sm4_Browser Map window's toggle)
+    'cmap norm': _spec('check', 1.1, 0.3),                          # each energy map its own colour scale (the sm4_Browser Map window's toggle); in the simulator 'cmap norm' is a row of its toggles (Map only)
     'bias': _spec('check', 0.5, 0.3),                               # the simulator: beside E Min and beside E Max, which end of the energy window is the bias (exactly one on)
     # --- toggle boxes (several rows) ---
     'sim toggles': _spec('checks', 1.2, 1.4, labels=['Atoms', 'Decay', 'exact', 'linearized', 'Norm', 'Feenstra', 'Mag', 'Cell', 'Extend']),   # the simulator ('exact' and 'linearized' indented under 'Decay')
-    'broadening': _spec('checks', 0.6, 0.6, labels=None),           # the simulator: one row per atom type (labels per file)
+    'broadening': _spec('checks', 0.6, 0.6, labels=None),           # one row per atom type (labels per file); the simulator builds its broadening rows itself (per type a Check, its σ box and 'eV')
     'collapse': _spec('checks', 1.1, 0.9, labels=['Vertical', 'Horizontal', 'Amplitude']),   # decomp_window; spread_collapse adds 'Curve' (labels per window)
     'spread view': _spec('checks', 1.0, 0.6, labels=['Curve', 'Amplitude']),               # spread_plot, state_decomposition_plot
     'topo view': _spec('checks', 1.0, 0.6, labels=['Amplitude', 'Norm']),                  # topo_decomp_window
@@ -69,13 +69,13 @@ SPECS = {
     # --- buttons ---
     'RUN': _spec('button', 0.6, 0.4, fs=9),                         # the simulator: RUN / STOP
     'Rerun': _spec('button', 0.6, 0.3),                             # the simulator: apply a tip height
-    'Crop': _spec('button', 0.6, 0.26, fs=7),                       # the simulator's placement topo: the view to the cursors' ranges
-    'Uncrop': _spec('button', 0.7, 0.26, fs=7),                     # ... back to the full extent
+    'Crop': _spec('button', 0.6, 0.26, fs=7),                       # the simulator's topos (each its own Crop / Uncrop box): the view to the cursors' ranges
+    'Uncrop': _spec('button', 0.7, 0.26, fs=7),                     # ... back to the uncropped view
     'Save data': _spec('button', 1.0, 0.36),
     'topo': _spec('button', 0.5, 0.36),                             # the simulator wrapper's 'Send to decomp' box
     'ldos': _spec('button', 0.5, 0.36),
     # --- whole-number boxes (the counts that were sliders) ---
-    'Cells': _spec('count', 0.4, 0.24, vmin=0, vmax=4),            # the simulator: periodic images drawn each way
+    'Cells': _spec('count', 0.4, 0.24, vmin=0, vmax=4),            # the simulator's Topo Cells / LDOS Cells boxes: the cells drawn along a lattice vector (the window passes its own limits, 1 to 9)
     'Markers': _spec('count', 0.4, 0.24, vmin=1, vmax=10),
     'Path Pts': _spec('count', 0.4, 0.24, vmin=2, vmax=12),
     'E Pts': _spec('count', 0.4, 0.24, vmin=1, vmax=20),
@@ -84,14 +84,14 @@ SPECS = {
     'E Max': _spec('value', 0.6, 0.24, vmin=-5.0, vmax=5.0, decimals=3),
     'Topo h': _spec('value', 0.6, 0.24, vmin=0.0, vmax=None, decimals=3),      # tip heights (Å); the window passes vmax
     'LDOS h': _spec('value', 0.6, 0.24, vmin=0.0, vmax=None, decimals=3),
-    'σ broad': _spec('value', 0.5, 0.22, fs=7, vmin=0.0, vmax=1.0, decimals=2),   # the simulator: extra broadening per atom type (eV), labelled 'σ <type>'
-    'darkness': _spec('value', 0.5, 0.24, vmin=0.0, vmax=1.0, decimals=2),     # the simulator's shading sub-section (Map): the shading's darkness, 0 none to 1 the darkest point black
+    'σ broad': _spec('value', 0.5, 0.22, fs=7, vmin=0.0, vmax=1.0, decimals=2),   # the simulator: extra broadening per atom type (eV), in the type's row of the broadening box ('σ <type>' in the information panel)
+    'darkness': _spec('value', 0.5, 0.24, vmin=0.0, vmax=1.0, decimals=2),     # the simulator's two strength boxes, unlabelled, at the end of the Height and Relief lines of the Contour / Shading box (cmap_shading.MAX_BOX): that shading's strength, 0 none to 1 the darkest point black
     'σ (eV)': _spec('value', 0.6, 0.24, decimals=3),                           # SigmaBox: the window passes the limits
     'γ': _spec('text', 0.45, 0.24, fs=7),                                      # GammaBox (plane slice)
     'LDOS γ': _spec('text', 0.45, 0.24, fs=7),                                 # GammaBox (the simulator's heatmaps)
-    'x lo': _spec('text', 0.55, 0.22, fs=7),                                   # the simulator's crop cursors: the boxes riding with them,
-    'x hi': _spec('text', 0.55, 0.22, fs=7),                                   # ... the x ones along the placement topo's top edge,
-    'y lo': _spec('text', 0.55, 0.22, fs=7),                                   # ... the y ones along its right edge (Å, two decimals)
+    'x lo': _spec('text', 0.55, 0.22, fs=7),                                   # the simulator's crop cursors: their values, in the line of boxes
+    'x hi': _spec('text', 0.55, 0.22, fs=7),                                   # ... under each topo's two control boxes: x low, x high,
+    'y lo': _spec('text', 0.55, 0.22, fs=7),                                   # ... y low, y high (Å, at most four digits shown)
     'y hi': _spec('text', 0.55, 0.22, fs=7),
     'area ≥': _spec('text', 0.7, 0.24),                                        # decomp_window: the MO area threshold
     # --- sliders ---
