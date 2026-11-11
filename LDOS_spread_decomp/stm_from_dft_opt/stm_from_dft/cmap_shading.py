@@ -3,13 +3,17 @@ Machinery: the colour maps of the simulator's panels, the shading of the Map vie
 the Contour / Shading box, in one self-contained module (display machinery only, no physics).
 
 What it holds:
-- The two colour-map sets by role (SET_NAMES, ROLES, SETS): 'default 1', today's maps, and 'default 2', CET
-  maps by their pyqtgraph names.  The isoluminant maps the energy maps use while they are shaded
-  (SHADING_CMAPS).  Entries are colour-map names or colour lists; the caller makes its own colour maps from
-  them (cmap_spec, map_role, make_cmap).
-- The Contour / Shading box: its state and rules (BoxState: the two toggles, the Height / Relief mode, and
-  the Relief light's azimuth `az` and elevation `el`, both starting at 45 degrees) and its builder
-  (build_box, giving a ShadeBox), which takes the figure and the qtgui controls module from the caller.
+- The three colour-map sets by role (SET_NAMES, ROLES, SETS): 'default 1', today's maps, 'default 2', CET
+  maps by their pyqtgraph names, and 'default 3', default 1's maps again.  The isoluminant maps the energy
+  maps use while they are shaded (SHADING_CMAPS), the Height shading of the LDOS maps by set (default 1 and
+  default 2: the set's own topo map and Map map combined, height_blend, blend_rgba; default 3: the colour
+  square M1DS, height_square) and the rule for the map a Relief shade alone is applied to
+  (relief_on_set_map).  Entries are colour-map names or colour lists; the caller makes its own colour maps
+  from them (cmap_spec, map_role, make_cmap).
+- The Contour / Shading box: its state and rules (BoxState: the Contour and Shading master toggles, the
+  Height and Relief toggles under Shading with a strength each, and the Relief light's azimuth `az` and
+  elevation `el`, both starting at 45 degrees) and its builder (build_box, giving a ShadeBox), which takes
+  the figure and the qtgui controls module from the caller.
 - The two light panels, drawn on axes the caller makes and places (draw_light_top, draw_light_side, each
   giving a LightPanel), with their drag rules.  The top view shows the plane from above, its centre point, a
   guide circle of radius R and the light as a dot at R cos(el) from the centre at the azimuth; dragging the
@@ -17,14 +21,18 @@ What it holds:
   point, seen at right angles to the light's azimuth, and the light as a dot on the arc of radius R at the
   elevation above the line, with a line from it to the centre point; dragging it up or down sets the
   elevation, 0 to 90 degrees.  No preview is drawn behind either.  The caller sends them its mouse events
-  (LightPanel.press, motion, release).  In Height both are drawn greyed and take no drags, since Height uses
-  no light (light_active).
+  (LightPanel.press, motion, release).  With the Relief toggle off both are drawn greyed and take no drags,
+  since only Relief uses the light (light_active).
 - The shading maths, written once for NumPy and CuPy arrays (array_module): the points of a cell's grid
   without its duplicate edge (unique_points); the Height shade (height_shade) and the Relief shade of
   Kovesi's relief.m (relief_shade, light_vector), lit by the box's az and el; the colour map through the
   caller's norm (colormap_rgba, cmap_table); the CIELAB L* stretch that applies a shade to the colours
-  (lstar_stretch, shaded_rgba).  A caller's darkness d (0 to 1) is the stretch's floor 1 - d: d = 1 makes
-  the darkest point black, d = 0 shades nothing.
+  (lstar_stretch, shaded_rgba).  A shading's strength d (0 to 1, its box) is the stretch's floor 1 - d:
+  d = 1 makes the darkest point black, d = 0 shades nothing.  The colour square (square_rgba,
+  square_topo_rgba, square_legend): the LDOS and the height of a point looked up together in a plane of CIELAB, then
+  darkened toward black by the Height strength at the lowest height.  The topo and LDOS combination
+  (blend_rgba): the LDOS and the height of a point looked up together in the table of the caller's blend
+  (topo_ldos_blend.TopoLdosBlend, which this module does not import: any object with its table()).
 - The corners of an RGBA mesh with one quad per point, centred on it and tiled by cell offsets
   (mesh_corners).  The drawing itself is the caller's.
 
@@ -38,7 +46,7 @@ The CET names ('CET-L3', 'CET-L6', 'CET-R1', 'CET-D1A', 'CET-L19', 'CET-I1', 'CE
 file names of pyqtgraph's bundled maps (https://github.com/pyqtgraph/pyqtgraph/tree/master/pyqtgraph/colors/maps).
 Kovesi describes CET-I1 as "Isoluminant blue to green to orange at lightness 70", CET-I3 as "Isoluminant blue
 to pink at lightness 70" and CET-D11 as a "Diverging isoluminant lightblue - lightgrey - orange colour map"
-(colorcet.m, https://codeberg.org/peterkovesi/matlabfns/raw/branch/main/Colourmaps/colorcet.m).  The shading
+(colorcet.m, https://codeberg.org/peterkovesi/matlabfns/raw/branch/main/Colourmaps/colorcet.m).  The L* stretch
 multiplies the colours and never blends them as a weighted sum.  Kovesi's user guide calls transparency
 blending "the wrong mechanism to use" and says that with an isoluminant map "there is no interaction between
 the colours and the shading" (https://colorcet.com/userguide/index.html).
@@ -54,7 +62,7 @@ import numpy as np
 #  The colour-map sets                                                     #
 # ---------------------------------------------------------------------- #
 
-SET_NAMES = ('default 1', 'default 2')
+SET_NAMES = ('default 1', 'default 2', 'default 3')
 DEFAULT_SET = 'default 1'
 
 # The roles, by the keys of the simulator's own set table (CMAP_SETS, which these sets replace): 'topo' (every
@@ -82,15 +90,96 @@ SETS = {
         'mag': 'CET-D1A',
         '|m|': 'CET-L19',
     },
+    # default 1's maps again: the set differs from default 1 only in the Height shading of its LDOS maps, which
+    # is the colour square M1DS (height_square) where default 1 combines its topo map and its Map map
+    # (height_blend).
+    'default 3': {
+        'topo': ('black', 'firebrick', 'yellow'),
+        'map': ('midnightblue', 'lightskyblue'),
+        'heatmap': 'nipy_spectral',
+        'mag': 'bwr',
+        '|m|': 'hot',
+    },
 }
 
-# The energy maps' colour maps while they are shaded, the same in both sets: isoluminant, so that lightness
-# carries only the shading and hue carries the value.
+# The energy maps' colour maps while they are shaded, the same in every set: isoluminant, so that lightness
+# carries only the shading and hue carries the value.  The LDOS maps do not use them under the Height shading
+# (default 1 and default 2: the set's topo map and Map map combined, height_blend; default 3: the colour
+# square, height_square), nor, in default 1 and default 3, under a Relief shade alone (the set's own Map map,
+# relief_on_set_map).
 SHADING_CMAPS = {
     'map': 'CET-I1',
     'mag': 'CET-D11',
     '|m|': 'CET-I3',
 }
+
+
+# default 3's Height colour square of the LDOS energy maps ('m1ds'): a plane of CIELAB (D65 white),
+# Lab(s, t) = centre + (s - 0.5) u + (t - 0.5) v, with s the LDOS through the map's norm (0 to 1) and t the
+# height over the LDOS topo's range (0 lowest, 1 highest).  u is the LDOS axis (purple to green, 40 L*), v the
+# topo axis (blue at the lowest height to a light desaturated tan at the highest, 8.6667 L*).
+M1DS = {
+    'centre': (68.1667, -3.5427, -4.6288),
+    'u': (40.0, -102.0301, 78.0889),
+    'v': (8.6667, 16.6882, 21.8046),
+}
+
+# The legend of a colour square, each size as a fraction of the legend's height: the colour rectangle's width,
+# the thickness of its two thin bars (the LDOS bar's width and the topo bar's height) and the gap between the
+# rectangle and each bar.
+LEGEND_RECT_W = 0.275 / 3.0
+LEGEND_BAR_W = 0.055 / 3.0
+LEGEND_GAP = 0.03 / 3.0
+
+# The bars of the topo and LDOS combination (default 1 and default 2), each size as a fraction of a map box's
+# height: the thickness of the colour square's two colour bars (the topo bar left of it, the LDOS bar under
+# it), the gap between a panel and a bar beside or under it, and the height of the legend rectangle under a
+# map ('cmap norm': the combination's colours with the LDOS left to right and the height bottom to top).
+BLEND_BAR_W = 0.054
+BLEND_GAP = 0.038
+BLEND_LEGEND_H = 0.125
+
+
+def height_square(set_name, role):
+    """
+    Machinery: the colour square the Height shading colours the energy maps of `role` with in the set
+    `set_name`, or None where it does not: M1DS for default 3's 'map' (the LDOS), None for default 1 and
+    default 2 (whose LDOS maps take the topo and LDOS combination, height_blend) and for 'mag' and '|m|' in
+    every set (the L* stretch of the role's shading map).  ValueError for an unknown set or role.
+    """
+    if set_name not in SETS:
+        raise ValueError(f"unknown colour-map set {set_name!r} (one of {SET_NAMES})")
+    if role not in ROLES:
+        raise ValueError(f"unknown colour-map role {role!r} (one of {ROLES})")
+    return M1DS if (set_name == 'default 3' and role == 'map') else None
+
+
+def height_blend(set_name, role):
+    """
+    Machinery: whether the Height shading colours the energy maps of `role` in the set `set_name` with the
+    set's own topo map and Map map combined (the caller's topo_ldos_blend.TopoLdosBlend of those two maps;
+    blend_rgba): True for the 'map' role (the LDOS) of default 1 and default 2, False for default 3 (the
+    colour square, height_square) and for 'mag' and '|m|' in every set.  ValueError for an unknown set or
+    role.
+    """
+    if set_name not in SETS:
+        raise ValueError(f"unknown colour-map set {set_name!r} (one of {SET_NAMES})")
+    if role not in ROLES:
+        raise ValueError(f"unknown colour-map role {role!r} (one of {ROLES})")
+    return set_name in ('default 1', 'default 2') and role == 'map'
+
+
+def relief_on_set_map(set_name, role):
+    """
+    Machinery: whether a Relief shade alone (Height off) is applied to the set's own map of `role` instead of
+    the role's isoluminant shading map: True for the 'map' role of default 1 and default 3 (their blue Map
+    map), False for default 2 and for 'mag' and '|m|' in every set.  ValueError for an unknown set or role.
+    """
+    if set_name not in SETS:
+        raise ValueError(f"unknown colour-map set {set_name!r} (one of {SET_NAMES})")
+    if role not in ROLES:
+        raise ValueError(f"unknown colour-map role {role!r} (one of {ROLES})")
+    return set_name in ('default 1', 'default 3') and role == 'map'
 
 
 def cmap_spec(set_name, role, shading=False):
@@ -144,12 +233,19 @@ def make_cmap(spec, to_cmap, from_list, name='cmap_shading'):
 # ---------------------------------------------------------------------- #
 
 CONTOUR = 'Contour'          # the toggle of the contour slice (its traces on the energy maps, its level line)
-SHADING = 'Shading'          # the toggle of the energy maps' shading
-SHADE_BY = 'shading by'      # the Height / Relief radio
-HEIGHT = 'Height'
-RELIEF = 'Relief'
+SHADING = 'Shading'          # the master toggle of the energy maps' shading
+HEIGHT = 'Height'            # the toggle of the Height shading (under Shading)
+RELIEF = 'Relief'            # the toggle of the Relief shading (under Shading)
 SHADE_MODES = (HEIGHT, RELIEF)
 BOX_TITLE = 'contour / shading'
+# The strengths the two shadings start at (their number boxes, 0 to 1, at the end of the Height and Relief lines).
+HEIGHT_MAX_START = 0.05
+RELIEF_MAX_START = 0.5
+# The name the two strength boxes are made under (the widgets table's entry of a 0-to-1 number box with two
+# decimals) and their lines in the info panel's settings section (the boxes show no label).
+MAX_BOX = 'darkness'
+HEIGHT_MAX_SETTING = 'Height max'
+RELIEF_MAX_SETTING = 'Relief max'
 
 
 def _light_az(az):
@@ -172,33 +268,47 @@ def _light_el(el):
     return e
 
 
+def _unit(value, what):
+    """Machinery: `value` as a float within 0..1 (a shading's strength); ValueError otherwise."""
+    v = float(value)
+    if not (math.isfinite(v) and 0.0 <= v <= 1.0):
+        raise ValueError(f"{what} must be within 0..1, not {value!r}")
+    return v
+
+
 class BoxState:
     """
-    Machinery: the Contour / Shading box's state and its rules.  `contour` and `shading` are the two toggles:
-    at most one is on, and both may be off.  Turning Shading on turns Contour off, turning Contour on turns
-    Shading off, and turning either off leaves the other as it is.  `shade_by` is 'Height' or 'Relief' and is
-    kept while Shading is off.  It starts with Contour on, Shading off and Height.
+    Machinery: the Contour / Shading box's state and its rules.  `contour` and `shading` are the two master
+    toggles: at most one is on, and both may be off.  Turning Shading on turns Contour off, turning Contour on
+    turns Shading off, and turning either off leaves the other as it is.  `height` and `relief` are the two
+    shadings' own toggles under Shading: each is on or off whatever the other is, both may be on and both may
+    be off, and they are kept while Shading is off.  A shading shades the maps only while Shading and its own
+    toggle are on (shade_height, shade_relief), so Contour is never on with either.  `height_max` and
+    `relief_max` are the two shadings' strengths, 0 to 1 (their number boxes), each used by its own shading.
+    It starts with Contour on, Shading off, Height on at 0.05 and Relief off at 0.5.
     The Relief shade's light, which the two light panels show and set (draw_light_top, draw_light_side):
     `az`, its azimuth in degrees, 0 up and increasing clockwise (Kovesi's convention: relief.m's "Zero
     azimuth points upwards and increases clockwise", light_vector), kept within 0 <= az < 360; `el`, its
     elevation in degrees, 0 to 90.  Both start at 45, relief.m's defaults.  They are kept whatever the
-    toggles and the mode; only Relief uses them (shade_field's az and el).
+    toggles; only Relief uses them (shade_field's az and el).
     """
 
-    def __init__(self, contour=True, shading=False, shade_by=HEIGHT, az=45.0, el=45.0):
+    def __init__(self, contour=True, shading=False, height=True, relief=False, az=45.0, el=45.0,
+                 height_max=HEIGHT_MAX_START, relief_max=RELIEF_MAX_START):
         """
-        Machinery: a state; ValueError when both toggles are on, `shade_by` is not one of SHADE_MODES, `az`
-        is not finite or `el` is not within 0..90 (az is kept modulo 360).
+        Machinery: a state; ValueError when Contour and Shading are both on, a strength is not within 0..1,
+        `az` is not finite or `el` is not within 0..90 (az is kept modulo 360).
         """
         if contour and shading:
             raise ValueError("Contour and Shading cannot both be on")
-        if shade_by not in SHADE_MODES:
-            raise ValueError(f"shade_by must be one of {SHADE_MODES}, not {shade_by!r}")
         self.contour = bool(contour)
         self.shading = bool(shading)
-        self.shade_by = shade_by
+        self.height = bool(height)
+        self.relief = bool(relief)
         self.az = _light_az(az)
         self.el = _light_el(el)
+        self.height_max = _unit(height_max, 'height_max')
+        self.relief_max = _unit(relief_max, 'relief_max')
 
     def set_contour(self, flag):
         """Machinery: Contour on (Shading then off) or off (Shading unchanged); returns the state."""
@@ -214,11 +324,24 @@ class BoxState:
             self.contour = False
         return self
 
-    def set_shade_by(self, mode):
-        """Machinery: the shading's mode, 'Height' or 'Relief' (ValueError otherwise); returns the state."""
-        if mode not in SHADE_MODES:
-            raise ValueError(f"shade_by must be one of {SHADE_MODES}, not {mode!r}")
-        self.shade_by = mode
+    def set_height(self, flag):
+        """Machinery: the Height shading's toggle on or off (the Relief toggle and the masters unchanged); returns the state."""
+        self.height = bool(flag)
+        return self
+
+    def set_relief(self, flag):
+        """Machinery: the Relief shading's toggle on or off (the Height toggle and the masters unchanged); returns the state."""
+        self.relief = bool(flag)
+        return self
+
+    def set_height_max(self, value):
+        """Machinery: the Height shading's strength, 0 to 1 (ValueError otherwise); returns the state."""
+        self.height_max = _unit(value, 'height_max')
+        return self
+
+    def set_relief_max(self, value):
+        """Machinery: the Relief shading's strength, 0 to 1 (ValueError otherwise); returns the state."""
+        self.relief_max = _unit(value, 'relief_max')
         return self
 
     def set_az(self, az):
@@ -232,63 +355,85 @@ class BoxState:
         return self
 
     @property
-    def shade_mode(self):
-        """Machinery: the mode the energy maps are shaded in now: 'Height' or 'Relief' while Shading is on, else None."""
-        return self.shade_by if self.shading else None
+    def shade_height(self):
+        """Machinery: whether the energy maps are shaded by Height now: Shading on and the Height toggle on."""
+        return self.shading and self.height
+
+    @property
+    def shade_relief(self):
+        """Machinery: whether the energy maps are shaded by Relief now: Shading on and the Relief toggle on."""
+        return self.shading and self.relief
 
     def key(self):
-        """Machinery: the state as a tuple (contour, shading, shade_by, az, el), for a redraw signature."""
-        return (self.contour, self.shading, self.shade_by, self.az, self.el)
+        """Machinery: the state as a tuple (contour, shading, height, relief, az, el, height_max, relief_max), for a redraw signature."""
+        return (self.contour, self.shading, self.height, self.relief, self.az, self.el, self.height_max,
+                self.relief_max)
 
     def copy(self):
-        """Machinery: an independent copy of the state, its light included."""
-        return BoxState(self.contour, self.shading, self.shade_by, self.az, self.el)
+        """Machinery: an independent copy of the state, its light and strengths included."""
+        return BoxState(self.contour, self.shading, self.height, self.relief, self.az, self.el, self.height_max,
+                        self.relief_max)
 
     def __eq__(self, other):
-        """Machinery: equal states have equal keys (the toggles, the mode and the light)."""
+        """Machinery: equal states have equal keys (the toggles, the light and the strengths)."""
         return isinstance(other, BoxState) and self.key() == other.key()
 
     def __repr__(self):
         """Machinery: the state as text."""
-        return (f"BoxState(contour={self.contour}, shading={self.shading}, shade_by={self.shade_by!r}, "
-                f"az={self.az!r}, el={self.el!r})")
+        return (f"BoxState(contour={self.contour}, shading={self.shading}, height={self.height}, "
+                f"relief={self.relief}, az={self.az!r}, el={self.el!r}, height_max={self.height_max!r}, "
+                f"relief_max={self.relief_max!r})")
 
 
 class ShadeBox:
     """
     Machinery: the box build_box makes.  `qt` is its framed Qt widget (controls.box), for the caller's layout
     (the simulator: over Map's light panels).  `state` is its BoxState, which build_box's callbacks keep current.  `contour` and
-    `shading` are the two toggles (qtgui Check) and `shade_by` is the Height / Relief radio (qtgui Radio).
-    The info panel lists their settings as for every other control.  The box has no control of the light:
-    the state's az and el are shown and set by the light panels (LightPanel), which share the state.
+    `shading` are the two master toggles, `height` and `relief` the two shadings' toggles (qtgui Check), and
+    `height_max` and `relief_max` their strength boxes (qtgui Value, 0 to 1, shown without a label at the end
+    of their toggle's line).  The info panel lists their settings as for every other control (the boxes as
+    'Height max' and 'Relief max').  The box has no control of the light: the state's az and el are shown and
+    set by the light panels (LightPanel), which share the state.
     """
 
-    def __init__(self, qt, state, contour, shading, shade_by):
-        """Machinery: the box of the frame `qt`, the state and the three controls (build_box makes it)."""
+    def __init__(self, qt, state, contour, shading, height, relief, height_max, relief_max):
+        """Machinery: the box of the frame `qt`, the state and the six controls (build_box makes it)."""
         self.qt = qt
         self.state = state
         self.contour = contour
         self.shading = shading
-        self.shade_by = shade_by
+        self.height = height
+        self.relief = relief
+        self.height_max = height_max
+        self.relief_max = relief_max
 
     def sync(self):
-        """Machinery: the toggles and the radio set to the state, through the controls' set (which never calls a callback)."""
+        """Machinery: the toggles and the strength boxes set to the state, through the controls' set (which never calls a callback)."""
         self.contour.set(self.state.contour)
         self.shading.set(self.state.shading)
-        self.shade_by.set(self.state.shade_by)
+        self.height.set(self.state.height)
+        self.relief.set(self.state.relief)
+        self.height_max.set(self.state.height_max)
+        self.relief_max.set(self.state.relief_max)
 
-    def set_state(self, contour=None, shading=None, shade_by=None):
+    def set_state(self, contour=None, shading=None, height=None, relief=None, height_max=None, relief_max=None):
         """
         Machinery: the box set from code.  Each argument given is applied through the state's rules, in the
-        order contour, shading, shade_by, and the controls then show the result.  The change callback is not
-        called (as the qtgui controls' set).  Returns the state.
+        order contour, shading, height, relief, height_max, relief_max, and the controls then show the result.
+        The change callback is not called (as the qtgui controls' set).  Returns the state.
         """
         if contour is not None:
             self.state.set_contour(contour)
         if shading is not None:
             self.state.set_shading(shading)
-        if shade_by is not None:
-            self.state.set_shade_by(shade_by)
+        if height is not None:
+            self.state.set_height(height)
+        if relief is not None:
+            self.state.set_relief(relief)
+        if height_max is not None:
+            self.state.set_height_max(height_max)
+        if relief_max is not None:
+            self.state.set_relief_max(relief_max)
         self.sync()
         return self.state
 
@@ -297,7 +442,7 @@ def _make_control(controls, kind, fig, name, **kw):
     """
     Machinery: one control of the box made as the window's other controls are.  controls.make(fig, name, ...)
     is used when the widgets table names it (controls.SPECS).  Otherwise the kind's class itself is used
-    (controls.Check / controls.Radio), which takes the default specification for a name the table lacks.
+    (controls.Check / controls.Value), which takes the default specification for a name the table lacks.
     """
     specs = getattr(controls, 'SPECS', None)
     if specs is not None and name in specs:
@@ -308,22 +453,34 @@ def _make_control(controls, kind, fig, name, **kw):
 def build_box(fig, controls, on_change=None, state=None, title=BOX_TITLE, orient='h'):
     """
     Machinery: the Contour / Shading box.  `fig` is the window's qtgui figure and `controls` the qtgui
-    controls module (the caller's copy).  The box holds the Contour and Shading toggles (Check) and the
-    Height / Relief radio (Radio), framed by controls.box(..., orient=orient, title=title), and starts at
-    `state` (default BoxState(): Contour on, Shading off, Height, the light at azimuth 45 and elevation 45;
-    the light panels take the same state).  A click applies the state's rules and
-    sets the other toggle to match, through Check.set, which never fires.  It then calls on_change(state)
-    with the state after the rule.  Returns the ShadeBox (its `qt` is the frame).
+    controls module (the caller's copy).  The box holds the Contour and Shading toggles (Check) and, as a
+    column next to them, the Height line over the Relief line: each line its toggle (Check) and, at the end
+    of the line, its strength box (Value, 0 to 1 with two decimals, no label; controls.row with a stretch
+    between the two).  All framed by controls.box(..., orient=orient, title=title).  It starts at `state`
+    (default BoxState(): Contour on, Shading off, Height on at 0.05, Relief off at 0.5, the light at azimuth
+    45 and elevation 45; the light panels take the same state).  A click applies the state's rules and
+    sets the other toggles to match, through Check.set, which never fires; an edit of a strength box sets
+    its shading's strength.  Either then calls on_change(state) with the state after the rule.  Returns the
+    ShadeBox (its `qt` is the frame).
     """
     st = BoxState() if state is None else state
     chk_contour = _make_control(controls, 'Check', fig, CONTOUR, value=st.contour)
     chk_shading = _make_control(controls, 'Check', fig, SHADING, value=st.shading)
-    radio = _make_control(controls, 'Radio', fig, SHADE_BY, value=st.shade_by, labels=list(SHADE_MODES))
-    frame = controls.box(chk_contour, chk_shading, radio, orient=orient, title=title)
-    sb = ShadeBox(frame, st, chk_contour, chk_shading, radio)
+    chk_height = _make_control(controls, 'Check', fig, HEIGHT, value=st.height)
+    chk_relief = _make_control(controls, 'Check', fig, RELIEF, value=st.relief)
+    box_height = _make_control(controls, 'Value', fig, MAX_BOX, value=st.height_max, vmin=0.0, vmax=1.0,
+                               decimals=2, label='')
+    box_relief = _make_control(controls, 'Value', fig, MAX_BOX, value=st.relief_max, vmin=0.0, vmax=1.0,
+                               decimals=2, label='')
+    box_height.setting_label = HEIGHT_MAX_SETTING
+    box_relief.setting_label = RELIEF_MAX_SETTING
+    lines = controls.column(controls.row(chk_height, 'stretch', box_height),
+                            controls.row(chk_relief, 'stretch', box_relief))
+    frame = controls.box(chk_contour, chk_shading, lines, orient=orient, title=title)
+    sb = ShadeBox(frame, st, chk_contour, chk_shading, chk_height, chk_relief, box_height, box_relief)
 
     def _done():
-        """Machinery: after a click, the controls set to the state and the caller's callback called with it."""
+        """Machinery: after a click or an edit, the controls set to the state and the caller's callback called with it."""
         sb.sync()
         if on_change is not None:
             on_change(st)
@@ -338,14 +495,32 @@ def build_box(fig, controls, on_change=None, state=None, title=BOX_TITLE, orient
         st.set_shading(flag)
         _done()
 
-    def _on_shade_by(label):
-        """Machinery: Height or Relief chosen."""
-        st.set_shade_by(label)
+    def _on_height(flag):
+        """Machinery: the Height toggle clicked."""
+        st.set_height(flag)
+        _done()
+
+    def _on_relief(flag):
+        """Machinery: the Relief toggle clicked."""
+        st.set_relief(flag)
+        _done()
+
+    def _on_height_max(value):
+        """Machinery: the Height strength box edited (0 to 1, clamped by the box)."""
+        st.set_height_max(value)
+        _done()
+
+    def _on_relief_max(value):
+        """Machinery: the Relief strength box edited (0 to 1, clamped by the box)."""
+        st.set_relief_max(value)
         _done()
 
     chk_contour.on_change(_on_contour)
     chk_shading.on_change(_on_shading)
-    radio.on_change(_on_shade_by)
+    chk_height.on_change(_on_height)
+    chk_relief.on_change(_on_relief)
+    box_height.on_change(_on_height_max)
+    box_relief.on_change(_on_relief_max)
     return sb
 
 
@@ -373,7 +548,7 @@ LIGHT_GRAB = 0.25
 
 # The panels' colours, as hex (read alike by qtplot and matplotlib): the plane, the centre point and the dot's
 # edge; the guide circle and arc; the light's dot and the side view's line to the centre; every line and dot
-# while the panels are greyed (Height).
+# while the panels are greyed (the Relief toggle off).
 LIGHT_INK = '#000000'
 LIGHT_GUIDE = '#808080'
 LIGHT_DOT = '#e69f00'
@@ -382,11 +557,11 @@ LIGHT_GREYED = '#c8c8c8'
 
 def light_active(state):
     """
-    Machinery: whether the light panels are drawn in colour and take drags: while the state's mode
-    (shade_by) is Relief, the one mode that uses the light, whatever the Shading toggle.  In Height they are
-    drawn greyed and take no drags.
+    Machinery: whether the light panels are drawn in colour and take drags: while the state's Relief toggle
+    is on, the one shading that uses the light, whatever the Shading and Height toggles.  With the Relief
+    toggle off they are drawn greyed and take no drags.
     """
-    return state.shade_by == RELIEF
+    return bool(state.relief)
 
 
 def _top_xy(state):
@@ -498,7 +673,7 @@ class LightPanel:
         """
         Machinery: the panel set to its state: the dot at the light (the top view's at R cos(el) from the
         centre at the azimuth; the side view's on the arc at the elevation, with its line to the centre
-        point), and every line and dot greyed while the light is not active (Height, light_active), in colour
+        point), and every line and dot greyed while the light is not active (the Relief toggle off, light_active), in colour
         otherwise.  A drag in progress ends when the panel greys.  Returns the panel.
         """
         x, y = self._dot_xy()
@@ -594,8 +769,8 @@ def draw_light_top(ax, state):
     frame), its centre point, a guide circle of
     radius R and the light as a dot drawn at R cos(el) from the centre at the azimuth (0 up, increasing
     clockwise), so it shows the light as seen from above.  No preview behind it.  Dragging the dot sets the
-    azimuth only, the dot's angle around the centre; the side view alone sets the elevation.  In Height it is
-    drawn greyed and takes no drags.  `state` is the window's BoxState.  Returns its LightPanel.
+    azimuth only, the dot's angle around the centre; the side view alone sets the elevation.  With the Relief toggle
+    off it is drawn greyed and takes no drags.  `state` is the window's BoxState.  Returns its LightPanel.
     """
     return LightPanel(ax, TOP_VIEW, state)
 
@@ -608,8 +783,8 @@ def draw_light_side(ax, state):
     point, from -R to R, seen at right angles to the light's azimuth so the light lies in the drawn plane (on the right of
     the centre).  The light is a dot on the arc of radius R around the centre point at the elevation angle
     above the line, with a line from it to the centre point, its focus.  No preview behind it.  Dragging the
-    dot up or down sets the elevation, from 0 to 90 degrees, the dot staying on the arc.  In Height it is
-    drawn greyed and takes no drags.  `state` is the window's BoxState.  Returns its LightPanel.
+    dot up or down sets the elevation, from 0 to 90 degrees, the dot staying on the arc.  With the Relief toggle
+    off it is drawn greyed and takes no drags.  `state` is the window's BoxState.  Returns its LightPanel.
     """
     return LightPanel(ax, SIDE_VIEW, state)
 
@@ -1036,6 +1211,183 @@ def shaded_rgba(values, shade, cmap, norm, floor=0.0):
     the host (cupy.asnumpy) to draw them.
     """
     return lstar_stretch(colormap_rgba(values, cmap, norm), shade, floor)
+
+
+# ---------------------------------------------------------------------- #
+#  The colour square (CIELAB, D65 white, sRGB)                             #
+# ---------------------------------------------------------------------- #
+
+# CSS Color 4's sample code (https://www.w3.org/TR/css-color-4/#color-conversion-code).  Its D65 white,
+# "const D65 = [0.3127 / 0.3290, 1.00000, (1.0 - 0.3127 - 0.3290) / 0.3290];", and its XYZ_to_lin_sRGB matrix,
+# "convert XYZ to linear-light sRGB" (XYZ relative to sRGB's own white, D65):
+#   [   12831 /   3959,    -329 /    214, -1974 /   3959 ],
+#   [ -851781 / 878810, 1648619 / 878810, 36519 / 878810 ],
+#   [     705 /  12673,   -2585 /  12673,   705 /    667 ],
+_D65 = (0.3127 / 0.3290, 1.0, (1.0 - 0.3127 - 0.3290) / 0.3290)
+_XYZ_TO_LIN = ((12831 / 3959, -329 / 214, -1974 / 3959),
+               (-851781 / 878810, 1648619 / 878810, 36519 / 878810),
+               (705 / 12673, -2585 / 12673, 705 / 667))
+
+
+def _lab_to_lin_srgb(lab, xp):
+    """
+    Machinery: CIELAB (..., 3) with the D65 white to linear sRGB (..., 3), not clipped.  CSS Color 4's
+    Lab_to_XYZ (https://www.w3.org/TR/css-color-4/#color-conversion-code) with its D65 white in place of its
+    D50 (the square is defined against sRGB's own white, so no chromatic adaptation is needed): f1 = L/116 +
+    16/116, f0 = f1 + a/500, f2 = f1 - b/200; x = f0^3 if f0^3 > ε else (116 f0 - 16)/κ; y = ((L + 16)/116)^3
+    if L > κ ε else L/κ; z as x with f2; XYZ = xyz times the white; then its XYZ_to_lin_sRGB matrix.
+    """
+    L, a, b = lab[..., 0], lab[..., 1], lab[..., 2]
+    f1 = L / 116.0 + 16.0 / 116.0
+    f0 = f1 + a / 500.0
+    f2 = f1 - b / 200.0
+    f0c, f2c = f0 * f0 * f0, f2 * f2 * f2
+    x = xp.where(f0c > _LSTAR_EPS, f0c, (116.0 * f0 - 16.0) / _KAPPA) * _D65[0]
+    y = xp.where(L > _KAPPA * _LSTAR_EPS, xp.power((L + 16.0) / 116.0, 3), L / _KAPPA) * _D65[1]
+    z = xp.where(f2c > _LSTAR_EPS, f2c, (116.0 * f2 - 16.0) / _KAPPA) * _D65[2]
+    m = _XYZ_TO_LIN
+    return xp.stack([m[0][0] * x + m[0][1] * y + m[0][2] * z,
+                     m[1][0] * x + m[1][1] * y + m[1][2] * z,
+                     m[2][0] * x + m[2][1] * y + m[2][2] * z], axis=-1)
+
+
+def square_colours(s, t, square, shade_max=0.0):
+    """
+    Machinery: the sRGB colours (..., 3), 0..1, of a colour square at the LDOS fractions `s` and the height
+    fractions `t` (arrays of one shape, both 0..1), of their array module.  The point of the plane,
+    Lab = centre + (s - 0.5) u + (t - 0.5) v (`square`: 'centre', 'u' and 'v', CIELAB with the D65 white, as
+    M1DS), is darkened toward black in CIELAB by the Height strength `shade_max` (0 to 1) at the lowest
+    height and not at all at the highest: Lab is multiplied by 1 - shade_max (1 - t).  It is then converted
+    to linear sRGB (_lab_to_lin_srgb), clipped to 0..1 and encoded (CSS Color 4's gam_sRGB).  M1DS is inside
+    the sRGB gamut at every strength, so the clip only acts against rounding.
+    """
+    d = _unit(shade_max, 'shade_max')
+    xp = array_module(s, t)
+    s = xp.asarray(s, dtype=np.float64)
+    t = xp.asarray(t, dtype=np.float64)
+    if tuple(s.shape) != tuple(t.shape):
+        raise ValueError(f"s {tuple(s.shape)} and t {tuple(t.shape)} do not match")
+    k = 1.0 - d * (1.0 - t)
+    ds, dt = s - 0.5, t - 0.5
+    lab = xp.stack([(square['centre'][i] + ds * square['u'][i] + dt * square['v'][i]) * k for i in range(3)],
+                   axis=-1)
+    return _srgb_encode(xp.clip(_lab_to_lin_srgb(lab, xp), 0.0, 1.0), xp)
+
+
+def _norm_fraction(values, norm, xp):
+    """
+    Machinery: `values` through the caller's `norm` as float64 fractions of the values' array module, NaN
+    where the norm gives none: NumPy values through the norm itself (a masked result filled with NaN), CuPy
+    values through qtplot's Normalize / PowerNorm rules (_norm_xp), as colormap_rgba takes them.
+    """
+    if xp is np:
+        return np.ma.filled(np.ma.asarray(norm(np.asarray(values)), dtype=np.float64), np.nan)
+    return _norm_xp(values, norm, xp)
+
+
+def _height_fraction(heights, xp):
+    """
+    Machinery: the height fractions of `heights` (rows, cols): (t, ok), t = (z - z_min) / (z_max - z_min) over
+    the finite heights of the given points, 0 at the lowest and 1 at the highest (the scale the LDOS topo
+    panel is drawn on), and ok the points whose height is finite (t is 0 at the others).  When every height
+    is the same, t = 1 everywhere (nothing darkened, as the L* stretch shades nothing then).  ValueError for
+    heights that are not (rows, cols).
+    """
+    z = xp.asarray(heights, dtype=np.float64)
+    if z.ndim != 2:
+        raise ValueError(f"heights must be (rows, cols), not of shape {z.shape}")
+    ok = xp.isfinite(z)
+    if not bool(ok.any()):
+        return xp.zeros_like(z), ok
+    z_lo = float(xp.min(xp.where(ok, z, np.inf)))
+    z_hi = float(xp.max(xp.where(ok, z, -np.inf)))
+    if z_hi > z_lo:
+        t = xp.clip((xp.where(ok, z, z_lo) - z_lo) / (z_hi - z_lo), 0.0, 1.0)
+    else:
+        t = xp.ones_like(z)
+    return t, ok
+
+
+def square_rgba(values, heights, norm, square, shade_max=0.0):
+    """
+    Machinery: the colours of one energy map under the Height colour square: each point's LDOS and height
+    looked up together (square_colours).  s is the value through the caller's norm, as its colour map would
+    take it (the energy maps': PowerNorm(gamma, v_min, v_max)), clipped to 0..1 (a colour map's lookup clips
+    its index the same way).  t is the height's fraction of the heights' range over the given points
+    (_height_fraction).  `values` and `heights` are (rows, cols) of the same points (unique_points of the
+    slice and of the heights).  A point whose value or height is not finite becomes (0, 0, 0, 0), not drawn.
+    Returns (rows, cols, 4) float64 RGBA with alpha 1, of the arrays' array module (CuPy if either is CuPy).
+    """
+    xp = array_module(values, heights)
+    t, ok_z = _height_fraction(xp.asarray(heights), xp)
+    s = xp.asarray(_norm_fraction(xp.asarray(values), norm, xp), dtype=np.float64)
+    if tuple(s.shape) != tuple(t.shape):
+        raise ValueError(f"values {tuple(s.shape)} and heights {tuple(t.shape)} do not match")
+    ok = ok_z & xp.isfinite(s)
+    rgb = square_colours(xp.clip(xp.where(ok, s, 0.0), 0.0, 1.0), t, square, shade_max)
+    out = xp.concatenate([rgb, xp.ones(tuple(t.shape) + (1,), dtype=np.float64)], axis=-1)
+    return xp.where(ok[..., None], out, 0.0)
+
+
+def blend_rgba(values, heights, norm, blend):
+    """
+    Machinery: the colours of one energy map under the topo and LDOS combination: each point's LDOS and
+    height looked up together in the table of `blend` (a topo_ldos_blend.TopoLdosBlend: table(), (n, n, 3)
+    sRGB, [i, j] the colour at the height fraction i / (n - 1) and the LDOS fraction j / (n - 1)), bilinear
+    between its points.  s is the value through the caller's norm, as its colour map would take it (the
+    energy maps': PowerNorm(gamma, v_min, v_max)), clipped to 0..1.  t is the height's fraction of the
+    heights' range over the given points (_height_fraction).  `values` and `heights` are (rows, cols) of the
+    same points (unique_points of the slice and of the heights).  A point whose value or height is not
+    finite becomes (0, 0, 0, 0), not drawn.  Returns (rows, cols, 4) float64 RGBA with alpha 1, of the
+    arrays' array module (CuPy if either is CuPy).
+    """
+    xp = array_module(values, heights)
+    t, ok_z = _height_fraction(xp.asarray(heights), xp)
+    s = xp.asarray(_norm_fraction(xp.asarray(values), norm, xp), dtype=np.float64)
+    if tuple(s.shape) != tuple(t.shape):
+        raise ValueError(f"values {tuple(s.shape)} and heights {tuple(t.shape)} do not match")
+    ok = ok_z & xp.isfinite(s)
+    tab = xp.asarray(blend.table(), dtype=np.float64)
+    n = int(tab.shape[0]) - 1
+    x = xp.clip(xp.where(ok, s, 0.0), 0.0, 1.0) * n
+    y = t * n
+    j = xp.minimum(x.astype(np.int64), n - 1)
+    i = xp.minimum(y.astype(np.int64), n - 1)
+    fx, fy = (x - j)[..., None], (y - i)[..., None]
+    rgb = ((tab[i, j] * (1.0 - fx) + tab[i, j + 1] * fx) * (1.0 - fy)
+           + (tab[i + 1, j] * (1.0 - fx) + tab[i + 1, j + 1] * fx) * fy)
+    out = xp.concatenate([rgb, xp.ones(tuple(t.shape) + (1,), dtype=np.float64)], axis=-1)
+    return xp.where(ok[..., None], out, 0.0)
+
+
+def square_topo_rgba(heights, square, shade_max=0.0):
+    """
+    Machinery: the colours of the heights alone under a colour square, its topo axis at mid LDOS (s = 0.5)
+    with the Height strength `shade_max`: the simulator's topo panel in front of the energy maps.  t is the
+    height's fraction of the heights' range over the given points (_height_fraction), as square_rgba takes
+    it.  A point whose height is not finite becomes (0, 0, 0, 0), not drawn.  Returns (rows, cols, 4) float64
+    RGBA with alpha 1, of the heights' array module.
+    """
+    xp = array_module(heights)
+    t, ok = _height_fraction(xp.asarray(heights), xp)
+    rgb = square_colours(xp.full_like(t, 0.5), t, square, shade_max)
+    out = xp.concatenate([rgb, xp.ones(tuple(t.shape) + (1,), dtype=np.float64)], axis=-1)
+    return xp.where(ok[..., None], out, 0.0)
+
+
+def square_legend(square, shade_max=0.0, n=256):
+    """
+    Machinery: the colours of a colour square's legend, as NumPy sRGB arrays: the colour rectangle (n, n, 3),
+    row i the LDOS fraction (i + 0.5) / n (the first row the lowest LDOS) and column j the height fraction
+    (j + 0.5) / n (the first column the lowest height), with the Height strength `shade_max` as the maps
+    have it; the LDOS bar (n, 3), the LDOS axis alone at mid height with no shading; the topo bar (n, 3),
+    the topo axis alone at mid LDOS with the Height strength, as the shading applies along it.
+    """
+    q = (np.arange(int(n)) + 0.5) / int(n)
+    tt, ss = np.meshgrid(q, q)
+    half = np.full_like(q, 0.5)
+    return (square_colours(ss, tt, square, shade_max), square_colours(q, half, square, 0.0),
+            square_colours(half, q, square, shade_max))
 
 
 # ---------------------------------------------------------------------- #

@@ -46,6 +46,7 @@ from .qtgui.qtplot import QtWidgets, QtCore, QtGui
 from .doscar_parser import SpinAwareDosParser, SpinMode
 from .locpot_manager import LocpotManager
 from . import cmap_shading
+from .topo_ldos_blend import TopoLdosBlend
 from . import contour
 from . import feenstra
 from . import quadrature
@@ -1340,11 +1341,17 @@ DESIGN = (20, 14)        # the window's design size (inches): its text zoom is i
 # (cmap_shading.SETS).
 MAP_CMAP = cmap_shading.make_cmap(cmap_shading.cmap_spec('default 1', 'map'), plt.to_cmap,
                                   plt.LinearSegmentedColormap.from_list, "custom_map")
-# The window's colour maps, made once each from cmap_shading's two colour-map sets (the constructor's cmap_set; the
+# The window's colour maps, made once each from cmap_shading's colour-map sets (the constructor's cmap_set; the
 # 'cmap set' choice in the left column) and kept (_window_cmap), so that a panel's map tells its role by identity
 # (_on_cmap_set): by (set, role), and by (None, role) for the energy maps' isoluminant maps while they are shaded
-# (cmap_shading.SHADING_CMAPS, the same in both sets).  default 1's Map entry is MAP_CMAP.
+# (cmap_shading.SHADING_CMAPS, the same in every set; under the Height shading the LDOS maps take instead the
+# set's topo map and Map map combined in default 1 and default 2, and the colour square in default 3, and under
+# Relief alone default 1's and default 3's take their own Map map: _map_role_cmap, _map_square).  default 1's
+# Map entry is MAP_CMAP.
 _CMAPS = {('default 1', 'map'): MAP_CMAP}
+# The topo and LDOS combination of a colour-map set (default 1 and default 2: cmap_shading.height_blend), made
+# once per set from the set's own topo map and Map map, unaltered, and kept (_window_blend).
+_BLENDS = {}
 
 
 def _fmt4(v, decimals=3):
@@ -1380,6 +1387,23 @@ def _window_cmap(set_name, role, shading=False):
                                     plt.LinearSegmentedColormap.from_list, name=role)
         _CMAPS[key] = cm
     return cm
+
+
+def _window_blend(set_name):
+    """
+    Machinery: the combination of the topo map and the Map map of the colour-map set `set_name`
+    (topo_ldos_blend.TopoLdosBlend), which the Height shading colours the LDOS energy maps with in default 1
+    and default 2 (cmap_shading.height_blend): made from the two maps as the window draws them (_window_cmap:
+    every colour of each map's table, lowest to highest), once, then kept in _BLENDS.
+    """
+    b = _BLENDS.get(set_name)
+    if b is None:
+        def colours(role):
+            cm = _window_cmap(set_name, role)
+            return np.asarray(cm((np.arange(cm.N) + 0.5) / cm.N), dtype=np.float64)
+        b = TopoLdosBlend(colours('topo'), colours('map'))
+        _BLENDS[set_name] = b
+    return b
 
 
 # The Map view's contour slice (the sm4_Browser Map window's): its traces on the energy maps (one colour, 1 pt,
@@ -1452,10 +1476,236 @@ class _TopoRow(plt.RowWidget):
         return (float(min(wfh(lo), W)), lo)
 
 
+class _SquareLegend(QtWidgets.QWidget):
+    """
+    Machinery: one legend of the Height colour square beside Map's energy maps, a shaped bar of
+    controls.MapBlock (bar_width, bar_below, measure), whose every size follows its height, the span of the map
+    boxes it stands beside (from the first box's top to the last box's bottom: cmap_shading.LEGEND_RECT_W,
+    LEGEND_BAR_W and LEGEND_GAP, each a fraction of that span).  The full legend: the colour rectangle (LDOS
+    up, height left to right) as tall as the span; right of it, one gap away, the thin LDOS bar with its tick
+    values and its vertical title on its right; under the rectangle, the same gap away, the thin topo bar, as
+    long as the rectangle is wide and as thick as the LDOS bar is wide, with its two height labels and its
+    label under it.  `topo_only`: one bar of the rectangle's shape with its tick values and title on its right
+    (the topo panel's colour bar).  `cells` and `axes` are its panels in that order (rectangle, LDOS bar, topo
+    bar; or the one bar), `refs` the axes of the first and the last panel it spans: the widget places its
+    cells itself (arrange: on a resize and whenever a reference panel is placed), reading the span from the
+    reference boxes as drawn, as _LightColumn reads its band.
+    """
+
+    def __init__(self, cells, axes, refs, topo_only=False):
+        super().__init__()
+        self._cells = tuple(cells)
+        self._axes = tuple(axes)
+        self._refs = tuple(refs)
+        self.topo_only = bool(topo_only)
+        self._room = None                  # the room around each panel's box in its cell, (l, t, r, b) per panel (measure)
+        for c in self._cells:
+            c.setParent(self)
+            c.show()
+
+    @property
+    def ax_rect(self):
+        """The colour rectangle's axes (the full legend)."""
+        return self._axes[0]
+
+    @property
+    def cax(self):
+        """The axes of the bar with the tick values: the LDOS bar, or the one bar of a topo-only legend."""
+        return self._axes[0] if self.topo_only else self._axes[1]
+
+    @property
+    def ax_topo(self):
+        """The thin topo bar's axes (the full legend)."""
+        return self._axes[2]
+
+    def measure(self):
+        """The room around each panel's box in its cell read again (the tick values, the titles and labels): controls.MapBlock calls it once per layout pass, arrange at every placement."""
+        out = []
+        for ax in self._axes:
+            try:
+                out.append(tuple(float(v) for v in ax._decor_px()))
+            except Exception:
+                out.append((0.0, 0.0, 0.0, 0.0))
+        self._room = out
+
+    def _rooms(self):
+        if self._room is None:
+            self.measure()
+        return self._room
+
+    def bar_width(self, h):
+        """The width the legend needs beside map boxes spanning h pixels."""
+        h = max(float(h), 1.0)
+        d = self._rooms()
+        if self.topo_only:
+            return d[0][0] + cmap_shading.LEGEND_RECT_W * h + d[0][2]
+        x0 = max(d[0][0], d[2][0])
+        rect_w = cmap_shading.LEGEND_RECT_W * h
+        return x0 + max(rect_w + (cmap_shading.LEGEND_GAP + cmap_shading.LEGEND_BAR_W) * h + d[1][2],
+                        rect_w + max(d[0][2], d[2][2]))
+
+    def bar_below(self, h):
+        """The room the legend needs under the last map box it spans: the gap, the thin topo bar and its labels (a topo-only legend: its bar's own room below)."""
+        h = max(float(h), 1.0)
+        d = self._rooms()
+        if self.topo_only:
+            return d[0][3]
+        return (cmap_shading.LEGEND_GAP + cmap_shading.LEGEND_BAR_W) * h + d[2][1] + d[2][3]
+
+    def sizeHint(self):
+        return QtCore.QSize(24, 60)
+
+    def minimumSizeHint(self):
+        return QtCore.QSize(4, 10)
+
+    def resizeEvent(self, ev):
+        super().resizeEvent(ev)
+        self.arrange()
+
+    def _span(self):
+        """(top, bottom) of the map boxes the legend spans, in its own pixels, from the reference panels as drawn; None before they have a box."""
+        try:
+            vp = self.parentWidget()
+            while vp is not None and vp.parentWidget() is not None and not isinstance(vp.parentWidget(), QtWidgets.QGraphicsView):
+                vp = vp.parentWidget()
+            oy = float(self.mapTo(vp, QtCore.QPoint(0, 0)).y()) if vp is not None else 0.0
+            x0, y0, w0, h0 = self._refs[0]._px_rect()
+            x1, y1, w1, h1 = self._refs[1]._px_rect()
+            if h0 > 2.0 and h1 > 2.0:
+                return float(y0) - oy, float(y1 + h1) - oy
+        except Exception:
+            pass
+        return None
+
+    def arrange(self):
+        """The legend's panels placed in it: the rectangle (or the one bar) over the span of the map boxes it stands beside, the LDOS bar right of it and the thin topo bar under it, every size the span's fraction; before the reference panels have a box, over the span this item's own height gives."""
+        try:
+            W, H = float(self.width()), float(self.height())
+            if W <= 0 or H <= 0:
+                return
+            self.measure()
+            d = self._room
+            rw_f, bw_f, g_f = cmap_shading.LEGEND_RECT_W, cmap_shading.LEGEND_BAR_W, cmap_shading.LEGEND_GAP
+            span = self._span()
+            if span is None:
+                under = 0.0 if self.topo_only else d[2][1] + d[2][3]
+                k = 0.0 if self.topo_only else g_f + bw_f
+                top, bot = 0.0, max((H - under) / (1.0 + k), 1.0)
+            else:
+                top, bot = max(span[0], 0.0), min(span[1], H)
+            h = max(bot - top, 1.0)
+            if self.topo_only:
+                l, t, r, b = d[0]
+                self._cells[0].setGeometry(0, int(round(top - t)), int(round(l + rw_f * h + r)), int(round(h + t + b)))
+                return
+            x0 = max(d[0][0], d[2][0])
+            rw, bw, g = rw_f * h, bw_f * h, g_f * h
+            l, t, r, b = d[0]
+            self._cells[0].setGeometry(int(round(x0 - l)), int(round(top - t)), int(round(rw + l + r)), int(round(h + t + b)))
+            l, t, r, b = d[1]
+            self._cells[1].setGeometry(int(round(x0 + rw + g - l)), int(round(top - t)), int(round(bw + l + r)), int(round(h + t + b)))
+            l, t, r, b = d[2]
+            self._cells[2].setGeometry(int(round(x0 - l)), int(round(bot + g - t)), int(round(rw + l + r)), int(round(bw + t + b)))
+        except RuntimeError:
+            return                         # the legend's widgets are gone (the block was built again)
+
+
+class _BlendBar(QtWidgets.QWidget):
+    """
+    Machinery: one bar of the topo and LDOS combination in Map's block (default 1 and default 2), a left bar
+    or an under bar of controls.MapBlock (bar_width, bar_below, bar_sides, measure): one axes in a cell of its
+    own, which the bar places itself from the box of `ref` as drawn (the axes of the panel it belongs to),
+    every size a fraction of that box's height.  `side` 'left': left of the box and as tall as it, `thick`
+    of the box's height wide (the colour square's topo bar, its tick values and label on its left).  `side`
+    'under': under the box and as wide as it, `thick` of the box's height tall (the colour square's LDOS bar;
+    the legend rectangle under a map), its tick values and label under it and, for a legend, 'Topo' on its
+    left.  The gap between the box and the bar is cmap_shading.BLEND_GAP of the box's height.  The widget
+    itself only takes the bar's room in the block; it draws nothing and takes no mouse events.
+    """
+
+    def __init__(self, fig, cell, ax, ref, side, thick):
+        super().__init__()
+        self.setAttribute(QtCore.Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self.fig = fig
+        self._cell = cell
+        self.ax = ax
+        self._ref = ref
+        self.side = side
+        self.thick = float(thick)
+        self._room = None                  # the room around the bar's box in its cell, (l, t, r, b) (measure)
+        cell.setParent(self)
+        cell.show()
+
+    def measure(self):
+        """The room around the bar's box in its cell read again (the tick values and labels): controls.MapBlock calls it once per layout pass, arrange at every placement."""
+        try:
+            self._room = tuple(float(v) for v in self.ax._decor_px())
+        except Exception:
+            self._room = (0.0, 0.0, 0.0, 0.0)
+
+    def _rooms(self):
+        if self._room is None:
+            self.measure()
+        return self._room
+
+    def bar_width(self, h):
+        """The width a left bar needs beside a box h pixels tall: its tick values and label, the bar and the gap (an under bar: none)."""
+        if self.side != 'left':
+            return 0.0
+        l, t, r, b = self._rooms()
+        return l + (self.thick + cmap_shading.BLEND_GAP) * max(float(h), 1.0) + r
+
+    def bar_below(self, h):
+        """The room an under bar needs under a box h pixels tall: the gap, the bar and its tick values and label (a left bar: none)."""
+        if self.side != 'under':
+            return 0.0
+        l, t, r, b = self._rooms()
+        return (cmap_shading.BLEND_GAP + self.thick) * max(float(h), 1.0) + t + b
+
+    def bar_sides(self, h):
+        """The room an under bar's labels need left and right of the box it stands under (a left bar: none)."""
+        if self.side != 'under':
+            return 0.0, 0.0
+        l, t, r, b = self._rooms()
+        return l, r
+
+    def sizeHint(self):
+        return QtCore.QSize(24, 24)
+
+    def minimumSizeHint(self):
+        return QtCore.QSize(4, 4)
+
+    def resizeEvent(self, ev):
+        super().resizeEvent(ev)
+        self.arrange()
+
+    def arrange(self):
+        """The bar's cell placed from the reference box as drawn: left of it over its height, or under it over its width; nothing before the reference panel has a box."""
+        try:
+            x0, y0, w0, h0 = self._ref._px_rect()
+            if not (w0 > 2.0 and h0 > 2.0):
+                return
+            vp = self.fig.canvas.viewport()
+            if not vp.isAncestorOf(self):
+                return
+            o = self.mapTo(vp, QtCore.QPoint(0, 0))
+            self.measure()
+            l, t, r, b = self._room
+            gap, th = cmap_shading.BLEND_GAP * h0, self.thick * h0
+            if self.side == 'left':
+                bx, by, bw, bh = x0 - gap - th, y0, th, h0
+            else:
+                bx, by, bw, bh = x0, y0 + h0 + gap, w0, th
+            self._cell.setGeometry(int(round(bx - l - o.x())), int(round(by - t - o.y())),
+                                   int(round(bw + l + r)), int(round(bh + t + b)))
+        except RuntimeError:
+            return                         # the bar's widgets are gone (the block was built again)
+
+
 class _LightColumn(QtWidgets.QWidget):
     """
     Machinery: Map's light panels as one shaped item of the top row (qtplot.PanelRow: height_for_width and
-    width_for_height answer a number): the Contour / Shading box and the 'max' box over them, as the tip-height
+    width_for_height answer a number): the Contour / Shading box over them, as the tip-height
     boxes are over the topos, then the light's top view over its side view at one width, the top view square and
     the side view cmap_shading.LIGHT_SIDE_RATIO of that width in height, so that the two at one scale together
     span the row's plot-box band (the top view's top edge on the band's top, the side view's bottom edge on its
@@ -1592,7 +1842,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
     row, the topo sub-section | the cluster (the stripe 'Topo', one heatmap per partition, colour bar),
     over the tip-height profile and the spectrum, its legend panel at its right; Map: the top row, the
     topo sub-section | the spectrum with its legend panel above it | the light's top view over its side
-    view with the Contour / Shading box and the 'max' box above them, over the rows of energy maps).
+    view with the Contour / Shading box above them, over the rows of energy maps).
     Every count and value is a number box (the arrow keys step its digits; at most four digits
     shown, _number_box); the orbital hover labels are widgets.HoverLabels.
     The physics and the caches are Unified_STM_Simulator's.
@@ -1606,23 +1856,21 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         self.parse_vasp_outputs("LOCPOT")
         self.p1, self.p2 = None, None
         self.erange, self.ldos_height = list(erange), ldos_height
-        # The colour-map set the window shows ('default 1' or 'default 2', cmap_shading.SETS; the 'cmap set' choice
+        # The colour-map set the window shows ('default 1', 'default 2' or 'default 3', cmap_shading.SETS; the 'cmap set' choice
         # changes it: _on_cmap_set), and the Map view's 'cmap norm': off, every map on one
         # colour scale, the maximum over all of them, with one colour bar; on, each map its own scale with
         # its own bar beside it.
         self.cmap_set = cmap_set
         self.cmap_norm = False
         # The Map view's Contour / Shading box's state (cmap_shading.BoxState: at most one of Contour and Shading
-        # on, both may be off; the shading by Height or Relief; the Relief shade's light, its azimuth az and its
-        # elevation el in degrees, which the two light panels show and set), kept through every view change: it
-        # starts with Contour on, Shading off, Height and the light at azimuth 45 and elevation 45 (_on_shade_box,
-        # _light_motion).  The energy maps' shade while Shading is on, kept with what it was made from (_map_shade).
+        # on, both may be off; under Shading the Height and Relief toggles, each on or off on its own, with a
+        # strength each, 0 to 1 (the number box at the end of its line: 1 makes its darkest point black, 0 shades
+        # nothing); the Relief shade's light, its azimuth az and its elevation el in degrees, which the two light
+        # panels show and set), kept through every view change: it starts with Contour on, Shading off, Height on
+        # at 0.05, Relief off at 0.5 and the light at azimuth 45 and elevation 45 (_on_shade_box, _light_motion).
+        # The energy maps' shades while they are shaded, kept with what they were made from (_map_shade).
         self.shade_state = cmap_shading.BoxState()
         self._shade_cache = None
-        # The shading's darkness (the 'max' box over Map's light panels, 0 to 1; _on_darkness): the floor of the
-        # L* stretch is 1 - darkness, in Height and Relief alike (_draw_shaded_slice): 1 makes the darkest point
-        # black, 0 shades nothing.  It starts at 0.5, the darkest point at half its colour's L*.
-        self.darkness = 0.5
         # Map's light panels (_light_column, the last item of its top row): the light's top view and side view axes
         # (ax_light_top over ax_light_side) and their cmap_shading.LightPanel (light_top, light_side), sharing
         # shade_state; None outside Map.
@@ -2061,7 +2309,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         only report): the view radio, RUN, the toggles, the broadening box, the tip-height boxes
         with their Rerun buttons, each topo's Crop / Uncrop box and line of cursor values, the left column's
         stack of number boxes (E Min and E Max each with its 'bias' toggle beside it, in its frame), the
-        Contour / Shading box and the 'max' box (placed over Map's light panels, _light_column), the
+        Contour / Shading box (placed over Map's light panels, _light_column), the
         cluster's label; the pick / drag
         handlers connected once.  The window's layout is installed here; _build_ui fills the
         panel area per view and shows the controls of the view.
@@ -2070,7 +2318,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         # automatic layout: the one rule for every window (nothing placed by hand).
         self.ui_radio = controls.make(fig, 'mode', value=self.mode)
         self.ui_radio.on_change(self._on_mode_change)
-        # The colour-map set: 'default 1' or 'default 2' (cmap_shading.SET_NAMES), every panel recoloured in place on a change.
+        # The colour-map set: 'default 1', 'default 2' or 'default 3' (cmap_shading.SET_NAMES), every panel recoloured in place on a change.
         self.ui_cmap_set = controls.Radio(fig, 'cmap set', value=self.cmap_set, labels=list(cmap_shading.SET_NAMES), title='cmap set')
         self.ui_cmap_set.on_change(self._on_cmap_set)
         self.btn_run = controls.make(fig, 'RUN')
@@ -2136,17 +2384,15 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         for c in (self.s_topo_cx, self.s_topo_cy, self.s_ldos_cx, self.s_ldos_cy, self.s_path_pts, self.s_num_marks,
                   self.s_nepts, self.s_ldos_gamma):
             c.on_change(self._on_ui_change)
-        # The Contour / Shading box (over Map's light panels, _light_column): the Contour and Shading toggles and the Height /
-        # Relief radio ('shading by'), made by cmap_shading.build_box with this figure and the controls module, at
-        # the window's box state (shade_state); untitled.  A click applies the box's rules
-        # (at most one on, both may be off) and redraws the energy maps only (_on_shade_box).
+        # The Contour / Shading box (over Map's light panels, _light_column): the Contour and Shading toggles and,
+        # next to them, the Height line over the Relief line, each its toggle with its strength box (0 to 1, no
+        # label) at the end of the line, made by cmap_shading.build_box with this figure and the controls module,
+        # at the window's box state (shade_state); untitled.  A click or an edit applies the box's rules (Contour
+        # and Shading: at most one on, both may be off; Height and Relief each on its own) and redraws the energy
+        # maps only (_on_shade_box).
         self.shade_box = cmap_shading.build_box(fig, controls, on_change=self._on_shade_box, state=self.shade_state,
                                                 title=None)
-        # The 'max' box (over Map's light panels, under the Height / Relief box, in its own frame): the shading's
-        # darkness, 0 to 1, starting at 0.5 (darkness); an edit redraws the shaded energy maps only (_on_darkness).
-        self.s_darkness = controls.make(fig, 'darkness', value=self.darkness, label='max')
-        self.s_darkness.on_change(self._on_darkness)
-        self._box_darkness = controls.box(self.s_darkness)
+        self._sync_height_box()                    # the Height line's number box only where Height takes a strength
         # Extra broadening: one row per atom type, its check, its σ box (always shown and editable) and 'eV'.  A
         # box's value is used only while its check is on (_on_broadening_change).
         self.chk_broad, self.s_broad = {}, {}
@@ -2239,7 +2485,8 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         # The number rule (at most four digits, the leading 0 shown, every digit seen: _number_box) on every number box.
         for box in (self.s_topo_bias, self.s_emin, self.s_emax):
             self._number_box(box, '-0.000')
-        for box in (self.s_topo_h, self.s_ldos_h, self.s_darkness) + tuple(self.s_broad.values()):
+        for box in ((self.s_topo_h, self.s_ldos_h, self.shade_box.height_max, self.shade_box.relief_max)
+                    + tuple(self.s_broad.values())):
             self._number_box(box, '00.00')
         for box in self._cursor_boxes.values():
             self._number_box(box, '-000.0')
@@ -2288,7 +2535,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         main.setSpacing(round(8 / (1000 / 72) * plt.em_px()))
         main.addWidget(left_w)
         main.addLayout(self._panel_area, 1)
-        # (The Contour / Shading box and the 'max' box are over Map's light panels, in its top row: _light_column.)
+        # (The Contour / Shading box is over Map's light panels, in its top row: _light_column.)
         root = QtWidgets.QVBoxLayout()
         root.setSpacing(round(6 / (1000 / 72) * plt.em_px()))
         root.addWidget(self._title_cell)
@@ -2304,6 +2551,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         self.line_decomp_axes = []
         self.map_axes = []
         self.cax_list = []
+        self._reset_map_square()
         # The pick / drag handlers, connected once per figure.
         self.fig.canvas.mpl_connect('pick_event', self._on_pick)
         self.fig.canvas.mpl_connect('motion_notify_event', self._on_motion)
@@ -2942,10 +3190,10 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
                 sub.deleteLater()
 
     def _kept_widgets(self):
-        """Machinery: the widgets made once and reused by every build (detached before a view's panels are deleted: _clear_panels): the tip-height boxes, the two Crop / Uncrop boxes and the two lines of cursor values, the cluster's label, the legend's Back button, and Map's light panels' two boxes (the Contour / Shading box's frame and the 'max' box's: _light_column)."""
+        """Machinery: the widgets made once and reused by every build (detached before a view's panels are deleted: _clear_panels): the tip-height boxes, the two Crop / Uncrop boxes and the two lines of cursor values, the cluster's label, the legend's Back button, and Map's light panels' two boxes (the Contour / Shading box's frame: _light_column)."""
         return ((self._box_topo_h, self._box_ldos_h, self._cluster_label.qt, self._btn_back.qt)
                 + tuple(self._box_crop.values()) + tuple(self._cursor_line.values())
-                + (self.shade_box.qt, self._box_darkness))
+                + (self.shade_box.qt,))
 
     def _clear_cluster(self):
         """Machinery: the Line / Path cluster's axes removed and its row emptied (it is built again only when its panel count changes: _build_heat_row); the markers' scatters on Line's or Path's LDOS topo removed with the other counterparts (_make_line_markers makes them all again).  The LDOS topo panel, with its LDOS h box and its drawing (_line_topo_*), is the topo sub-section's (_build_ui) and stays."""
@@ -2973,13 +3221,31 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         self._stripe_lc, self._stripe_len, self._prof_line = None, None, None
         self._line_markers, self._line_markers_n = [], None
 
+    def _reset_map_square(self):
+        """Machinery: Map's Height colour square parts forgotten (their axes and widgets are the block's to remove: _clear_map_rows): the topo panels (map_topo_axes) and what they show, the maps' legends and the topo panels' colour bars (_map_legends, _map_topo_legends; _SquareLegend) with what they show, the markers' scatters on the topo panels (_map_topo_marks), the legends' axes (_map_extra_axes) and the square the block was built with (_block_square; None: no square in use)."""
+        self.map_topo_axes, self._map_extra_axes = [], []
+        self._map_legends, self._map_topo_legends = [], []
+        self._map_legend_state, self._map_topo_state, self._map_topo_arts = {}, {}, {}
+        self._map_topo_marks = {}                  # the Map markers shown on each topo panel (its scatter, by partition)
+        self._map_legend_sig, self._map_topo_drawn, self._block_square = None, None, None
+        # The topo and LDOS combination's parts (default 1 and default 2; _build_map_block, _show_map_blend): the
+        # colour square panels (one in front of each partition's maps), each one's topo bar and LDOS bar, the
+        # legend rectangles under the maps ('cmap norm'), and what they show.
+        self.map_square_axes = []
+        self._blend_topo_bars, self._blend_ldos_bars, self._blend_legends = [], [], []
+        self._blend_drawn = {}                     # {an axes or a bar: what it was last drawn for}
+        self._blend_scale = {}                     # {a bar with an LDOS scale: (v_min, v_max, legend or not, labelsize)}
+
     def _clear_map_rows(self):
         """Machinery: the Map rows' axes removed and their cells deleted out of the block (they are rebuilt when the counts change)."""
-        for ax in list(self.map_axes) + list(getattr(self, 'cax_list', None) or []):
+        for ax in (list(self.map_axes) + list(getattr(self, 'cax_list', None) or [])
+                   + list(getattr(self, 'map_topo_axes', None) or []) + list(getattr(self, 'map_square_axes', None) or [])
+                   + list(getattr(self, '_map_extra_axes', None) or [])):
             if ax in self.fig.axes:
                 ax.remove()
         self.map_axes = []
         self.cax_list = []
+        self._reset_map_square()
         for c in self._map_cells:
             c.setParent(None)
             c.deleteLater()
@@ -2987,7 +3253,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         if self._map_block is not None:
             self._map_block.set_groups([], None)           # the energy maps only (the spectrum is in the top row)
         # The built block's state (_build_map_block, _fill_map): none until the block is built again.
-        self._block_key = None                     # (partitions, E Pts, 'cmap norm', per-partition bars) of the built block
+        self._block_key = None                     # (partitions, E Pts, 'cmap norm', per-partition bars, the Height colouring in use: _square_kind) of the built block
         self._map_state, self._map_cbar_state, self._map_marks = {}, {}, {}
         self._map_titles, self._map_ylabels = {}, {}
         self._map_marks_xy, self._contour_z = None, None
@@ -3076,7 +3342,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
           Map: the top row, the topo sub-section, then the spectrum, its plot box held equal to a topo
           panel's (_spec_box_follow), with its legend panel above it, then the light panels (_light_column:
           the top view over the side view at one width, together spanning the row's plot-box band, the
-          Contour / Shading box and the 'max' box above them), over the energy maps' wrapping block under
+          Contour / Shading box above them), over the energy maps' wrapping block under
           its label ('a_top'; the block's rows and columns chosen again at every placement for the largest
           maps, controls.MapBlock).
         Every row holds one plot-box height (Figure.align_row).  The limits: in Line and Path a topography's
@@ -3204,6 +3470,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
             groups, free = [topos, maps], None
             self.map_axes = []
             self.cax_list = []
+            self._reset_map_square()
             self.marks = self.ax_ldos_topo.scatter([], [], s=150, edgecolors='black', zorder=15, picker=5)
             fig.align_row(self.cax_topo, self.ax_global_topo, self.ax_ldos_topo, self.ax_spec)
         self._topo_group = topos
@@ -3383,18 +3650,18 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         l, t, rr, b = ax._decor_px()
         return (bw + l + rr + sub.layout().spacing() + legend.minimumWidth(), r[3])
 
-    # --- Map's light panels (the top row's last item): the Contour / Shading box, the 'max' box and the two panels ---
+    # --- Map's light panels (the top row's last item): the Contour / Shading box and the two panels ---
 
     def _light_column(self):
         """
         Machinery: Map's light panels, the last item of its top row (_LightColumn): over them the Contour / Shading
-        box (Contour and Shading side by side, next to the Height / Relief box) with the 'max' box (the shading's
-        darkness) under the Height / Relief box, as the tip-height boxes are over the topos; under them the light's
+        box (Contour and Shading side by side, next to the Height line over the Relief line, each with its
+        strength box at its end), as the tip-height boxes are over the topos; under it the light's
         top view (ax_light_top,
         square: its frame is the plane from above) over its side view (ax_light_side), at one width, together as
         tall as the row's plot boxes.  On them the two light panels, just the controls, at the window's box state
         (cmap_shading.draw_light_top and draw_light_side: their LightPanel shares shade_state with the box; greyed
-        in Height, taking no drags), which the window's mouse events reach (_on_press, _light_motion, _on_rel).
+        with the Relief toggle off, taking no drags), which the window's mouse events reach (_on_press, _light_motion, _on_rel).
         Returns the item's widget.
         """
         cell_t, cell_s = self.fig.cell(min_px=(10, 10)), self.fig.cell(min_px=(10, 10))
@@ -3406,10 +3673,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(round(3 / (1000 / 72) * plt.em_px()))
         lay.addWidget(self.shade_box.qt)
-        # The 'max' box under the Height / Relief box, the last item of the row above it: at the right.
-        lay.addWidget(self._box_darkness, 0, QtCore.Qt.AlignmentFlag.AlignRight)
         self.shade_box.qt.show()                   # detached (hidden) since the last build (_clear_panels)
-        self._box_darkness.show()
         self.light_top = cmap_shading.draw_light_top(self.ax_light_top, self.shade_state)
         self.light_side = cmap_shading.draw_light_side(self.ax_light_side, self.shade_state)
         col = _LightColumn(self, above, cell_t, cell_s, self.ax_light_top, self.ax_light_side)
@@ -3536,6 +3800,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
                 axs.append(getattr(self, 'ax_ldos_topo', None))
             if self.mode == 'Map':
                 axs.extend(getattr(self, 'map_axes', None) or [])
+                axs.extend(getattr(self, 'map_topo_axes', None) or [])     # the Height square's topo panels
         figure_axes = self.fig.axes
         return [a for a in axs if a is not None and a in figure_axes]
 
@@ -3549,6 +3814,8 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
                 self.cell_rotated = flag
             else:
                 self.ldos_rotated = flag
+        if getattr(self, 'map_square_axes', None):
+            self._show_map_blend()                 # the colour square panels take the maps' turned box shape
         self._spec_box_follow()
         for w in self._crop_live():
             self._place_stubs(w)
@@ -4062,14 +4329,25 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
 
     def _draw_shaded_slice(self, ax, slice_data, diverging, abs_m, v_min, v_max, gamma, shade):
         """
-        Machinery: one energy map on `ax` with the box's Shading on, as an RGBA mesh, nothing recomputed: one colour
+        Machinery: one energy map on `ax` with a shading on, as an RGBA mesh, nothing recomputed: one colour
         per unique grid point of the slice (cmap_shading.unique_points: the cell's duplicate edge left out), on the
-        GPU: the branch's isoluminant shading map (_map_role_cmap: CET-I1, CET-D11 for the signed spin density,
-        CET-I3 for |m|) through the map's own norm, as its filled contours take it (Normalize(v_min, v_max) for the
-        signed spin density, else PowerNorm(LDOS γ `gamma`, v_min, v_max)), then the shade (`shade`, _map_shade) by
-        the L* stretch at the floor 1 - darkness (cmap_shading.shaded_rgba; the 'max' box over the light panels, in
-        Height and Relief alike: darkness 1 makes the darkest point black, 0 shades nothing, 0.5 at start).  The
-        colours, moved to the host, drawn by qtplot's
+        GPU, through the map's own norm, as its filled contours take it (Normalize(v_min, v_max) for the signed
+        spin density, else PowerNorm(LDOS γ `gamma`, v_min, v_max)).  `shade` is _map_shade's pair (the Height
+        shade, the Relief shade; None for a shading that is off).
+        - Height where the branch has the topo and LDOS combination (_map_square: the LDOS maps of default 1 and
+          default 2): the LDOS and the height looked up together in the set's topo map and Map map combined
+          (cmap_shading.blend_rgba); no strength.
+        - Height where the branch has a colour square (_map_square: default 3's LDOS maps, m1ds): the LDOS and the
+          height looked up together in the square, darkened by the Height strength at the lowest height
+          (cmap_shading.square_rgba).
+        - Height elsewhere (the Mag branches): the branch's isoluminant shading map (CET-D11 for the signed spin
+          density, CET-I3 for |m|), then the L* stretch by the heights at the floor 1 - Height strength
+          (cmap_shading.lstar_stretch).
+        - Relief alone: the L* stretch by the Relief shade at the floor 1 - Relief strength, on the map
+          _map_role_cmap gives (the LDOS maps of default 1 and default 3: the set's own Map map; elsewhere the
+          isoluminant shading map).
+        - Both: the Height colours as above, then the Relief stretch on top of them, each at its own strength.
+        The colours, moved to the host, drawn by qtplot's
         pcolormesh with an (M, N, 4) C (shading 'flat'), each point's quad centred on it (cmap_shading.mesh_corners:
         steps a / (N - 1) and b / (N - 1)), one mesh at each offset of the images the maps show (_map_offsets).  Each mesh is given the
         map's data value of each cell (QuadMesh.set_values: the slice at the cell's point, (M, N) as the colours),
@@ -4077,11 +4355,23 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         when the map is drawn again).
         """
         n = int(round(np.sqrt(len(self.grid_xy))))
-        cmap = self._map_role_cmap(diverging, abs_m)
+        st = self.shade_state
+        h_shade, r_shade = shade
         norm = (plt.Normalize(vmin=v_min, vmax=v_max) if diverging
                 else plt.PowerNorm(gamma, vmin=v_min, vmax=v_max))
         values = cmap_shading.unique_points(slice_data)
-        rgba = cp.asnumpy(cmap_shading.shaded_rgba(values, shade, cmap, norm, floor=1.0 - self.darkness))
+        square = self._map_square(diverging, abs_m) if h_shade is not None else None
+        if isinstance(square, TopoLdosBlend):
+            rgba = cmap_shading.blend_rgba(values, h_shade, norm, square)
+        elif square is not None:
+            rgba = cmap_shading.square_rgba(values, h_shade, norm, square, st.height_max)
+        else:
+            rgba = cmap_shading.colormap_rgba(values, self._map_role_cmap(diverging, abs_m), norm)
+            if h_shade is not None:
+                rgba = cmap_shading.lstar_stretch(rgba, h_shade, floor=1.0 - st.height_max)
+        if r_shade is not None:
+            rgba = cmap_shading.lstar_stretch(rgba, r_shade, floor=1.0 - st.relief_max)
+        rgba = cp.asnumpy(rgba)
         X, Y = cmap_shading.mesh_corners(self.lv[0, :2] / (n - 1), self.lv[1, :2] / (n - 1), rgba.shape[:2],
                                          offsets=self._map_offsets())
         meshes = [ax.pcolormesh(X[k], Y[k], rgba, shading='flat') for k in range(len(X))]
@@ -4093,36 +4383,39 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
 
     def _map_shade(self):
         """
-        Machinery: the energy maps' shade while the box's Shading is on (None while it is off), one for every map,
-        since it depends on the heights only (and in Relief on the light): the LDOS-topo heights Map's maps were computed at (map_z, Map's own,
+        Machinery: the energy maps' shades while they are shaded (None while no shading is on: Shading off, or
+        on with the Height and Relief toggles both off), one pair for every map, since they depend on the heights
+        only (and Relief's on the light): (the Height shade, the Relief shade), None for the one whose toggle is
+        off.  Both from the LDOS-topo heights Map's maps were computed at (map_z, Map's own,
         whose height range the contour slice's level is a fraction of) at the cell's unique grid points (cmap_shading.unique_points:
-        row i along b, column j along a), CuPy float32 on the GPU, shaded by cmap_shading.shade_field in the box's
-        mode: Height, the heights themselves; Relief, Kovesi's relief.m with the window's light (shade_state's az
-        and el, degrees, which the light panels set: azimuth 0 up and increasing clockwise, elevation above the
-        plane; 45 and 45 at start, relief.m's defaults) and its other defaults, the steps a / (N - 1) and
-        b / (N - 1), periodic=True (the taps wrap around the cell) and panel_turn 90 while the unit-cell panels are
-        drawn turned (cell_rotated), else 0, so the light keeps its azimuth on screen as the map is shown.  The L*
-        stretch then runs over this shade's range over the cell (cmap_shading.lstar_stretch).  Kept (_shade_cache)
-        with its key (the mode; in Relief the turn and the light, az and el) and made again only when the key or
-        the heights change.
+        row i along b, column j along a), CuPy float32 on the GPU.  Height: the heights themselves
+        (cmap_shading.height_shade).  Relief: Kovesi's relief.m (cmap_shading.shade_field) with the window's light
+        (shade_state's az and el, degrees, which the light panels set: azimuth 0 up and increasing clockwise,
+        elevation above the plane; 45 and 45 at start, relief.m's defaults) and its other defaults, the steps
+        a / (N - 1) and b / (N - 1), periodic=True (the taps wrap around the cell) and panel_turn 90 while the
+        unit-cell panels are drawn turned (cell_rotated), else 0, so the light keeps its azimuth on screen as the
+        map is shown.  Each shading then runs over its shade's range over the cell (_draw_shaded_slice).  Kept
+        (_shade_cache) with its key (the two toggles; with Relief the turn and the light, az and el) and made
+        again only when the key or the heights change.
         """
         st = self.shade_state
-        mode = st.shade_mode
-        if mode is None:
+        if not (st.shade_height or st.shade_relief):
             return None
-        relief = mode == cmap_shading.RELIEF
+        relief = st.shade_relief
         turn = (90.0 if self.ldos_rotated else 0.0) if relief else None
         light = (st.az, st.el) if relief else None
-        key = (mode, turn, light)
+        key = (st.shade_height, relief, turn, light)
         z = self.map_z
         kept = self._shade_cache
         if kept is not None and kept[0] == key and np.array_equal(kept[1], z):
             return kept[2]
         n = int(round(np.sqrt(len(z))))
         heights = cmap_shading.unique_points(cp.asarray(z, dtype=cp.float32))
-        shade = cmap_shading.shade_field(heights, mode, self.lv[0, :2] / (n - 1), self.lv[1, :2] / (n - 1),
-                                         panel_turn=0.0 if turn is None else turn, periodic=True,
-                                         az=st.az, el=st.el)
+        h_shade = cmap_shading.height_shade(heights) if st.shade_height else None
+        r_shade = (cmap_shading.shade_field(heights, cmap_shading.RELIEF, self.lv[0, :2] / (n - 1),
+                                            self.lv[1, :2] / (n - 1), panel_turn=turn, periodic=True,
+                                            az=st.az, el=st.el) if relief else None)
+        shade = (h_shade, r_shade)
         self._shade_cache = (key, np.array(z, copy=True), shade)
         return shade
 
@@ -4131,8 +4424,36 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         return self._map_role_cmap(use_diverging, bool(self.show_mag and has_mag))
 
     def _map_role_cmap(self, diverging, abs_m):
-        """Machinery: the energy maps' colour map for a branch (the signed spin density `diverging`, |m| `abs_m`, else the LDOS: cmap_shading.map_role, 'mag', '|m|' or 'map'): the window's colour-map set's map of that role (_cmap), or while the box's Shading is on its isoluminant shading map (cmap_shading.SHADING_CMAPS: 'CET-D11', 'CET-I3', 'CET-I1'), which the colour bars then show unshaded."""
-        return self._cmap(cmap_shading.map_role(diverging, abs_m), shading=self.shade_state.shading)
+        """Machinery: the energy maps' colour map for a branch (the signed spin density `diverging`, |m| `abs_m`, else the LDOS: cmap_shading.map_role, 'mag', '|m|' or 'map'): the window's colour-map set's map of that role (_cmap) while no shading is on, and for a Relief shade alone where it is applied to the set's own map (cmap_shading.relief_on_set_map: the LDOS maps of default 1 and default 3, the blue Map map); otherwise, while a shading is on, the role's isoluminant shading map (cmap_shading.SHADING_CMAPS: 'CET-D11', 'CET-I3', 'CET-I1'), which the colour bars then show unshaded.  (Where the Height shading colours the maps by the topo and LDOS combination or by the colour square, _map_square, no colour map does and the legends replace the bars.)"""
+        role = cmap_shading.map_role(diverging, abs_m)
+        st = self.shade_state
+        if not (st.shade_height or st.shade_relief):
+            return self._cmap(role)
+        if not st.shade_height and cmap_shading.relief_on_set_map(self.cmap_set, role):
+            return self._cmap(role)
+        return self._cmap(role, shading=True)
+
+    def _map_square(self, diverging, abs_m):
+        """Machinery: what the Height shading colours the energy maps of a branch with now: for the LDOS maps of default 1 and default 2 the set's topo map and Map map combined (cmap_shading.height_blend: the set's TopoLdosBlend, _window_blend), for default 3's LDOS maps the colour square (cmap_shading.height_square: m1ds), or None: while Height is not shading the maps (Shading or the Height toggle off) and in the Mag branches."""
+        if not self.shade_state.shade_height:
+            return None
+        role = cmap_shading.map_role(diverging, abs_m)
+        if cmap_shading.height_blend(self.cmap_set, role):
+            return _window_blend(self.cmap_set)
+        return cmap_shading.height_square(self.cmap_set, role)
+
+    @staticmethod
+    def _square_kind(square):
+        """Machinery: the kind of Height colouring `square` (_map_square's) is, which decides the block's panels (_build_map_block): 'blend' (the topo and LDOS combination: a colour square panel with its two bars in front of each partition's maps and a legend rectangle under each map with 'cmap norm'), 'square' (the colour square m1ds: a topo panel in front of each partition's maps and the colour rectangle legends), or None."""
+        if isinstance(square, TopoLdosBlend):
+            return 'blend'
+        return 'square' if square is not None else None
+
+    def _sync_height_box(self):
+        """Machinery: the Height line's strength box shown only in a set whose Height shading of the LDOS maps takes a strength (default 3: the colour square, darkened at the lowest height) and hidden in default 1 and default 2, whose combination of the topo map and the Map map takes none; the box's value is kept (the Mag branches' Height shading uses it in every set)."""
+        box = getattr(self, 'shade_box', None)
+        if box is not None:
+            box.height_max.qt.setVisible(not cmap_shading.height_blend(self.cmap_set, 'map'))
 
     def _map_vmax(self, slice_data, group_vmax):
         """Machinery: an energy map's colour-scale maximum: its own (the largest |value| of the slice) with 'cmap norm' on, else its group's (the partition's with show_dcmp_norm, the whole set's otherwise); never 0."""
@@ -4169,19 +4490,25 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
 
     def _on_cmap_set(self, label):
         """
-        Machinery: the colour-map set chosen ('cmap set': 'default 1' or 'default 2', cmap_shading.SETS), running or not:
+        Machinery: the colour-map set chosen ('cmap set': 'default 1', 'default 2' or 'default 3', cmap_shading.SETS), running or not:
         every panel drawn now takes, in place (set_cmap; nothing recomputed, made anew or arranged again), the
         new set's map of the role it is drawn in: the filled contours of the topo panels (the global topo and the
         LDOS topo) and the topo colour bar's ramp ('topo'), the Line / Path stripe ('topo'), each
         heatmap (its colour bar follows its mesh), each energy map drawn as filled contours (the role of the branch
-        it was drawn in, from its _set_map_slice signature) and the energy maps' colour bars; then one draw.  A
-        shaded energy map and a colour bar showing a shading map keep them (the shading maps are the same in both
-        sets).  What is drawn later takes the set's maps where it is drawn (_cmap).
+        it was drawn in, from its _set_map_slice signature) and the energy maps' colour bars; then one draw.
+        While a shading is on, the energy maps are then brought to the new set's shading (_shading_changed: the
+        sets shade the LDOS maps differently, default 1 and default 2 by their own topo map and Map map combined,
+        default 3 by the Height colour square, and under Relief alone default 1 and default 3 on their own Map
+        map, so the shaded maps are drawn again, their colour bars take the map now shaded, and the block is
+        built again when its kind of Height colouring changes).  The Height line's strength box is shown where
+        Height takes a strength (_sync_height_box).  What is drawn later takes the set's maps where it is drawn
+        (_cmap).
         """
         old = self.cmap_set
         if label == old:
             return
         self.cmap_set = label
+        self._sync_height_box()
 
         def same_role(c):
             # The new set's map of the role the kept map `c` (a heatmap's, a colour bar's) has in the old set.
@@ -4214,6 +4541,8 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         for st in self._map_cbar_state.values():
             st['cmap'] = same_role(st['cmap'])
             st['cb'].mappable.set_cmap(st['cmap'])
+        if self.shade_state.shade_height or self.shade_state.shade_relief:
+            self._shading_changed()
         self.fig.canvas.draw_idle()
 
     def _on_mode_change(self, label):
@@ -5263,9 +5592,12 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
 
             # The block is built only when its panel count changes (the partitions of the level, E Pts,
             # the colour bars of 'cmap norm'); otherwise each map takes its new data in place (_fill_map).
-            built = (num_p, nepts, self.cmap_norm, self.show_dcmp_norm) != self._block_key
+            # The Height colour square in use for the branch drawn (_map_square): its topo panels and legends are
+            # part of the block.
+            square = self._map_square(use_diverging, bool(self.show_mag and has_mag))
+            built = (num_p, nepts, self.cmap_norm, self.show_dcmp_norm, self._square_kind(square)) != self._block_key
             if built:
-                self._build_map_block(num_p, nepts)
+                self._build_map_block(num_p, nepts, square)
 
             m_coords_np = np.array(self.marker_coords)
 
@@ -5310,6 +5642,11 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
 
             if not self.show_dcmp_norm and not self.cmap_norm and len(processed_partitions) > 0:
                 self._set_map_cbar(0, global_vmin, global_vmax, use_diverging, has_mag)
+            # The Height colour square's topo panels (and their colour bars) and the legends' shaded parts; the
+            # topo and LDOS combination's colour square panels and their bars.
+            self._show_map_topos()
+            self._refresh_legends()
+            self._show_map_blend()
             if built:
                 # A new block's colour bars have their ticks only now: one more arrangement, so that each bar's cell
                 # is sized with them and its box keeps its width (TOPO_BAR_W, MAP_BAR_W) instead of giving it up to the ticks.
@@ -5947,46 +6284,438 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
                 line.set_color(color)
         self._move_line_markers(last_run=True)
 
-    def _build_map_block(self, num_p, nepts):
+    def _build_map_block(self, num_p, nepts, square=None):
         """
         Machinery: the Map view's block of energy maps built anew, only when its panel count changes (num_p
-        partitions of the level, nepts maps each, the colour bars of 'cmap norm'): nepts maps per
+        partitions of the level, nepts maps each, the colour bars of 'cmap norm', the Height colour square coming
+        into use or going out of it): nepts maps per
         partition, wrapped into the rows and columns that make each map largest in the block's region, chosen
         again at every placement, a resize included (controls.MapBlock; rule 11), a
         colour bar cell per partition (show_dcmp_norm), one per map ('cmap norm') or one for the
         whole block (automatic layout); the energy maps only (the spectrum is in the top row: _build_ui).
+        With `square` (the Height colour square in use, _map_square), each partition's cells start with a topo
+        panel, a panel of a map's size and shape that the block places as one more map (map_topo_axes), with
+        its own colour bar of the topo colours alone beside it (a _SquareLegend, topo_only: a map's own bar
+        under 'cmap norm', else a lead bar taking room in the first column only), and every colour bar of the
+        maps is the square's legend instead (_SquareLegend: the colour rectangle with its two thin bars), in the
+        same places (_map_legends, by the slots of cax_list).
+        With `square` the topo and LDOS combination instead (a TopoLdosBlend: default 1 and default 2), each
+        partition's cells start with a colour square panel, a panel of a map's size and shape that the block
+        places as one more map (map_square_axes), with its topo bar left of it (_blend_topo_bars, a left bar of
+        the block) and its LDOS bar under it (_blend_ldos_bars, an under bar); with 'cmap norm' every map has
+        its legend rectangle under it (_blend_legends, by the map's index; an under bar), and without it the
+        maps have no bar of their own: the colour square's LDOS bar carries their scale.  No colour bar cell is
+        made (_BlendBar; _show_map_blend, _set_blend_scale).
         The maps' contents are drawn by _fill_map; _update_all then calls _rearrange().
         """
         self._clear_map_rows()
-        groups, cell_bars = [], {}
+        self._block_square = square
+        blend = isinstance(square, TopoLdosBlend)
+        if blend:
+            square = None                          # below, `square` is the colour square m1ds alone
+        groups, cell_bars, lead_bars, left_bars, under_bars = [], {}, {}, {}, {}
         for r in range(num_p):
-            cells = []
+            cells, row_maps = [], []
+            if blend:
+                ax_s, cell_s = self._cell_axes()
+                self.map_square_axes.append(ax_s)
+                cells.append(cell_s)
+                topo_bar = self._make_blend_bar(ax_s, 'left', cmap_shading.BLEND_BAR_W)
+                ldos_bar = self._make_blend_bar(ax_s, 'under', cmap_shading.BLEND_BAR_W)
+                self._blend_topo_bars.append(topo_bar)
+                self._blend_ldos_bars.append(ldos_bar)
+                left_bars[cell_s] = topo_bar
+                under_bars[cell_s] = ldos_bar
+            if square is not None:
+                ax_t, cell_t = self._cell_axes()
+                ax_t.set_rotated(self.ldos_rotated)
+                self.map_topo_axes.append(ax_t)
+                cells.append(cell_t)
+                lg = self._make_legend(True, (ax_t, ax_t))
+                self._map_topo_legends.append(lg)
+                (cell_bars if self.cmap_norm else lead_bars)[cell_t] = lg
             for _ in range(nepts):
                 ax_m, cell = self._cell_axes()
                 ax_m.set_rotated(self.ldos_rotated)
                 self.map_axes.append(ax_m)
+                row_maps.append(ax_m)
                 cells.append(cell)
-                if self.cmap_norm:
-                    # 'cmap norm': every map its own colour bar beside it (cax_list by the map's index).
-                    bar = self.fig.cell(inner_w=self.MAP_BAR_W)
-                    self._panel_cells.append(bar)
-                    self.cax_list.append(self.fig.add_axes(cell=bar))
+                if self.cmap_norm and blend:
+                    # 'cmap norm' with the topo and LDOS combination: every map its legend rectangle under it
+                    # (_blend_legends by the map's index).
+                    lg = self._make_blend_bar(ax_m, 'under', cmap_shading.BLEND_LEGEND_H)
+                    self._blend_legends.append(lg)
+                    under_bars[cell] = lg
+                elif self.cmap_norm:
+                    # 'cmap norm': every map its own colour bar beside it (cax_list by the map's index; with the
+                    # square its own legend, _map_legends by the map's index).
+                    if square is not None:
+                        bar = self._make_legend(False, (ax_m, ax_m))
+                        self._map_legends.append(bar)
+                    else:
+                        bar = self.fig.cell(inner_w=self.MAP_BAR_W)
+                        self._panel_cells.append(bar)
+                        self.cax_list.append(self.fig.add_axes(cell=bar))
                     cell_bars[cell] = bar
             bar = None
-            if self.show_dcmp_norm and not self.cmap_norm:
-                bar = self.fig.cell(inner_w=self.TOPO_BAR_W)
-                self._panel_cells.append(bar)
-                self.cax_list.append(self.fig.add_axes(cell=bar))
+            if self.show_dcmp_norm and not self.cmap_norm and not blend:
+                if square is not None and row_maps:
+                    bar = self._make_legend(False, (row_maps[0], row_maps[-1]))
+                    self._map_legends.append(bar)
+                else:
+                    bar = self.fig.cell(inner_w=self.TOPO_BAR_W)
+                    self._panel_cells.append(bar)
+                    self.cax_list.append(self.fig.add_axes(cell=bar))
             groups.append((cells, bar))
-            self._map_cells += cells + ([bar] if bar is not None else []) + [cell_bars[c] for c in cells if c in cell_bars]
+            self._map_cells += (cells + ([bar] if bar is not None else []) + [cell_bars[c] for c in cells if c in cell_bars]
+                                + [lead_bars[c] for c in cells if c in lead_bars]
+                                + [left_bars[c] for c in cells if c in left_bars]
+                                + [under_bars[c] for c in cells if c in under_bars])
         shared = None
-        if not self.show_dcmp_norm and not self.cmap_norm:
-            shared = self.fig.cell(inner_w=self.TOPO_BAR_W)
-            self._panel_cells.append(shared)
-            self.cax_list.append(self.fig.add_axes(cell=shared))
+        if not self.show_dcmp_norm and not self.cmap_norm and not blend:
+            if square is not None and self.map_axes:
+                shared = self._make_legend(False, (self.map_axes[0], self.map_axes[-1]))
+                self._map_legends.append(shared)
+            else:
+                shared = self.fig.cell(inner_w=self.TOPO_BAR_W)
+                self._panel_cells.append(shared)
+                self.cax_list.append(self.fig.add_axes(cell=shared))
             self._map_cells.append(shared)
-        self._map_block.set_groups(groups, shared_bar=shared, cell_bars=cell_bars)   # no extra cell: the spectrum is in the top row
-        self._block_key = (num_p, nepts, self.cmap_norm, self.show_dcmp_norm)
+        self._map_block.set_groups(groups, shared_bar=shared, cell_bars=cell_bars, lead_bars=lead_bars,
+                                   left_bars=left_bars, under_bars=under_bars)   # no extra cell: the spectrum is in the top row
+        self._block_key = (num_p, nepts, self.cmap_norm, self.show_dcmp_norm, self._square_kind(self._block_square))
+
+    # --- the topo and LDOS combination's colour square panels, bars and legends (Map; default 1 and default 2) ---
+
+    def _make_blend_bar(self, ref, side, thick):
+        """
+        Machinery: one bar of the topo and LDOS combination for the block (_BlendBar): an axes in a cell of its
+        own that the bar places itself, left of the box of `ref` (`side` 'left') or under it ('under'), `thick`
+        of the box's height thick, following `ref` at every placement of it.  Its axes is kept for removal with
+        the block (_map_extra_axes).  Returns the bar.
+        """
+        cell = self.fig.cell(min_px=(2, 2))
+        self._panel_cells.append(cell)
+        ax = self.fig.add_axes(cell=cell)
+        self._map_extra_axes.append(ax)
+        bar = _BlendBar(self.fig, cell, ax, ref, side, thick)
+        ref.on_placed(bar.arrange)
+        return bar
+
+    def _draw_blend_scale(self, bar, v_min, v_max, legend, labelsize=None):
+        """
+        Machinery: a bar of the topo and LDOS combination drawn with an LDOS scale v_min..v_max running left to
+        right, its tick values in units of 10^exp under it over 'LDOS (a.u. 1e<exp>)' (the energy maps' colour
+        bars' unit and label).  `legend`: the legend rectangle under a map, the combination's colours with the
+        height running bottom to top, 'Topo' on its left reading bottom to top; otherwise the colour square's
+        LDOS bar, the set's Map map alone, unaltered.  The colours are the window's set's now (_window_blend).
+        """
+        blend = _window_blend(self.cmap_set)
+        fs = 8 if labelsize is None else labelsize
+        v_min, v_max = float(v_min), float(v_max)
+        hi = v_max if v_max > v_min else v_min + 1e-15
+        ax = bar.ax
+        ax.clear()
+        if legend:
+            ax.imshow(blend.square(256, 32), origin='lower', extent=(v_min, hi, 0.0, 1.0), aspect='auto')
+        else:
+            ax.imshow(blend.ldos_bar()[None, :, :], origin='lower', extent=(v_min, hi, 0.0, 1.0), aspect='auto')
+        ax.set_xlim(v_min, hi)
+        ax.set_ylim(0.0, 1.0)
+        ax.set_yticks([])
+        if legend:
+            ax.set_ylabel('Topo', fontsize=fs)
+        exp = int(np.floor(np.log10(v_max))) if v_max > 0 else 0
+        ax.xaxis.set_major_formatter(plt.ticker.FuncFormatter(lambda x, pos, e=exp: f"{x / (10 ** e):.1f}"))
+        ax.tick_params(axis='x', labelsize=fs)
+        ax.set_xlabel(f"LDOS (a.u. 1e{exp})", fontsize=fs)
+        self._blend_drawn[bar] = self.cmap_set
+        bar.arrange()
+
+    def _set_blend_scale(self, slot, v_min, v_max, labelsize=None):
+        """
+        Machinery: the energy maps' colour scale v_min..v_max shown with the topo and LDOS combination in use
+        (the slots are _set_map_cbar's): with 'cmap norm' the legend rectangle under map `slot`
+        (_blend_legends); with a scale per partition (show_dcmp_norm) the LDOS bar of partition `slot`'s colour
+        square; with one scale for the block the LDOS bar of every colour square.  Drawn the first time and
+        again when the scale changes (_draw_blend_scale); the scale is kept for a change of colour-map set
+        (_show_map_blend).
+        """
+        if self.cmap_norm:
+            bars, legend = self._blend_legends[slot:slot + 1], True
+        elif self.show_dcmp_norm:
+            bars, legend = self._blend_ldos_bars[slot:slot + 1], False
+        else:
+            bars, legend = list(self._blend_ldos_bars), False
+        want = (float(v_min), float(v_max), legend, labelsize)
+        for bar in bars:
+            if self._blend_scale.get(bar) == want and self._blend_drawn.get(bar) == self.cmap_set:
+                continue
+            self._blend_scale[bar] = want
+            self._draw_blend_scale(bar, v_min, v_max, legend, labelsize)
+
+    def _show_map_blend(self):
+        """
+        Machinery: the topo and LDOS combination's colour square panels (map_square_axes, one in front of each
+        partition's maps; none while the combination is not in use) and their bars shown for the state, each
+        drawn again only when what it shows changed.  The panel: the combination's colour square
+        (TopoLdosBlend.square: the LDOS left to right, the height bottom to top), its box of a map's shape
+        (the LDOS topo's view, which the maps share, turned as they are), no ticks, no title.  Its topo bar,
+        left of it: the set's topo map alone, unaltered, over the heights' range (map_z) in Å, its tick values
+        and 'height (Å)' on its left.  Its LDOS bar, under it: with 'cmap norm' (every map its own scale) the
+        set's Map map alone, unaltered, from 'low' to 'high' over 'LDOS (a.u.)'; otherwise the maps' scale
+        (_set_blend_scale).  A bar or legend with a scale drawn in another colour-map set's colours is drawn
+        again in this one's (the change between default 1 and default 2, which keeps the block).
+        """
+        if self.mode != 'Map' or not self.map_square_axes or not cmap_shading.height_blend(self.cmap_set, 'map'):
+            return
+        blend = _window_blend(self.cmap_set)
+        xr, yr, _ = self._panel_view('ldos')
+        dx, dy = abs(float(xr[1]) - float(xr[0])), abs(float(yr[1]) - float(yr[0]))
+        ratio = ((dx / dy) if self.ldos_rotated else (dy / dx)) if dx > 0 and dy > 0 else 1.0
+        z_lo, z_hi = self._map_z_range()
+        if not z_hi > z_lo:
+            z_hi = z_lo + 1.0
+        labelsize = 6 if self.cmap_norm else None
+        fs = 8 if labelsize is None else labelsize
+        figure_axes = self.fig.axes
+        sig = (self.cmap_set, round(ratio, 6))
+        for ax in self.map_square_axes:
+            if ax not in figure_axes or self._blend_drawn.get(ax) == sig:
+                continue
+            ax.clear()
+            ax.imshow(blend.square(), origin='lower', extent=(0.0, 1.0, 0.0, 1.0), aspect='auto')
+            ax.set_xlim(0.0, 1.0)
+            ax.set_ylim(0.0, 1.0)
+            ax.set_xticks([])
+            ax.set_yticks([])
+            ax.set_box_aspect(ratio)
+            self._blend_drawn[ax] = sig
+        sig = (self.cmap_set, z_lo, z_hi)
+        for bar in self._blend_topo_bars:
+            if self._blend_drawn.get(bar) == sig:
+                continue
+            ax = bar.ax
+            ax.clear()
+            ax.imshow(blend.topo_bar()[:, None, :], origin='lower', extent=(0.0, 1.0, z_lo, z_hi), aspect='auto')
+            ax.set_xlim(0.0, 1.0)
+            ax.set_ylim(z_lo, z_hi)
+            ax.set_xticks([])
+            ax.tick_params(axis='y', labelsize=fs)
+            ax.set_ylabel('height (Å)', fontsize=fs)
+            self._blend_drawn[bar] = sig
+            bar.arrange()
+        if self.cmap_norm:
+            for bar in self._blend_ldos_bars:
+                if self._blend_drawn.get(bar) == self.cmap_set:
+                    continue
+                ax = bar.ax
+                ax.clear()
+                ax.imshow(blend.ldos_bar()[None, :, :], origin='lower', extent=(0.0, 1.0, 0.0, 1.0), aspect='auto')
+                ax.set_xlim(0.0, 1.0)
+                ax.set_ylim(0.0, 1.0)
+                ax.set_yticks([])
+                ax.set_xticks([0.0, 1.0], ['low', 'high'])
+                ax.tick_params(axis='x', labelsize=fs)
+                ax.set_xlabel('LDOS (a.u.)', fontsize=fs)
+                self._blend_drawn[bar] = self.cmap_set
+                bar.arrange()
+        for bar, (v_min, v_max, legend, lsize) in list(self._blend_scale.items()):
+            if self._blend_drawn.get(bar) != self.cmap_set:
+                self._draw_blend_scale(bar, v_min, v_max, legend, lsize)
+
+    # --- the Height colour square's legends and topo panels (Map) ---
+
+    def _make_legend(self, topo_only, refs):
+        """
+        Machinery: one legend of the Height colour square for the block (_SquareLegend): its panels, each an
+        axes in a cell of its own that the legend places itself (the colour rectangle, the LDOS bar and the thin
+        topo bar; with `topo_only` the one bar of the topo colours, of the rectangle's shape), standing beside
+        the map boxes from `refs[0]`'s top to `refs[1]`'s bottom (the axes of the first and the last panel it
+        spans), which it follows at every placement of theirs.  Its axes are kept for removal with the block
+        (_map_extra_axes).  Returns the legend.
+        """
+        cells, axes = [], []
+        for _ in range(1 if topo_only else 3):
+            cell = self.fig.cell(min_px=(2, 2))
+            self._panel_cells.append(cell)
+            cells.append(cell)
+            axes.append(self.fig.add_axes(cell=cell))
+        self._map_extra_axes.extend(axes)
+        lg = _SquareLegend(cells, axes, refs, topo_only)
+        for a in dict.fromkeys(refs):
+            a.on_placed(lg.arrange)
+        return lg
+
+    def _map_z_range(self):
+        """Machinery: the lowest and the highest finite height of the LDOS topo Map's maps were computed at (map_z), the range the Height colour square's topo axis runs over (cmap_shading.square_rgba's, the LDOS topo panel's own scale); (0, 0) without heights."""
+        z = self.map_z
+        if z is None:
+            return 0.0, 0.0
+        z = np.asarray(z, dtype=np.float64)
+        z = z[np.isfinite(z)]
+        if not z.size:
+            return 0.0, 0.0
+        return float(z.min()), float(z.max())
+
+    def _legend_sig(self):
+        """Machinery: what a legend's shaded parts and height labels depend on: the Height strength and the heights' range."""
+        return (self.shade_state.height_max,) + self._map_z_range()
+
+    def _draw_legend_colours(self, lg, labelsize=None):
+        """
+        Machinery: a legend's colour rectangle and thin topo bar drawn at the Height strength
+        (cmap_shading.square_legend): the rectangle with the LDOS running up and the height left to right, shaded
+        as the maps are; the thin topo bar under it, the topo colours alone with the shading that applies along
+        it, its two ends labelled with the lowest and the highest height (Å, one decimal) over 'height (Å)'.
+        """
+        rect, _, topo_bar = cmap_shading.square_legend(self._block_square, self.shade_state.height_max)
+        fs = 8 if labelsize is None else labelsize
+        ax = lg.ax_rect
+        ax.clear()
+        ax.imshow(rect, origin='lower', extent=(0.0, 1.0, 0.0, 1.0), aspect='auto')
+        ax.set_xlim(0.0, 1.0)
+        ax.set_ylim(0.0, 1.0)
+        ax.set_xticks([])
+        ax.set_yticks([])
+        z_lo, z_hi = self._map_z_range()
+        ax = lg.ax_topo
+        ax.clear()
+        ax.imshow(topo_bar[None, :, :], origin='lower', extent=(0.0, 1.0, 0.0, 1.0), aspect='auto')
+        ax.set_xlim(0.0, 1.0)
+        ax.set_ylim(0.0, 1.0)
+        ax.set_yticks([])
+        ax.set_xticks([0.0, 1.0], [f"{z_lo:.1f}", f"{z_hi:.1f}"])
+        ax.tick_params(axis='x', labelsize=fs)
+        ax.set_xlabel('height (Å)', fontsize=fs)
+
+    def _set_map_legend(self, slot, v_min, v_max, labelsize=None):
+        """
+        Machinery: the energy maps' legend _map_legends[slot] at v_min..v_max (the Height colour square in use;
+        the slots are cax_list's): drawn the first time (the colour rectangle and the thin topo bar,
+        _draw_legend_colours; the LDOS bar, the LDOS colours alone at mid height with no shading, as a colour
+        bar over v_min..v_max with its ticks in units of 10^exp), then updated in place when its scale changes:
+        the LDOS bar's norm, and its vertical title 'LDOS (a.u. 1e<exp>)' when the exponent changes.
+        """
+        lg = self._map_legends[slot]
+        sig = (float(v_min), float(v_max))
+        st = self._map_legend_state.get(slot)
+        if st is None:
+            self._draw_legend_colours(lg, labelsize)
+            ldos_bar = cmap_shading.square_legend(self._block_square, 0.0)[1]
+            sm = plt.cm.ScalarMappable(cmap=plt.ListedColormap([tuple(c) for c in ldos_bar]),
+                                       norm=plt.Normalize(vmin=v_min, vmax=v_max))
+            sm.set_array([])
+            cb = self.fig.colorbar(sm, cax=lg.cax)
+            if labelsize is not None:
+                lg.cax.tick_params(labelsize=labelsize)
+            st = {'cb': cb, 'sig': None, 'exp': None, 'labelsize': labelsize}
+            self._map_legend_state[slot] = st
+            self._map_legend_sig = self._legend_sig()
+        if st['sig'] == sig:
+            return
+        st['cb'].mappable.set_norm(plt.Normalize(vmin=v_min, vmax=v_max))
+        exp = int(np.floor(np.log10(v_max)))
+        if exp != st['exp']:
+            st['cb'].ax.yaxis.set_major_formatter(plt.ticker.FuncFormatter(lambda x, pos, e=exp: f"{x / (10 ** e):.1f}"))
+            st['cb'].set_label(f"LDOS (a.u. 1e{exp})", fontsize=10 if labelsize is None else labelsize)
+        st.update(sig=sig, exp=exp)
+
+    def _refresh_legends(self):
+        """Machinery: the legends drawn now given the Height strength and the heights' range when either changed since they were drawn (_legend_sig): each one's colour rectangle and thin topo bar drawn again (_draw_legend_colours); the LDOS bars, unshaded, stay."""
+        if not self._map_legend_state:
+            return
+        sig = self._legend_sig()
+        if sig == self._map_legend_sig:
+            return
+        for slot, st in self._map_legend_state.items():
+            self._draw_legend_colours(self._map_legends[slot], st['labelsize'])
+        self._map_legend_sig = sig
+
+    def _show_map_topos(self):
+        """
+        Machinery: the Height colour square's topo panels (map_topo_axes, one in front of each partition's
+        maps; none while the square is not in use) shown for the state, drawn again only when the heights, the
+        Height strength or the view (the LDOS topo's, which they share with the maps: _view_key) differ from
+        what they show: the LDOS-topo heights Map's maps were computed at (map_z) alone, in the square's topo
+        colours at mid LDOS with the Height shading at its strength and never the Relief shade
+        (cmap_shading.square_topo_rgba), as one RGBA mesh at each cell offset, as a shaded map is drawn
+        (_draw_shaded_slice), each mesh given the heights for the toolbar's readout; the view's limits and,
+        while the view is widened, the white outline of the cells shown; 'LDOS topo' as the first one's title
+        (the titles of the later partitions' maps are empty too), no ticks, and the Map markers as the energy
+        maps show them (a scatter made at its first drawing, which _place_map_markers moves with the others;
+        shown only, not picked on this panel).  Then each one's
+        colour bar (_map_topo_legends: the topo colours alone with the shading that applies along them, over
+        the heights' range in Å, titled 'height (Å)'), drawn the first time and updated in place.
+        """
+        if not self.map_topo_axes or self.map_z is None:
+            return
+        st = self.shade_state
+        view = self._view_key('ldos')
+        sig = (st.height_max, view)
+        kept = self._map_topo_drawn
+        if kept is None or kept[0] != sig or not np.array_equal(kept[1], self.map_z):
+            n = int(round(np.sqrt(len(self.grid_xy))))
+            heights = cmap_shading.unique_points(cp.asarray(self.map_z, dtype=cp.float32))
+            rgba = cp.asnumpy(cmap_shading.square_topo_rgba(heights, self._block_square, st.height_max))
+            X, Y = cmap_shading.mesh_corners(self.lv[0, :2] / (n - 1), self.lv[1, :2] / (n - 1), rgba.shape[:2],
+                                             offsets=self._map_offsets())
+            values = cp.asnumpy(heights)
+            xr, yr, widened = self._panel_view('ldos')
+            figure_axes = self.fig.axes
+            for p_idx, ax in enumerate(self.map_topo_axes):
+                if ax not in figure_axes:
+                    continue
+                first = p_idx not in self._map_topo_arts
+                for art in self._map_topo_arts.get(p_idx, []):
+                    try:
+                        art.remove()
+                    except Exception:
+                        pass
+                arts = [ax.pcolormesh(X[k], Y[k], rgba, shading='flat') for k in range(len(X))]
+                for mesh in arts:
+                    mesh.set_values(values)
+                if widened:
+                    c = self._block_corners('ldos')
+                    pts = np.vstack([c, c[:1]])
+                    arts += list(ax.plot(pts[:, 0], pts[:, 1], color=self.CELLS_LINE_COLOR, lw=self.CELLS_LINE_LW,
+                                         ls='-', zorder=4.4, label='_cells'))
+                ax.set_aspect('equal')
+                ax.set_xlim(*xr)
+                ax.set_ylim(*yr)
+                if first:
+                    ax.set_title('LDOS topo' if p_idx == 0 else '', fontsize=10)
+                    ax.set_xticks([])
+                    ax.set_yticks([])
+                    # The Map markers, shown as on the energy maps (same places, colours and size; shown only,
+                    # not picked here: a marker is dragged from an energy map or the LDOS topo).
+                    m_xy = np.array(self.marker_coords, dtype=float).reshape(-1, 2)
+                    self._map_topo_marks[p_idx] = ax.scatter(m_xy[:, 0], m_xy[:, 1], color=self.m_colors[:len(m_xy)],
+                                                             s=30, edgecolors='white', zorder=5)
+                self._map_topo_arts[p_idx] = arts
+            self._map_topo_drawn = (sig, np.array(self.map_z, copy=True))
+        lsig = self._legend_sig()
+        labelsize = 6 if self.cmap_norm else None
+        for i, lg in enumerate(self._map_topo_legends):
+            ts = self._map_topo_state.get(i)
+            if ts is not None and ts['sig'] == lsig:
+                continue
+            topo_bar = cmap_shading.square_legend(self._block_square, st.height_max)[2]
+            cmap = plt.ListedColormap([tuple(c) for c in topo_bar])
+            z_lo, z_hi = self._map_z_range()
+            norm = plt.Normalize(vmin=z_lo, vmax=z_hi)
+            if ts is None:
+                sm = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
+                sm.set_array([])
+                cb = self.fig.colorbar(sm, cax=lg.cax)
+                if labelsize is not None:
+                    lg.cax.tick_params(labelsize=labelsize)
+                cb.set_label('height (Å)', fontsize=10 if labelsize is None else labelsize)
+                self._map_topo_state[i] = {'cb': cb, 'sig': lsig}
+            else:
+                ts['cb'].mappable.set_cmap(cmap)
+                ts['cb'].mappable.set_norm(norm)
+                ts['sig'] = lsig
 
     def _fill_map(self, k, p_idx, i, p_label, slice_data, v_min, v_max, target_e, use_diverging, has_mag, m_coords_np):
         """
@@ -6043,6 +6772,8 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         if self.mode != 'Map' or not self._map_state:
             return
         view = self._view_key('ldos')
+        self._show_map_topos()                     # the Height colour square's topo panels follow the view too
+        self._show_map_blend()                     # the colour square panels keep the maps' box shape
         if all(st.get('view') == view for st in self._map_state.values()):
             return
         figure_axes = self.fig.axes
@@ -6055,11 +6786,12 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         """
         Machinery: energy map k shown with its data and signature `sig` (_set_map_slice's): drawn again when the
         data, the signature, the view (the LDOS topo's, which the maps share: _view_key) or the box's shading
-        (Shading's mode and its shade, _map_shade, which a Relief light
-        change makes anew; while shaded, the darkness) differ from what it shows, otherwise nothing is touched.
+        (the shades of the shadings that are on, _map_shade, which a Relief light
+        change makes anew; while shaded, the two strengths and the colour-map set) differ from what it shows,
+        otherwise nothing is touched.
         The old drawing removed (its filled contours or its shaded meshes), the slice is drawn again as the set's
-        filled contours (_draw_map_slice; TriContourSet has no set_array) or, with Shading on, as the shaded RGBA
-        mesh at the window's darkness (_draw_shaded_slice), over every image that reaches into the view, with the
+        filled contours (_draw_map_slice; TriContourSet has no set_array) or, with a shading on, as the shaded RGBA
+        mesh at the box's strengths (_draw_shaded_slice), over every image that reaches into the view, with the
         view's limits and, while the view is widened, the white outline of the cells shown; _map_state keeps what
         it shows.
         """
@@ -6067,7 +6799,7 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         view = self._view_key('ldos')
         st = self._map_state.get(k)
         if (st is not None and st['sig'] == sig and st['shade'] is shade and st.get('view') == view
-                and (shade is None or st['darkness'] == self.darkness)
+                and (shade is None or st['strength'] == self._shade_strength())
                 and cp.array_equal(st['data'], slice_data)):
             return
         if st is not None:
@@ -6093,16 +6825,21 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
                                    zorder=4.4, label='_cells'))
         ax.set_xlim(*xr)
         ax.set_ylim(*yr)
-        self._map_state[k] = {'cs': cs, 'mesh': meshes, 'sig': sig, 'shade': shade, 'darkness': self.darkness,
+        self._map_state[k] = {'cs': cs, 'mesh': meshes, 'sig': sig, 'shade': shade, 'strength': self._shade_strength(),
                               'data': slice_data.copy(), 'view': view, 'outline': outline}
+
+    def _shade_strength(self):
+        """Machinery: what a shaded energy map's colours depend on besides its shades and its data: the box's two strengths and the colour-map set (which decides the map or the square a shading colours with), as one tuple a drawn map keeps (_show_map_slice)."""
+        return (self.shade_state.height_max, self.shade_state.relief_max, self.cmap_set)
 
     def _reshade_maps(self):
         """
         Machinery: in Map, every energy map drawn now shown again from what it shows (its kept data and signature,
-        _map_state) under the box's shading, its light and the darkness (_show_map_slice: only a map whose shading
+        _map_state) under the box's shadings, their light and strengths (_show_map_slice: only a map whose shading
         changed is drawn again, as filled contours or as the shaded RGBA mesh), and the energy maps' colour bars given the maps' colour map
-        (the set's, or the shading map unshaded while Shading is on: _map_role_cmap); nothing computed, made anew or
-        arranged again.  The caller draws the canvas.
+        (the set's, or the shading map unshaded while one is used: _map_role_cmap); with the Height colour square
+        in use, its topo panels and the legends' shaded parts drawn again when the Height strength changed
+        (_show_map_topos, _refresh_legends); nothing computed, made anew or arranged again.  The caller draws the canvas.
         """
         if self.mode != 'Map' or not self._map_state:
             return
@@ -6116,37 +6853,50 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
             if st['cmap'] is not cmap:
                 st['cmap'] = cmap
                 st['cb'].mappable.set_cmap(cmap)
+        self._show_map_topos()
+        self._refresh_legends()
+        self._show_map_blend()
+
+    def _shade_rebuild_needed(self):
+        """Machinery: whether Map's built block no longer has the panels the shading asks for: the panels and bars of the Height colouring (the topo and LDOS combination's colour square panels, bars and legends; the colour square's topo panels and legends) are part of the block (_build_map_block), so the block is built again when the kind of Height colouring changes (_square_kind: the Shading or Height toggle, the colour-map set)."""
+        if self.mode != 'Map' or getattr(self, '_block_key', None) is None or not self._map_state:
+            return False
+        diverging, abs_m = next(iter(self._map_state.values()))['sig'][:2]
+        return self._square_kind(self._map_square(diverging, abs_m)) != self._block_key[4]
+
+    def _shading_changed(self):
+        """
+        Machinery: the energy maps brought to the box's shading, display only (no LDOS recomputed): when the
+        Height colour square comes into use or goes out of it, the block built again with or without its topo
+        panels and legends, from the last run's data with RUN off (_shade_rebuild_needed; _update_all, last_run,
+        whose arrangement follows the new block); otherwise, or when there is nothing to build from, the maps
+        drawn now shown again in place (_reshade_maps).  The caller draws the canvas.
+        """
+        if self._shade_rebuild_needed():
+            self._update_all(last_run=True)
+            if not self._shade_rebuild_needed():
+                return
+        self._reshade_maps()
 
     def _on_shade_box(self, state):
         """
-        Machinery: the Contour / Shading box clicked (cmap_shading.build_box has applied its rules to `state`, the
-        window's shade_state, and set the toggles to match), running or not, display only (no LDOS recomputed,
-        nothing arranged again): the level line on the topo colour bar shown with Contour on and hidden with it
-        off; the energy maps drawn again for Shading (_reshade_maps: the shaded RGBA mesh, or the set's maps and
-        filled contours again); the contour slice's traces on the energy maps drawn (Contour on) or removed
+        Machinery: the Contour / Shading box clicked or one of its strength boxes edited (cmap_shading.build_box
+        has applied its rules to `state`, the window's shade_state, and set the controls to match), running or
+        not, display only (no LDOS recomputed): the level line on the topo colour bar shown with Contour on and
+        hidden with it off; the energy maps brought to the shading (_shading_changed: the shaded RGBA mesh, or
+        the set's maps and filled contours again; the block built again when the Height colour square comes into
+        use or goes out of it); the contour slice's traces on the energy maps drawn (Contour on) or removed
         (_draw_contour_artists); the two light panels drawn at the state (LightPanel.update: greyed, taking no
-        drags, in Height; in colour in Relief); then one draw.  The info panel's settings section lists the box's
-        controls.
+        drags, with the Relief toggle off; in colour with it on); then one draw.  The info panel's settings
+        section lists the box's controls.
         """
         if self._level_line is not None:
             self._level_line.set_visible(state.contour)
-        self._reshade_maps()
+        self._shading_changed()
         self._draw_contour_artists()
         for p in (self.light_top, self.light_side):
             if p is not None:
                 p.update()
-        self.fig.canvas.draw_idle()
-
-    def _on_darkness(self, value):
-        """
-        Machinery: the 'max' box (over Map's light panels; 0 to 1, clamped by the box) edited, running or not,
-        display only (no LDOS recomputed, nothing arranged again): the shading's darkness set (darkness: the L*
-        stretch's floor is 1 - darkness, in Height and Relief alike, _draw_shaded_slice), the shaded energy maps
-        drawn again at it (_reshade_maps: only while the box's Shading is on), then one draw.  The info panel's
-        settings section lists the box with the other controls.
-        """
-        self.darkness = float(value)
-        self._reshade_maps()
         self.fig.canvas.draw_idle()
 
     def _light_motion(self, event):
@@ -6155,8 +6905,8 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         panel sets the light by its rule from the mouse's point, inside the panel or not (LightPanel.motion: the
         top view the azimuth only, the side view the elevation only).  When the light changed: both panels drawn
         at it (LightPanel.update: the top view's dot moves with the elevation), the energy maps shaded again live
-        (_reshade_maps: the Relief shade made anew for the new light, _map_shade; nothing redrawn while Shading is
-        off or in Height), the info panel's azimuth and elevation lines (_light_changed), then one draw.  True
+        (_reshade_maps: the Relief shade made anew for the new light, _map_shade; nothing redrawn while Relief
+        is not shading the maps), the info panel's azimuth and elevation lines (_light_changed), then one draw.  True
         while a dot is held (the motion is the light's), else False.
         """
         for p in (self.light_top, self.light_side):
@@ -6175,8 +6925,16 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         Machinery: the energy maps' colour bar cax_list[slot] at v_min..v_max: drawn the first time
         (_draw_map_cbar), then updated in place when its scale changes: its norm and colour map
         (ScalarMappable.set_norm / set_cmap; the bar follows), its tick unit and exponent title
-        when the exponent changes.
+        when the exponent changes.  With the Height colour square in use the slot holds its legend instead
+        (_set_map_legend); with the topo and LDOS combination in use the scale goes to its bars
+        (_set_blend_scale).
         """
+        if self.map_square_axes:
+            self._set_blend_scale(slot, v_min, v_max, labelsize=labelsize)
+            return
+        if self._map_legends:
+            self._set_map_legend(slot, v_min, v_max, labelsize=labelsize)
+            return
         cax = self.cax_list[slot]
         cmap = self._map_cmap(use_diverging, has_mag)
         sig = (float(v_min), float(v_max))
@@ -6198,11 +6956,11 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         st.update(sig=sig, cmap=cmap, exp=exp)
 
     def _place_map_markers(self):
-        """Machinery: the Map markers (marker_coords) placed on every counterpart together: the LDOS topo's scatter (Map's placement panel) and each energy map's (a drag moves them; the spectrum follows on release)."""
+        """Machinery: the Map markers (marker_coords) placed on every counterpart together: the LDOS topo's scatter (Map's placement panel), each energy map's (a drag moves them; the spectrum follows on release) and, with the Height colour square in use, each topo panel's (_map_topo_marks: shown only)."""
         xy = np.array(self.marker_coords)
         recolor = self._map_marks_xy is None or len(self._map_marks_xy) != len(xy)
         cols = self.m_colors[:len(xy)]
-        for sc in [self.marks] + list(self._map_marks.values()):
+        for sc in [self.marks] + list(self._map_marks.values()) + list(self._map_topo_marks.values()):
             sc.set_offsets(xy)
             if recolor:
                 sc.set_facecolors(cols)
@@ -6309,8 +7067,8 @@ class Interactive_STM_Simulator(Unified_STM_Simulator):
         return cx <= event.x <= cx + cw and cy <= py <= cy + ch
 
     def _on_press(self, event):
-        # Map's light panels first: a left press on a light's dot while Relief grabs it (LightPanel.press; in Height
-        # they take no drags), and the press is theirs.
+        # Map's light panels first: a left press on a light's dot while the Relief toggle is on grabs it (LightPanel.press; with it
+        # off they take no drags), and the press is theirs.
         if any(p is not None and p.press(event) for p in (self.light_top, self.light_side)):
             return
         # A left press on a crop cursor's stub (its end past the frame, outside every plot box, so no pick reaches

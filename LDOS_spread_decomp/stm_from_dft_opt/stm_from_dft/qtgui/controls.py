@@ -1986,6 +1986,24 @@ class MapBlock(QtWidgets.QWidget):
     `cell_bars` ({cell: bar cell}) puts a narrow colour-bar cell right of each map named,
     inside the map's column (the simulator's 'cmap norm': every map its own scale and bar, as the
     sm4_Browser grid view).
+    `lead_bars` ({cell: bar}) puts a bar right of a partition's first cell only (the simulator's
+    topo panel of the Height colour square, with the maps sharing a legend): its room is taken in
+    the first column alone, every later column of every row starting that much further right.
+    A bar of any kind may be a shaped bar, a widget with `bar_width(h)` (the width it needs when
+    the map boxes it stands beside span h pixels, from the first box's top to the last box's
+    bottom), `bar_below(h)` (the room it needs under the last of those boxes) and optionally
+    `measure()` (called once per layout pass, before those questions): the simulator's colour
+    rectangle legends, whose width follows their height.
+    `left_bars` ({cell: bar}) puts a bar left of a partition's first cell (the colour bar left of
+    the simulator's colour square panel): its room (bar_width) is taken at the left of the block,
+    every cell of every row starting that much further right.
+    `under_bars` ({cell: bar}) puts a bar under a cell, as wide as the cell (the colour bar under
+    the simulator's colour square panel, the legend rectangle under a map): its room is taken
+    under the cell's row (bar_below), and the cells are made wide enough for the room it asks for
+    left and right of the box it stands under (its optional `bar_sides(h)`: (left, right)).
+    With a shaped bar, a lead bar, a left bar or an under bar the block is sized and placed by
+    _flex_layout (the largest maps found by bisection: _size_flex, _arrange_flex); without one,
+    exactly as before.
     """
 
     def __init__(self, fig, spacing=4):
@@ -1997,6 +2015,9 @@ class MapBlock(QtWidgets.QWidget):
         self._extra = None            # the extra cell (set_groups), one map's size at the first free slot
         self._extra_side = None       # the extra cell's side item (set_groups extra_side), right of it at its row's height
         self._cell_bars = {}          # {cell: bar cell} beside each map named (set_groups cell_bars)
+        self._lead_bars = {}          # {cell: bar} beside a partition's first cell, in the first column only (set_groups lead_bars)
+        self._left_bars = {}          # {cell: bar} left of a partition's first cell, its room at the left of the block (set_groups left_bars)
+        self._under_bars = {}         # {cell: bar} under a cell, its room under the cell's row (set_groups under_bars)
         self._metrics_cache = None    # the cells' Qt-measured room (_metrics), kept for one layout pass (_invalidate)
         self._best_cache = {}         # _best per (W, H) within that pass
         self.cols = 1
@@ -2026,17 +2047,30 @@ class MapBlock(QtWidgets.QWidget):
                  'tb_cells': [[self._tb_of([c]) for c in cells] for cells, _ in self._groups],
                  'tb_extra': self._tb_of([self._extra]) if self._extra is not None else 0.0,
                  'title_w': self._title_w(), 'bar_w': self._bar_w(), 'cell_bar_w': self._cell_bar_w(),
-                 'side_w': self._side_w(), 'ratio': self._ratio()}
+                 'side_w': self._side_w(), 'ratio': self._ratio(),
+                 'split': [[self._top_bottom(c) for c in cells] for cells, _ in self._groups],
+                 'split_extra': self._top_bottom(self._extra) if self._extra is not None else (0.0, 0.0)}
+            for b in self._all_bars():                           # a shaped bar measures its own room once per pass
+                f = getattr(b, 'measure', None)
+                if f is not None:
+                    f()
             self._metrics_cache = m
         return m
 
-    def set_groups(self, groups, shared_bar=None, extra=None, cell_bars=None, extra_side=None):
+    def set_groups(self, groups, shared_bar=None, extra=None, cell_bars=None, extra_side=None, lead_bars=None,
+                   left_bars=None, under_bars=None):
         self._invalidate()
         self._groups = [(list(cells), bar) for cells, bar in groups]
         self._shared = shared_bar
         self._extra = extra
         self._extra_side = extra_side if extra is not None else None   # a side item only beside an extra cell
         self._cell_bars = dict(cell_bars or {})
+        self._lead_bars = dict(lead_bars or {})
+        self._left_bars = dict(left_bars or {})
+        self._under_bars = dict(under_bars or {})
+        for b in list(self._lead_bars.values()) + list(self._left_bars.values()) + list(self._under_bars.values()):
+            b.setParent(self)
+            b.show()
         for cells, bar in self._groups:
             for c in cells + ([bar] if bar is not None else []):
                 c.setParent(self)
@@ -2095,6 +2129,128 @@ class MapBlock(QtWidgets.QWidget):
         if not self._cell_bars:
             return 0.0
         return float(max(b.sizeHint().width() for b in self._cell_bars.values())) + self._sp
+
+    # --- shaped bars and lead bars (the flex path) ---
+
+    def _all_bars(self):
+        """Every bar of the block: the partitions', the shared one, the maps' own, the lead bars, the left bars and the under bars."""
+        bars = [bar for _, bar in self._groups if bar is not None] + ([self._shared] if self._shared is not None else [])
+        return (bars + list(self._cell_bars.values()) + list(self._lead_bars.values())
+                + list(self._left_bars.values()) + list(self._under_bars.values()))
+
+    def _flex(self):
+        """Whether the block is sized and placed by _flex_layout: a lead bar, a left bar, an under bar, or a bar whose width follows its height (bar_width)."""
+        return (bool(self._lead_bars) or bool(self._left_bars) or bool(self._under_bars)
+                or any(hasattr(b, 'bar_width') for b in self._all_bars()))
+
+    @staticmethod
+    def _top_bottom(cell):
+        """(top, bottom) the room over and under a cell's box."""
+        l, t, r, b = cell._decor()
+        return float(t), float(b)
+
+    @staticmethod
+    def _bar_width_of(bar, h):
+        """A bar's width beside map boxes spanning h: a shaped bar's own answer (bar_width), else its size hint's width."""
+        f = getattr(bar, 'bar_width', None)
+        return float(f(h)) if f is not None else float(bar.sizeHint().width())
+
+    @staticmethod
+    def _bar_below_of(bar, h):
+        """The room a bar needs under the last map box it stands beside (a shaped bar's bar_below; 0 for any other)."""
+        f = getattr(bar, 'bar_below', None)
+        return float(f(h)) if f is not None else 0.0
+
+    @staticmethod
+    def _bar_sides_of(bar, h):
+        """The room an under bar asks for left and right of the box it stands under (its bar_sides; (0, 0) for a bar without one)."""
+        f = getattr(bar, 'bar_sides', None)
+        if f is None:
+            return 0.0, 0.0
+        l, r = f(h)
+        return float(l), float(r)
+
+    def _flex_layout(self, n, box_w):
+        """
+        The block at `n` columns with map boxes `box_w` wide, for the flex path: a dict of 'w' and 'h'
+        (the block's size), 'cw' (a cell's width), 'cbw' (a map's own bar's room in its column),
+        'lead_w' (the lead bars' room in the first column), 'left_w' (the left bars' room at the left
+        of the block), 'right' (the cells' right edge), 'bar_w'
+        (the partition / shared bars' room) and 'rows', in order, each {'k': its partition, 'cells':
+        its cells, 'h': its height (the box and the widest room over and under among its cells),
+        'below': the room under it its bars ask for}.  A row's own bars (a map's own, a lead bar, an
+        under bar) are asked at the box's height; a partition's bar and the shared bar at their span,
+        from the first row's box top to the last row's box bottom, their room below added under their
+        last row.  With under bars a cell is at least as wide as the box, the cells' own room beside
+        it and twice the widest room an under bar asks for beside the box (a box is centred in its
+        cell, so that much is free on each side of it).
+        """
+        m = self._metrics()
+        r, lr, sp = m['ratio'], m['lr'], self._sp
+        box_h = box_w * r
+        cw = max(box_w + lr, m['title_w'] + 4.0 / (1000 / 72) * plt.em_px())
+        if self._under_bars:
+            cw = max(cw, box_w + lr + 2.0 * max(max(self._bar_sides_of(b, box_h)) for b in self._under_bars.values()))
+        cbw = (max(self._bar_width_of(b, box_h) for b in self._cell_bars.values()) + sp) if self._cell_bars else 0.0
+        lead_w = (max(self._bar_width_of(b, box_h) for b in self._lead_bars.values()) + sp) if self._lead_bars else 0.0
+        left_w = (max(self._bar_width_of(b, box_h) for b in self._left_bars.values()) + sp) if self._left_bars else 0.0
+        rows, spans = [], []
+        groups = self._groups or ([([], None)] if self._extra is not None else [])
+        for k, (cells, bar) in enumerate(groups):
+            last = k == len(groups) - 1
+            placed = list(cells) + ([self._extra] if self._extra is not None and last else [])
+            split = (list(m['split'][k]) if self._groups else []) + ([m['split_extra']] if self._extra is not None and last else [])
+            first_row = len(rows)
+            for i in range(0, len(placed), n):
+                rc, rs = placed[i:i + n], split[i:i + n]
+                own = [b for c in rc for b in (self._cell_bars.get(c), self._lead_bars.get(c), self._under_bars.get(c))
+                       if b is not None]
+                rows.append({'k': k, 'cells': rc, 'h': box_h + max(t + b for t, b in rs),
+                             'top': max(t for t, b in rs), 'bot': max(b for t, b in rs),
+                             'below': max([self._bar_below_of(b, box_h) for b in own] + [0.0])})
+            mine = rows[first_row:]
+            if mine:
+                span = (sum(q['h'] for q in mine) + (len(mine) - 1) * sp + sum(q['below'] for q in mine[:-1])
+                        - mine[0]['top'] - mine[-1]['bot'])
+                spans.append((bar, span))
+                if bar is not None:
+                    mine[-1]['below'] = max(mine[-1]['below'], self._bar_below_of(bar, span))
+        bar_w = max([self._bar_width_of(bar, span) for bar, span in spans if bar is not None] + [0.0])
+        if self._shared is not None and rows:
+            span = (sum(q['h'] for q in rows) + (len(rows) - 1) * sp + sum(q['below'] for q in rows[:-1])
+                    - rows[0]['top'] - rows[-1]['bot'])
+            rows[-1]['below'] = max(rows[-1]['below'], self._bar_below_of(self._shared, span))
+            bar_w = max(bar_w, self._bar_width_of(self._shared, span))
+        bar_w = bar_w + sp if bar_w > 0 else 0.0
+        right = self._right(n, cw, cbw, m['side_w']) + lead_w + left_w
+        h = sum(q['h'] + q['below'] for q in rows) + (len(rows) - 1) * sp if rows else 1.0
+        return {'w': right + bar_w, 'h': h, 'cw': cw, 'cbw': cbw, 'lead_w': lead_w, 'left_w': left_w, 'right': right,
+                'bar_w': bar_w, 'rows': rows}
+
+    def _size_flex(self, n, W, H):
+        """(w, h, box_w) of the block at `n` columns inside W x H on the flex path: the largest map boxes whose block (_flex_layout) fits the width and the height, found by bisection (the block's size grows with the boxes); the smallest boxes when nothing fits."""
+        R = self._rows(n)
+        r = self._metrics()['ratio']
+
+        def fits(bw):
+            L = self._flex_layout(n, bw)
+            return L['w'] <= W + 1e-6 and L['h'] <= H + 1e-6
+
+        lo, hi = 1.0, max(min(W / n, H / max(R * r, 1e-9)), 1.0)
+        if fits(hi):
+            bw = hi
+        elif not fits(lo):
+            bw = lo
+        else:
+            for _ in range(24):
+                mid = 0.5 * (lo + hi)
+                if fits(mid):
+                    lo = mid
+                else:
+                    hi = mid
+            bw = lo
+        L = self._flex_layout(n, bw)
+        return (L['w'], L['h'], bw)
 
     def _side_w(self):
         """The extra cell's side item's fixed width (its minimumWidth, which QWidget.setFixedWidth sets); None without a side item."""
@@ -2165,6 +2321,8 @@ class MapBlock(QtWidgets.QWidget):
         R = self._rows(n)
         if R == 0:
             return (1.0, 1.0, 0.0)
+        if self._flex():
+            return self._size_flex(n, W, H)                  # a shaped bar or a lead bar: sized by _flex_layout
         m = self._metrics()
         lr, bar_w, cbw = m['lr'], m['bar_w'], m['cell_bar_w']   # cbw: a map's own colour bar beside it, in its column
         sw = m['side_w']
@@ -2244,6 +2402,9 @@ class MapBlock(QtWidgets.QWidget):
         W, H = float(self.width()), float(self.height())
         self._invalidate()                                       # a placement: the cells measured anew
         self._last_shapes = _panel_shapes(self)                  # a layout request places again only when it changes
+        if self._flex():
+            self._arrange_flex(W, H)                             # a shaped bar or a lead bar: placed by _flex_layout
+            return
         w, h, box_w, n = self._best(W, H)
         self.cols = n
         m = self._metrics()
@@ -2295,6 +2456,62 @@ class MapBlock(QtWidgets.QWidget):
             axes = [o for c in row for o in c._bound if isinstance(o, plt.Axes)]
             if len(axes) > 1:
                 self.fig.align_row(*axes)
+
+    def _arrange_flex(self, W, H):
+        """
+        The placement on the flex path, from _flex_layout at the columns and boxes _best chose: each
+        row's cells left to right (every column after the first shifted right by the lead bars' room),
+        a map's own bar right of it, a lead bar right of its partition's first cell, each of them as
+        tall as its row and the room under it; a left bar at the block's left edge beside its
+        partition's first cell (every cell starts right of the left bars' room), as tall as that row
+        and the room under it; an under bar under its cell, as wide as the cell and as tall as the
+        room under the row; each partition's bar, or the shared bar, right of the
+        cells over the rows it spans and the room under the last; the rows aligned as before.  A
+        shaped bar places its own parts in the rectangle it is given.
+        """
+        w, h, box_w, n = self._best(W, H)
+        self.cols = n
+        L = self._flex_layout(n, box_w)
+        sp, cw, cbw, lead_w, left_w = self._sp, L['cw'], L['cbw'], L['lead_w'], L['left_w']
+        sw = self._metrics()['side_w']
+        bx = L['right'] + sp
+        bar_w = max(L['bar_w'] - sp, 1.0)
+        y = 0.0
+        tops = {}                                                # {partition: (its first row's top, its last row's bottom with the room under it)}
+        for q in L['rows']:
+            qh, below = q['h'], q['below']
+            row = []
+            for col, c in enumerate(q['cells']):
+                x = left_w + col * (cw + cbw + sp) + (lead_w if col >= 1 else 0.0)
+                c.setGeometry(int(round(x)), int(round(y)), int(round(cw)), int(round(qh)))
+                row.append(c)
+                b = self._left_bars.get(c)
+                if b is not None:                                # the left bar, at the block's left edge beside its partition's first cell
+                    b.setGeometry(0, int(round(y)), int(round(max(left_w - sp, 1.0))), int(round(qh + below)))
+                b = self._under_bars.get(c)
+                if b is not None:                                # the under bar, under its cell in the room under the row
+                    b.setGeometry(int(round(x)), int(round(y + qh)), int(round(cw)), int(round(max(below, 1.0))))
+                b = self._cell_bars.get(c)
+                if b is not None:                                # the map's own bar, right of it
+                    b.setGeometry(int(round(x + cw + sp)), int(round(y)), int(round(max(cbw - sp, 1.0))), int(round(qh + below)))
+                    if hasattr(b, '_bound'):
+                        row.append(b)
+                b = self._lead_bars.get(c)
+                if b is not None:                                # the lead bar, right of its partition's first cell
+                    b.setGeometry(int(round(x + cw + sp)), int(round(y)), int(round(max(lead_w - sp, 1.0))), int(round(qh + below)))
+                if c is self._extra and sw is not None:          # the extra cell's side item, right of it at the row's top and height
+                    self._extra_side.setGeometry(int(round(x + cw + sp)), int(round(y)), int(round(sw)), int(round(qh)))
+            axes = [o for c in row for o in getattr(c, '_bound', ()) if isinstance(o, plt.Axes)]
+            if len(axes) > 1:
+                self.fig.align_row(*axes)
+            first = tops.get(q['k'], (y, y))[0]
+            tops[q['k']] = (first, y + qh + below)
+            y += qh + below + sp
+        for k, (cells, bar) in enumerate(self._groups):
+            if bar is not None and k in tops:
+                bar.setGeometry(int(round(bx)), int(round(tops[k][0])), int(round(bar_w)), int(round(tops[k][1] - tops[k][0])))
+        if self._shared is not None:
+            self._shared.setGeometry(int(round(bx)), 0, int(round(bar_w)), int(round(max(y - sp, 1.0))))
 
     def rearrange(self):
         self._arrange()

@@ -21,13 +21,13 @@ sim = Interactive_STM_Simulator(
     erange=[-2.65, 0.85],          # initial energy box range
     ldos_height=2.0,              # the LDOS tip height (LDOS h, Å above the highest atom): the LDOS topo's, on whose heights the spectra, the stripes and the energy maps sit
     cmap_set='default 1',
-    unit_cell_num=2,
+    unit_cell_num=1,
     # cmap_set: the colour maps the window opens with, 'default 1' (the topo black / firebrick / yellow, MAP_CMAP,
     # 'nipy_spectral', 'bwr', 'hot') or 'default 2' ('CET-L3', 'CET-L6', 'CET-R1', 'CET-D1A', 'CET-L19')
 )
 
 sim.run_interactive(
-    grid_res=50,                   # NxN topography grid
+    grid_res=128,                   # NxN topography grid
     topo_bias=0.2,                # the topo bias (V): the global topo's, at constant current
     topo_height=2.5,                # the topo tip height (Topo h, Å above the highest atom): the global topo's, at start
     ldos_bias_sign='pos',          # the 'bias' toggles' starting state only: 'neg' the toggle beside E Min on, 'pos' the one beside E Max (that end is the LDOS bias V_b); an end of 0.0 starts the bias on the other end. The toggles switch it in the window
